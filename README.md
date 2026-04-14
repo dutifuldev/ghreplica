@@ -27,6 +27,7 @@ The system is built around:
 - [Compatibility Strategy](docs/compatibility-strategy.md)
 - [GitHub API Surface Research](docs/github-api-surface.md)
 - [Data Model For PR Triage](docs/data-model.md)
+- [GCP Deployment](docs/deploy-gcp.md)
 - [Local Development](docs/local-development.md)
 - [Ship Readiness Plan](docs/ship-readiness-plan.md)
 - [Supported Endpoints](docs/supported-endpoints.md)

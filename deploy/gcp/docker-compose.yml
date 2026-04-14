@@ -1,0 +1,54 @@
+services:
+  cloudsql-proxy:
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.18.2
+    command:
+      - "--auto-iam-authn"
+      - "--address=0.0.0.0"
+      - "--port=5432"
+      - "${CLOUD_SQL_INSTANCE_CONNECTION_NAME}"
+    restart: unless-stopped
+
+  ghreplica:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    depends_on:
+      - cloudsql-proxy
+    environment:
+      APP_ADDR: ":8080"
+      DATABASE_URL: "postgres://${DB_IAM_USER_URLENCODED}@cloudsql-proxy:5432/${DB_NAME}?sslmode=disable"
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+      GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET}"
+      GITHUB_APP_ID: "${GITHUB_APP_ID:-}"
+      GITHUB_APP_INSTALLATION_ID: "${GITHUB_APP_INSTALLATION_ID:-}"
+      GITHUB_APP_PRIVATE_KEY_PATH: "${GITHUB_APP_PRIVATE_KEY_PATH:-}"
+    restart: unless-stopped
+
+  ghreplica-migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    depends_on:
+      - cloudsql-proxy
+    environment:
+      DATABASE_URL: "postgres://${DB_IAM_USER_URLENCODED}@cloudsql-proxy:5432/${DB_NAME}?sslmode=disable"
+    command: ["migrate", "up"]
+    profiles:
+      - ops
+
+  caddy:
+    image: caddy:2.10.2
+    depends_on:
+      - ghreplica
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,3 @@
+ghreplica.dutiful.dev {
+    reverse_proxy ghreplica:8080
+}
