@@ -25,6 +25,7 @@ The system is built around:
 
 - [Architecture](docs/architecture.md)
 - [Compatibility Strategy](docs/compatibility-strategy.md)
+- [CLI](docs/cli.md)
 - [GitHub API Surface Research](docs/github-api-surface.md)
 - [GitHub App Event Inventory](docs/github-app-events.md)
 - [Data Model For PR Triage](docs/data-model.md)
