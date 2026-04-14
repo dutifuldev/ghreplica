@@ -365,7 +365,10 @@ func (s *Server) handleReadiness(c echo.Context) error {
 	ctx := c.Request().Context()
 	var pending int64
 	var processing int64
-	var failed int64
+	var recentFailed int64
+	var failedTotal int64
+	var superseded int64
+	cutoff := time.Now().UTC().Add(-15 * time.Minute)
 
 	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "pending").Count(&pending).Error; err != nil {
 		return err
@@ -373,20 +376,31 @@ func (s *Server) handleReadiness(c echo.Context) error {
 	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "processing").Count(&processing).Error; err != nil {
 		return err
 	}
-	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "failed").Count(&failed).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "failed").Count(&failedTotal).Error; err != nil {
+		return err
+	}
+	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).
+		Where("status = ? AND updated_at >= ?", "failed", cutoff).
+		Count(&recentFailed).Error; err != nil {
+		return err
+	}
+	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "superseded").Count(&superseded).Error; err != nil {
 		return err
 	}
 
 	status := "ready"
-	if processing > 0 || failed > 0 {
+	if processing > 0 || recentFailed > 0 {
 		status = "degraded"
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
-		"status":          status,
-		"pending_refresh": pending,
-		"processing_jobs": processing,
-		"failed_jobs":     failed,
+		"status":               status,
+		"pending_refresh":      pending,
+		"processing_jobs":      processing,
+		"recent_failed_jobs":   recentFailed,
+		"failed_jobs_total":    failedTotal,
+		"superseded_jobs":      superseded,
+		"failure_window_start": cutoff.Format(time.RFC3339),
 	})
 }
 
@@ -397,6 +411,7 @@ func (s *Server) handleMetrics(c echo.Context) error {
 	var processing int64
 	var failed int64
 	var succeeded int64
+	var superseded int64
 	var deliveries int64
 
 	for _, query := range []struct {
@@ -408,6 +423,7 @@ func (s *Server) handleMetrics(c echo.Context) error {
 		{&database.RepositoryRefreshJob{}, "status = 'processing'", &processing},
 		{&database.RepositoryRefreshJob{}, "status = 'failed'", &failed},
 		{&database.RepositoryRefreshJob{}, "status = 'succeeded'", &succeeded},
+		{&database.RepositoryRefreshJob{}, "status = 'superseded'", &superseded},
 		{&database.WebhookDelivery{}, "", &deliveries},
 	} {
 		dbq := s.db.WithContext(ctx).Model(query.model)
@@ -425,6 +441,7 @@ func (s *Server) handleMetrics(c echo.Context) error {
 		"refresh_jobs_processing":  processing,
 		"refresh_jobs_failed":      failed,
 		"refresh_jobs_succeeded":   succeeded,
+		"refresh_jobs_superseded":  superseded,
 	})
 }
 

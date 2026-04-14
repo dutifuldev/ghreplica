@@ -117,7 +117,7 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	require.Len(t, reviewComments, 1)
 }
 
-func TestBootstrapRepositoryPreservesWebhookSyncMode(t *testing.T) {
+func TestBootstrapRepositoryNormalizesLegacyWebhookSyncMode(t *testing.T) {
 	ctx := context.Background()
 
 	db, err := database.Open(testDatabaseURL(t))
@@ -162,7 +162,38 @@ func TestBootstrapRepositoryPreservesWebhookSyncMode(t *testing.T) {
 
 	var tracked database.TrackedRepository
 	require.NoError(t, db.Where("full_name = ?", "acme/widgets").First(&tracked).Error)
-	require.Equal(t, "webhook", tracked.SyncMode)
+	require.Equal(t, "webhook_only", tracked.SyncMode)
+	require.True(t, tracked.WebhookProjectionEnabled)
+	require.True(t, tracked.AllowManualBackfill)
+	require.Equal(t, "backfilled", tracked.PullsCompleteness)
+}
+
+func TestUpsertRepositoryTracksRenameByGitHubID(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	first, err := service.UpsertRepository(ctx, repoFixture())
+	require.NoError(t, err)
+
+	renamed := repoFixture()
+	renamed.Name = "widgets-renamed"
+	renamed.FullName = "acme/widgets-renamed"
+	renamed.HTMLURL = "https://github.com/acme/widgets-renamed"
+	renamed.URL = "https://api.github.com/repos/acme/widgets-renamed"
+
+	second, err := service.UpsertRepository(ctx, renamed)
+	require.NoError(t, err)
+	require.Equal(t, first.ID, second.ID)
+
+	var repos []database.Repository
+	require.NoError(t, db.Order("id ASC").Find(&repos).Error)
+	require.Len(t, repos, 1)
+	require.Equal(t, "widgets-renamed", repos[0].Name)
+	require.Equal(t, "acme/widgets-renamed", repos[0].FullName)
 }
 
 func testDatabaseURL(t *testing.T) string {

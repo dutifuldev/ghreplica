@@ -19,18 +19,24 @@ import (
 )
 
 type TrackedRepository struct {
-	ID              uint `gorm:"primaryKey"`
-	Owner           string
-	Name            string
-	FullName        string `gorm:"uniqueIndex"`
-	RepositoryID    *uint
-	SyncMode        string
-	Enabled         bool
-	LastBootstrapAt *time.Time
-	LastCrawlAt     *time.Time
-	LastWebhookAt   *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                       uint `gorm:"primaryKey"`
+	Owner                    string
+	Name                     string
+	FullName                 string `gorm:"uniqueIndex"`
+	RepositoryID             *uint
+	SyncMode                 string
+	WebhookProjectionEnabled bool
+	AllowManualBackfill      bool
+	IssuesCompleteness       string
+	PullsCompleteness        string
+	CommentsCompleteness     string
+	ReviewsCompleteness      string
+	Enabled                  bool
+	LastBootstrapAt          *time.Time
+	LastCrawlAt              *time.Time
+	LastWebhookAt            *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 type User struct {
@@ -231,6 +237,7 @@ type RepositoryRefreshJob struct {
 	TrackedRepository   *TrackedRepository
 	RepositoryID        *uint
 	Repository          *Repository
+	JobType             string
 	Owner               string `gorm:"index"`
 	Name                string
 	FullName            string `gorm:"index"`
@@ -242,6 +249,7 @@ type RepositoryRefreshJob struct {
 	LastError           string
 	RequestedAt         time.Time
 	NextAttemptAt       *time.Time `gorm:"index"`
+	LeaseExpiresAt      *time.Time `gorm:"index"`
 	StartedAt           *time.Time
 	FinishedAt          *time.Time
 	CreatedAt           time.Time

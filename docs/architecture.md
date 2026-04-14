@@ -4,7 +4,7 @@
 
 The core flow is:
 
-1. ingest GitHub changes from webhooks and crawls
+1. ingest GitHub changes from webhooks and explicit backfills or repairs
 2. persist raw source data
 3. normalize into a canonical internal model
 4. project into API-ready read models
@@ -15,7 +15,7 @@ The core flow is:
 
 - Mirror GitHub repository data with high fidelity.
 - Stay backend-agnostic so storage can be swapped without rewriting domain logic.
-- Support both near-real-time sync via webhooks and correctness repair via crawls.
+- Support near-real-time sync via webhooks and explicit correctness repair via targeted jobs.
 - Expose a GitHub-compatible API for tooling, agents, and triage systems.
 - Make analytics exports first-class, but not the primary transactional store.
 
@@ -37,7 +37,7 @@ That gives you:
 - multiple downstream representations of the same source data
 - a clean separation between "what GitHub said" and "how we serve it"
 
-This is materially better than a direct `webhook -> database row -> API` design because GitHub webhooks are incomplete, can arrive out of order, and do not cover every query shape you need.
+This is materially better than a direct `webhook -> database row -> API` design because GitHub webhooks can arrive out of order, can be redelivered, and do not always cover every repair scenario you need.
 
 ## Chosen Stack
 
@@ -111,19 +111,19 @@ That is database work. If Hugging Face integration is useful, treat it as a sink
 
 ### 1. Ingestion Layer
 
-Two independent ingesters feed the same replication log:
+Two ingestion paths feed the same replication log:
 
 - `Webhook ingester`
   - Receives GitHub webhook deliveries.
   - Verifies signatures.
   - Deduplicates by delivery ID.
   - Persists the raw payload before doing anything else.
-- `Crawler ingester`
-  - Polls GitHub REST endpoints on schedules.
-  - Uses ETags, `updated_at`, cursors, and conditional requests.
-  - Repairs missed webhooks and backfills historical state.
+- `Backfill and repair ingester`
+  - Runs only when explicitly requested by policy or operator action.
+  - Fetches bounded GitHub REST resources.
+  - Repairs missed or insufficient webhook state.
 
-Webhooks give freshness. Crawls give correctness. You want both.
+Webhooks should be the default path. Backfills and repairs should be explicit and bounded.
 
 ### 2. Raw Replication Log
 
@@ -190,6 +190,21 @@ Projectors must be:
 
 This is what lets you change how responses are shaped without changing ingestion.
 
+Webhook projectors should be event-specific:
+
+- `repository`
+- `issues`
+- `issue_comment`
+- `pull_request`
+- `pull_request_review`
+- `pull_request_review_comment`
+
+The default should be:
+
+- apply what the webhook already tells us
+- schedule targeted repair only if the payload is insufficient
+- never trigger a full repo bootstrap because a single event arrived
+
 ### 5. API Compatibility Layer
 
 Serve GitHub-like endpoints from read models using Echo.
@@ -255,21 +270,40 @@ This gives you the simplest reliable baseline. Then add alternative adapters lat
 
 ## Sync Model
 
-Every repo mirror should have explicit sync jobs:
+Every repo mirror should have explicit policy and explicit job types.
 
-- `bootstrap`
-  - full initial crawl of core entities
-- `incremental`
-  - poll changed endpoints using ETags and timestamps
-- `repair`
-  - periodic reconciliation of counts, recent issues and PRs, and missing objects
+Per-repo policy should decide whether a repo is:
+
+- `webhook_only`
+- `webhook_plus_backfill`
+- `manual_only`
+
+Jobs should be typed and narrow. Prefer:
+
+- `apply_webhook_delivery`
+- `repair_issue`
+- `repair_pull_request`
+- `repair_issue_comments`
+- `repair_pull_request_reviews`
+- `repair_pull_request_review_comments`
+- `backfill_issues_page`
+- `backfill_pulls_page`
+
+Avoid one generic `refresh repo` job as the main primitive.
+
+When a broader sync is required, make it explicit:
+
 - `backfill`
   - historical fetch for timelines, comments, reviews, or commits
+- `repair`
+  - targeted reconciliation of missing or suspicious objects
+- `incremental_backfill`
+  - bounded page-by-page catch-up for one resource family
 
 Expose lag and health metadata:
 
 - last successful webhook delivery time
-- last successful crawl time
+- last successful repair or backfill time
 - last projector lag
 - last consistency repair result
 
