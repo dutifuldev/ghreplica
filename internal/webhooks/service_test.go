@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 func TestWebhookIngestionQueuesRefreshAndWorkerMirrorsRepository(t *testing.T) {
 	ctx := context.Background()
 
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
+	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(db))
 
@@ -84,6 +85,38 @@ func TestWebhookIngestionQueuesRefreshAndWorkerMirrorsRepository(t *testing.T) {
 	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&tracked).Error)
 	require.NotNil(t, tracked.RepositoryID)
 	require.Equal(t, repo.ID, *tracked.RepositoryID)
+}
+
+func TestWebhookIngestionIgnoresUnsupportedEventsForRefreshScheduling(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	scheduler := refresh.NewScheduler(db)
+	ingestor := webhooks.NewService(db, scheduler)
+	err = ingestor.HandleWebhook(
+		ctx,
+		"delivery-unsupported",
+		"workflow_job",
+		http.Header{"X-GitHub-Event": []string{"workflow_job"}},
+		[]byte(`{"repository":{"name":"widgets","full_name":"acme/widgets","owner":{"login":"acme"}}}`),
+	)
+	require.NoError(t, err)
+
+	var delivery database.WebhookDelivery
+	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-unsupported").First(&delivery).Error)
+	require.Equal(t, "workflow_job", delivery.Event)
+	require.NotNil(t, delivery.ProcessedAt)
+
+	var jobs int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Count(&jobs).Error)
+	require.Zero(t, jobs)
+
+	var tracked int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.TrackedRepository{}).Count(&tracked).Error)
+	require.Zero(t, tracked)
 }
 
 func repoFixture() github.RepositoryResponse {
@@ -245,4 +278,9 @@ func writeJSON(t *testing.T, w http.ResponseWriter, payload any) {
 	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
 	require.NoError(t, json.NewEncoder(w).Encode(payload))
+}
+
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	return "sqlite://" + filepath.Join(t.TempDir(), "webhooks.db")
 }

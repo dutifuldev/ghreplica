@@ -24,6 +24,17 @@ type Service struct {
 	scheduler RefreshScheduler
 }
 
+var supportedRefreshEvents = map[string]struct{}{
+	"ping":                        {},
+	"issues":                      {},
+	"issue_comment":               {},
+	"pull_request":                {},
+	"pull_request_review":         {},
+	"pull_request_review_comment": {},
+	"push":                        {},
+	"repository":                  {},
+}
+
 func NewService(db *gorm.DB, scheduler RefreshScheduler) *Service {
 	return &Service{db: db, scheduler: scheduler}
 }
@@ -45,6 +56,12 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, h
 	}
 	if tx.RowsAffected == 0 {
 		return nil
+	}
+
+	if _, ok := supportedRefreshEvents[event]; !ok {
+		return s.db.WithContext(ctx).Model(&database.WebhookDelivery{}).
+			Where("delivery_id = ?", deliveryID).
+			Updates(map[string]any{"processed_at": now}).Error
 	}
 
 	if repoRef != nil {
