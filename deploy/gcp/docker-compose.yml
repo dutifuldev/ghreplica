@@ -15,6 +15,8 @@ services:
     depends_on:
       - cloudsql-proxy
     command: ["serve"]
+    volumes:
+      - /home/bob/ghreplica/secrets:/home/bob/ghreplica/secrets:ro
     environment:
       APP_ADDR: ":8080"
       DATABASE_URL: "postgres://${DB_IAM_USER_URLENCODED}@cloudsql-proxy:5432/${DB_NAME}?sslmode=disable"
@@ -31,6 +33,8 @@ services:
       dockerfile: Dockerfile
     depends_on:
       - cloudsql-proxy
+    volumes:
+      - /home/bob/ghreplica/secrets:/home/bob/ghreplica/secrets:ro
     environment:
       DATABASE_URL: "postgres://${DB_IAM_USER_URLENCODED}@cloudsql-proxy:5432/${DB_NAME}?sslmode=disable"
     command: ["migrate", "up"]
