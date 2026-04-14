@@ -256,11 +256,32 @@ func Open(databaseURL string) (*gorm.DB, error) {
 		}),
 	}
 
+	var (
+		db  *gorm.DB
+		err error
+	)
+
 	if IsSQLiteURL(databaseURL) {
-		return gorm.Open(sqlite.Open(strings.TrimPrefix(databaseURL, "sqlite://")), gormConfig)
+		db, err = gorm.Open(sqlite.Open(strings.TrimPrefix(databaseURL, "sqlite://")), gormConfig)
+	} else {
+		db, err = gorm.Open(postgres.Open(databaseURL), gormConfig)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	return gorm.Open(postgres.Open(databaseURL), gormConfig)
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+
+	// Cloud SQL is a shared backend in staging, so keep the pool intentionally small.
+	sqlDB.SetMaxOpenConns(5)
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+
+	return db, nil
 }
 
 func IsSQLiteURL(databaseURL string) bool {
