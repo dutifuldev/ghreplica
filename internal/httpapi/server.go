@@ -121,7 +121,7 @@ func (s *Server) handleListIssues(c echo.Context) error {
 		queryMap["state"] = state
 	}
 
-	if link := database.BuildLinkHeader(c.Path(), queryMap, page, perPage, int(total)); link != "" {
+	if link := database.BuildLinkHeader(c.Request().URL.Path, queryMap, page, perPage, int(total)); link != "" {
 		c.Response().Header().Set("Link", link)
 	}
 
@@ -175,7 +175,7 @@ func (s *Server) handleListPullRequests(c echo.Context) error {
 		queryMap["state"] = state
 	}
 
-	if link := database.BuildLinkHeader(c.Path(), queryMap, page, perPage, int(total)); link != "" {
+	if link := database.BuildLinkHeader(c.Request().URL.Path, queryMap, page, perPage, int(total)); link != "" {
 		c.Response().Header().Set("Link", link)
 	}
 
