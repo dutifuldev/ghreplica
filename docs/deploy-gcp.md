@@ -34,7 +34,8 @@ Before deployment, confirm:
 - project billing is enabled for `dutiful-20260414`
 - `compute.googleapis.com` is enabled on `dutiful-20260414`
 - GCP project: `dutiful-20260414`
-- VM zone: `europe-west1-d`
+- VM zone: any `europe-west1` zone with available `e2-small` capacity
+- current VM zone: `europe-west1-b`
 - Cloud SQL instance: `horse-pg`
 - Cloud SQL connection name, in `project:region:instance` form
 - Service account on the VM: `bob-gcloud@dutiful-20260414.iam.gserviceaccount.com`
@@ -58,7 +59,7 @@ Create the VM:
 ```bash
 gcloud compute instances create ghreplica \
   --project=dutiful-20260414 \
-  --zone=europe-west1-d \
+  --zone=europe-west1-b \
   --machine-type=e2-small \
   --address=ghreplica-ip \
   --service-account=bob-gcloud@dutiful-20260414.iam.gserviceaccount.com \
