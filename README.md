@@ -36,11 +36,32 @@ The system is built around:
 
 ## Status
 
-Initial vertical slice implemented:
+Current state:
 
-- Postgres or sqlite-backed storage via GORM
-- bootstrap sync for repositories, issues, pull requests, issue comments, reviews, and review comments
+- live staging deployment at `https://ghreplica.dutiful.dev`
+- Cloud SQL-backed storage via GORM
+- GitHub App installation-token auth for upstream GitHub access
 - Echo read API for repository, issue, pull request, and discussion endpoints
-- GitHub webhook receiver that validates signatures, stores raw deliveries, queues repository refresh jobs, and refreshes them asynchronously
-- PAT auth and GitHub App installation-token auth for upstream GitHub access
-- readiness and metrics endpoints for local and service operation
+- webhook receiver with signature validation, raw delivery persistence, and direct event projection into canonical tables
+- explicit manual sync command for full bootstrap crawls
+- local dev flow for Postgres, sqlite, and GCP deployment
+
+What works well today:
+
+- small repos can be bootstrapped and served end to end
+- webhook-driven updates can populate repository metadata, issues, pull requests, and issue comments without triggering a full repo crawl
+- the service can run locally and on GCP behind Caddy with a GitHub App webhook
+- large repos like `openclaw/openclaw` can now be filled incrementally from received webhook events instead of forcing a full bootstrap
+
+Current limitations:
+
+- full bootstrap crawls are still expensive and should only be used deliberately
+- large repos are only mirrored for the subset of data already seen through webhook events unless you run an explicit bootstrap
+- stale `processing` refresh jobs are not reclaimed automatically
+- unsupported webhook events are ignored, but historical failed jobs still affect `readyz`
+- review and review-comment coverage exists in the schema and API surface, but the live deployment does not yet have meaningful mirrored data for those paths
+
+Practical takeaway:
+
+- `ghreplica` is usable as a working prototype and staging service
+- it is not yet a scalable full-fidelity mirror for very large repositories like `openclaw/openclaw`
