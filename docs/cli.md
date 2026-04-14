@@ -1,8 +1,8 @@
 # CLI
 
-This document describes the intended CLI for `ghreplica`.
+This document describes the `ghr` CLI for `ghreplica`.
 
-The CLI should be a thin read client over the `ghreplica` HTTP API.
+`ghr` is a thin read client over the `ghreplica` HTTP API.
 
 It should not invent a new object model, a new output format, or a separate local cache by default.
 
@@ -46,12 +46,15 @@ The CLI should not:
 
 The command tree should follow the `gh` mental model.
 
-Recommended starting shape:
+Current command shape:
 
 - `ghr issue list`
 - `ghr issue view`
+- `ghr issue comments`
 - `ghr pr list`
 - `ghr pr view`
+- `ghr pr reviews`
+- `ghr pr comments`
 - `ghr repo view`
 
 The first target is read-only parity for the endpoints `ghreplica` already serves.
@@ -62,8 +65,11 @@ Examples:
 ghr repo view openclaw/openclaw
 ghr issue list openclaw/openclaw --state all
 ghr issue view openclaw/openclaw 66797
+ghr issue comments openclaw/openclaw 66797
 ghr pr list openclaw/openclaw --state all
 ghr pr view openclaw/openclaw 66795
+ghr pr reviews openclaw/openclaw 66795
+ghr pr comments openclaw/openclaw 66795
 ```
 
 ## Compatibility Expectations
@@ -107,6 +113,7 @@ It should mimic `gh` as closely as possible for:
 This should support:
 
 - `--json`
+- `-R, --repo`
 - later, possibly `--jq`
 - later, possibly `--template`
 
@@ -160,7 +167,7 @@ The goal is to copy the user-facing contract:
 
 ## Initial Scope
 
-Start with the endpoints already supported by the server:
+Current read scope matches the server endpoints already supported:
 
 - repository view
 - issue list
