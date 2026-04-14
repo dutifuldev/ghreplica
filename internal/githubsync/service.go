@@ -67,18 +67,36 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 	}
 
 	tracked := database.TrackedRepository{
-		Owner:           owner,
-		Name:            repo,
-		FullName:        repoResp.FullName,
-		RepositoryID:    &canonicalRepo.ID,
-		SyncMode:        syncMode,
-		Enabled:         true,
-		LastBootstrapAt: &now,
-		LastCrawlAt:     &now,
+		Owner:                    owner,
+		Name:                     repo,
+		FullName:                 repoResp.FullName,
+		RepositoryID:             &canonicalRepo.ID,
+		SyncMode:                 syncMode,
+		WebhookProjectionEnabled: true,
+		AllowManualBackfill:      true,
+		IssuesCompleteness:       "backfilled",
+		PullsCompleteness:        "backfilled",
+		CommentsCompleteness:     "backfilled",
+		ReviewsCompleteness:      "backfilled",
+		Enabled:                  true,
+		LastBootstrapAt:          &now,
+		LastCrawlAt:              &now,
 	}
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "full_name"}},
-		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "sync_mode", "enabled", "last_bootstrap_at", "last_crawl_at"}),
+		Columns: []clause.Column{{Name: "full_name"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"repository_id",
+			"sync_mode",
+			"webhook_projection_enabled",
+			"allow_manual_backfill",
+			"issues_completeness",
+			"pulls_completeness",
+			"comments_completeness",
+			"reviews_completeness",
+			"enabled",
+			"last_bootstrap_at",
+			"last_crawl_at",
+		}),
 	}).Create(&tracked).Error; err != nil {
 		return err
 	}
@@ -154,12 +172,15 @@ func (s *Service) existingSyncMode(ctx context.Context, fullName string) (string
 		First(&tracked).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "poll", nil
+			return "manual_backfill", nil
 		}
 		return "", err
 	}
-	if strings.TrimSpace(tracked.SyncMode) == "" {
-		return "poll", nil
+	switch strings.TrimSpace(tracked.SyncMode) {
+	case "", "poll":
+		return "manual_backfill", nil
+	case "webhook":
+		return "webhook_only", nil
 	}
 	return tracked.SyncMode, nil
 }
@@ -205,14 +226,14 @@ func (s *Service) upsertRepository(ctx context.Context, repo gh.RepositoryRespon
 	}
 
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "full_name"}},
-		DoUpdates: clause.AssignmentColumns([]string{"github_id", "node_id", "owner_id", "owner_login", "name", "private", "archived", "disabled", "default_branch", "description", "html_url", "api_url", "visibility", "fork", "raw_json", "created_at", "updated_at"}),
+		Columns:   []clause.Column{{Name: "github_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"node_id", "owner_id", "owner_login", "name", "full_name", "private", "archived", "disabled", "default_branch", "description", "html_url", "api_url", "visibility", "fork", "raw_json", "created_at", "updated_at"}),
 	}).Create(&model).Error; err != nil {
 		return database.Repository{}, err
 	}
 
 	var stored database.Repository
-	err = s.db.WithContext(ctx).Preload("Owner").Where("full_name = ?", repo.FullName).First(&stored).Error
+	err = s.db.WithContext(ctx).Preload("Owner").Where("github_id = ?", repo.ID).First(&stored).Error
 	return stored, err
 }
 

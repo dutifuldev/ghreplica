@@ -7,9 +7,9 @@ This document turns the remaining prototype gaps into a concrete path from curre
 What already works:
 
 - local Postgres-backed development
-- PAT-based repository bootstrap sync
+- explicit PAT-based repository bootstrap sync
 - GitHub webhook ingestion
-- queued repository refresh jobs
+- webhook-native canonical projection
 - read endpoints for:
   - `GET /repos/{owner}/{repo}`
   - `GET /repos/{owner}/{repo}/issues`
@@ -17,11 +17,11 @@ What already works:
 
 What is still missing:
 
-- endpoint depth
+- stale-job recovery and job model cleanup
+- repo sync policy and completeness tracking
 - deeper GitHub object coverage
 - compatibility automation
 - worker and operations hardening
-- GitHub App support
 
 ## Release Levels
 
@@ -126,33 +126,53 @@ Exit criteria:
 - every supported endpoint has a contract test
 - CI catches parity regressions automatically
 
-## Phase 3: Harden Refresh Jobs And Worker Execution
+## Phase 3: Replace Generic Refresh With Typed Jobs
 
 Goal:
 
-Make webhook-triggered refreshes dependable enough for continuous use.
+Make webhook application and repair dependable enough for continuous use.
 
 Scope:
 
+- replace generic repo refresh with typed jobs
 - add explicit retry policy and bounded retry count
 - store failure reason and next retry time
-- add backoff for transient GitHub failures
-- avoid duplicate refresh work more aggressively
-- support manual repair crawl for a tracked repo
+- add lease expiry and stale job reclaim
+- support manual targeted repair for a tracked repo
 
 Implementation notes:
 
 - keep the current in-process worker for dev
 - make worker state explicit in the database
 - prefer deterministic SQL state transitions over implicit behavior
+- separate webhook delivery application from optional backfill jobs
 
 Exit criteria:
 
-- failed refreshes are visible and retryable
-- transient GitHub failures do not require manual DB edits
-- larger repos do not leave ambiguous job state behind
+- failed jobs are visible and retryable
+- stale `processing` rows do not block repos forever
+- larger repos do not force whole-repo bootstrap after one event
 
-## Phase 4: Add GitHub App Support
+## Phase 4: Add Repo Sync Policy And Completeness Tracking
+
+Goal:
+
+Make repo behavior explicit instead of relying on one implicit sync model.
+
+Scope:
+
+- per-repo sync policy
+- `webhook_only`, `webhook_plus_backfill`, and `manual_only` modes
+- resource-family completeness tracking
+- separate readiness signals for serving health vs historical backfill failures
+
+Exit criteria:
+
+- operators can see whether a repo is sparse or backfilled
+- large repos default to `webhook_only`
+- readiness is not permanently degraded by old optional backfill failures
+
+## Phase 5: Add GitHub App Support
 
 Goal:
 
@@ -176,7 +196,7 @@ Exit criteria:
 - users can install the app on a repo or org
 - webhooks and API access are scoped per installation
 
-## Phase 5: Add Operations And Ship Controls
+## Phase 6: Add Operations And Ship Controls
 
 Goal:
 
@@ -207,10 +227,11 @@ The right order is:
 
 1. issue and pull detail endpoints
 2. comments and reviews
-3. contract-test harness
-4. refresh job retries and repair behavior
-5. GitHub App support
-6. ops and ship controls
+3. typed jobs and stale-job recovery
+4. repo sync policy and completeness tracking
+5. contract-test harness
+6. GitHub App support
+7. ops and ship controls
 
 This order is important:
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
@@ -13,12 +14,22 @@ import (
 )
 
 type Request struct {
+	JobType    string
 	Owner      string
 	Name       string
 	FullName   string
 	Source     string
 	DeliveryID string
 }
+
+const (
+	JobTypeBootstrapRepository = "bootstrap_repository"
+	syncModeWebhookOnly        = "webhook_only"
+	syncModeManualBackfill     = "manual_backfill"
+	completenessEmpty          = "empty"
+	completenessSparse         = "sparse"
+	completenessBackfilled     = "backfilled"
+)
 
 type Scheduler struct {
 	db *gorm.DB
@@ -29,9 +40,21 @@ func NewScheduler(db *gorm.DB) *Scheduler {
 }
 
 func (s *Scheduler) EnqueueRepositoryRefresh(ctx context.Context, request Request) error {
+	jobType := strings.TrimSpace(request.JobType)
+	if jobType == "" {
+		jobType = JobTypeBootstrapRepository
+	}
+
+	now := time.Now().UTC()
 	var existing database.RepositoryRefreshJob
 	err := s.db.WithContext(ctx).
-		Where("full_name = ? AND status IN ?", request.FullName, []string{"pending", "processing"}).
+		Where("full_name = ? AND job_type = ? AND ((status = ?) OR (status = ? AND (lease_expires_at IS NULL OR lease_expires_at > ?)))",
+			request.FullName,
+			jobType,
+			"pending",
+			"processing",
+			now,
+		).
 		Order("id ASC").
 		First(&existing).Error
 	if err == nil {
@@ -53,8 +76,8 @@ func (s *Scheduler) EnqueueRepositoryRefresh(ctx context.Context, request Reques
 		return err
 	}
 
-	now := time.Now().UTC()
 	job := database.RepositoryRefreshJob{
+		JobType:       jobType,
 		Owner:         request.Owner,
 		Name:          request.Name,
 		FullName:      request.FullName,
@@ -86,13 +109,19 @@ type Worker struct {
 	db           *gorm.DB
 	bootstrapper Bootstrapper
 	pollInterval time.Duration
+	leaseTTL     time.Duration
 }
 
 func NewWorker(db *gorm.DB, bootstrapper Bootstrapper, pollInterval time.Duration) *Worker {
 	if pollInterval <= 0 {
 		pollInterval = 2 * time.Second
 	}
-	return &Worker{db: db, bootstrapper: bootstrapper, pollInterval: pollInterval}
+	return &Worker{
+		db:           db,
+		bootstrapper: bootstrapper,
+		pollInterval: pollInterval,
+		leaseTTL:     5 * time.Minute,
+	}
 }
 
 func (w *Worker) Start(ctx context.Context) error {
@@ -114,6 +143,13 @@ func (w *Worker) Start(ctx context.Context) error {
 }
 
 func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
+	if err := w.supersedeLegacyWebhookJobs(ctx); err != nil {
+		return false, err
+	}
+	if err := w.recoverExpiredLeases(ctx); err != nil {
+		return false, err
+	}
+
 	job, claimed, err := w.claimNextJob(ctx)
 	if err != nil {
 		return false, err
@@ -134,7 +170,7 @@ func (w *Worker) claimNextJob(ctx context.Context) (database.RepositoryRefreshJo
 	var job database.RepositoryRefreshJob
 	now := time.Now().UTC()
 	err := w.db.WithContext(ctx).
-		Where("status = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)", "pending", now).
+		Where("job_type = ? AND status = ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)", JobTypeBootstrapRepository, "pending", now).
 		Order("requested_at ASC, id ASC").
 		First(&job).Error
 	if err != nil {
@@ -144,13 +180,15 @@ func (w *Worker) claimNextJob(ctx context.Context) (database.RepositoryRefreshJo
 		return database.RepositoryRefreshJob{}, false, err
 	}
 
+	leaseExpiresAt := now.Add(w.leaseTTL)
 	result := w.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).
 		Where("id = ? AND status = ?", job.ID, "pending").
 		Updates(map[string]any{
-			"status":     "processing",
-			"attempts":   gorm.Expr("attempts + 1"),
-			"started_at": now,
-			"updated_at": now,
+			"status":           "processing",
+			"attempts":         gorm.Expr("attempts + 1"),
+			"started_at":       now,
+			"lease_expires_at": leaseExpiresAt,
+			"updated_at":       now,
 		})
 	if result.Error != nil {
 		return database.RepositoryRefreshJob{}, false, result.Error
@@ -162,6 +200,7 @@ func (w *Worker) claimNextJob(ctx context.Context) (database.RepositoryRefreshJo
 	job.Status = "processing"
 	job.Attempts++
 	job.StartedAt = &now
+	job.LeaseExpiresAt = &leaseExpiresAt
 	return job, true, nil
 }
 
@@ -175,11 +214,12 @@ func (w *Worker) markSucceeded(ctx context.Context, jobID uint, fullName string)
 	}
 
 	updates := map[string]any{
-		"status":          "succeeded",
-		"last_error":      "",
-		"finished_at":     now,
-		"next_attempt_at": nil,
-		"updated_at":      now,
+		"status":           "succeeded",
+		"last_error":       "",
+		"finished_at":      now,
+		"next_attempt_at":  nil,
+		"lease_expires_at": nil,
+		"updated_at":       now,
 	}
 	if err == nil {
 		updates["repository_id"] = repository.ID
@@ -195,9 +235,17 @@ func (w *Worker) markSucceeded(ctx context.Context, jobID uint, fullName string)
 		return w.db.WithContext(ctx).Model(&database.TrackedRepository{}).
 			Where("full_name = ?", fullName).
 			Updates(map[string]any{
-				"repository_id": repository.ID,
-				"last_crawl_at": now,
-				"updated_at":    now,
+				"repository_id":              repository.ID,
+				"sync_mode":                  syncModeManualBackfill,
+				"allow_manual_backfill":      true,
+				"issues_completeness":        completenessBackfilled,
+				"pulls_completeness":         completenessBackfilled,
+				"comments_completeness":      completenessBackfilled,
+				"reviews_completeness":       completenessBackfilled,
+				"last_bootstrap_at":          now,
+				"last_crawl_at":              now,
+				"webhook_projection_enabled": true,
+				"updated_at":                 now,
 			}).Error
 	}
 
@@ -207,9 +255,10 @@ func (w *Worker) markSucceeded(ctx context.Context, jobID uint, fullName string)
 func (w *Worker) markFailed(ctx context.Context, jobID uint, reason error) error {
 	now := time.Now().UTC()
 	updates := map[string]any{
-		"last_error":  reason.Error(),
-		"finished_at": now,
-		"updated_at":  now,
+		"last_error":       reason.Error(),
+		"finished_at":      now,
+		"lease_expires_at": nil,
+		"updated_at":       now,
 	}
 
 	var httpErr *github.HTTPError
@@ -223,6 +272,7 @@ func (w *Worker) markFailed(ctx context.Context, jobID uint, reason error) error
 			updates["status"] = "pending"
 			updates["next_attempt_at"] = retryAt
 			updates["started_at"] = nil
+			updates["lease_expires_at"] = nil
 			return w.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).
 				Where("id = ?", jobID).
 				Updates(updates).Error
@@ -238,20 +288,24 @@ func (w *Worker) markFailed(ctx context.Context, jobID uint, reason error) error
 
 func UpsertTrackedRepositoryForWebhook(ctx context.Context, db *gorm.DB, owner, name, fullName string, seenAt time.Time) (database.TrackedRepository, error) {
 	tracked := database.TrackedRepository{
-		Owner:         owner,
-		Name:          name,
-		FullName:      fullName,
-		SyncMode:      "webhook",
-		Enabled:       true,
-		LastWebhookAt: &seenAt,
+		Owner:                    owner,
+		Name:                     name,
+		FullName:                 fullName,
+		SyncMode:                 syncModeWebhookOnly,
+		WebhookProjectionEnabled: true,
+		AllowManualBackfill:      false,
+		IssuesCompleteness:       completenessEmpty,
+		PullsCompleteness:        completenessEmpty,
+		CommentsCompleteness:     completenessEmpty,
+		ReviewsCompleteness:      completenessEmpty,
+		Enabled:                  true,
+		LastWebhookAt:            &seenAt,
 	}
 	if err := db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "full_name"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"owner":           owner,
 			"name":            name,
-			"sync_mode":       "webhook",
-			"enabled":         true,
 			"last_webhook_at": seenAt,
 			"updated_at":      seenAt,
 		}),
@@ -262,6 +316,92 @@ func UpsertTrackedRepositoryForWebhook(ctx context.Context, db *gorm.DB, owner, 
 	var stored database.TrackedRepository
 	err := db.WithContext(ctx).Where("full_name = ?", fullName).First(&stored).Error
 	return stored, err
+}
+
+func CompletenessUpdatesForEvent(event string) map[string]any {
+	switch event {
+	case "issues":
+		return map[string]any{"issues_completeness": completenessSparse}
+	case "issue_comment":
+		return map[string]any{
+			"issues_completeness":   completenessSparse,
+			"comments_completeness": completenessSparse,
+		}
+	case "pull_request":
+		return map[string]any{
+			"issues_completeness": completenessSparse,
+			"pulls_completeness":  completenessSparse,
+		}
+	case "pull_request_review":
+		return map[string]any{
+			"issues_completeness":  completenessSparse,
+			"pulls_completeness":   completenessSparse,
+			"reviews_completeness": completenessSparse,
+		}
+	case "pull_request_review_comment":
+		return map[string]any{
+			"issues_completeness":   completenessSparse,
+			"pulls_completeness":    completenessSparse,
+			"comments_completeness": completenessSparse,
+			"reviews_completeness":  completenessSparse,
+		}
+	case "repository", "ping", "push":
+		return map[string]any{}
+	default:
+		return map[string]any{}
+	}
+}
+
+func (w *Worker) supersedeLegacyWebhookJobs(ctx context.Context) error {
+	now := time.Now().UTC()
+	return w.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).
+		Where("source = ? AND status IN ?", "webhook", []string{"pending", "processing", "failed"}).
+		Updates(map[string]any{
+			"status":           "superseded",
+			"last_error":       "superseded by direct webhook projection",
+			"finished_at":      now,
+			"next_attempt_at":  nil,
+			"lease_expires_at": nil,
+			"updated_at":       now,
+		}).Error
+}
+
+func (w *Worker) recoverExpiredLeases(ctx context.Context) error {
+	now := time.Now().UTC()
+	var jobs []database.RepositoryRefreshJob
+	if err := w.db.WithContext(ctx).
+		Where("status = ? AND ((lease_expires_at IS NOT NULL AND lease_expires_at <= ?) OR (lease_expires_at IS NULL AND started_at IS NOT NULL AND started_at <= ?))",
+			"processing",
+			now,
+			now.Add(-w.leaseTTL),
+		).
+		Find(&jobs).Error; err != nil {
+		return err
+	}
+
+	for _, job := range jobs {
+		updates := map[string]any{
+			"lease_expires_at": nil,
+			"started_at":       nil,
+			"finished_at":      now,
+			"updated_at":       now,
+		}
+		if job.Attempts < job.MaxAttempts {
+			updates["status"] = "pending"
+			updates["next_attempt_at"] = now
+		} else {
+			updates["status"] = "failed"
+			updates["next_attempt_at"] = nil
+			updates["last_error"] = "job lease expired"
+		}
+		if err := w.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).
+			Where("id = ? AND status = ?", job.ID, "processing").
+			Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func backoffForAttempt(attempt int) time.Duration {

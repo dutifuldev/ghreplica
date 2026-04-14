@@ -73,22 +73,17 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, h
 		updates := map[string]any{
 			"processed_at": now,
 		}
-		if _, ok := supportedWebhookEvents[event]; ok {
-			repositoryID, err := s.projectEvent(ctx, event, payload, repoRef.FullName)
-			if err != nil {
-				return err
-			}
-			if repositoryID != 0 {
-				updates["repository_id"] = repositoryID
-				if tracked.RepositoryID == nil || *tracked.RepositoryID != repositoryID {
-					if err := s.db.WithContext(ctx).Model(&database.TrackedRepository{}).
-						Where("id = ?", tracked.ID).
-						Updates(map[string]any{
-							"repository_id": repositoryID,
-							"updated_at":    now,
-						}).Error; err != nil {
-						return err
-					}
+		if tracked.Enabled && tracked.WebhookProjectionEnabled {
+			if _, ok := supportedWebhookEvents[event]; ok {
+				repositoryID, err := s.projectEvent(ctx, event, delivery.Action, payload, repoRef.FullName)
+				if err != nil {
+					return err
+				}
+				if repositoryID != 0 {
+					updates["repository_id"] = repositoryID
+				}
+				if err := s.updateTrackedRepositoryProjectionState(ctx, tracked, repoRef, repositoryID, event, now); err != nil {
+					return err
 				}
 			}
 		} else if tracked.RepositoryID != nil {
@@ -114,7 +109,45 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, h
 		Updates(map[string]any{"processed_at": now}).Error
 }
 
-func (s *Service) projectEvent(ctx context.Context, event string, payload []byte, fullName string) (uint, error) {
+func (s *Service) updateTrackedRepositoryProjectionState(ctx context.Context, tracked database.TrackedRepository, repoRef *repositoryRef, repositoryID uint, event string, seenAt time.Time) error {
+	updates := map[string]any{
+		"owner":           repoRef.Owner,
+		"name":            repoRef.Name,
+		"full_name":       repoRef.FullName,
+		"last_webhook_at": seenAt,
+		"updated_at":      seenAt,
+	}
+	if repositoryID != 0 && (tracked.RepositoryID == nil || *tracked.RepositoryID != repositoryID) {
+		updates["repository_id"] = repositoryID
+	}
+
+	if current := strings.TrimSpace(tracked.IssuesCompleteness); current == "" || current == "empty" {
+		if _, ok := refresh.CompletenessUpdatesForEvent(event)["issues_completeness"]; ok {
+			updates["issues_completeness"] = "sparse"
+		}
+	}
+	if current := strings.TrimSpace(tracked.PullsCompleteness); current == "" || current == "empty" {
+		if _, ok := refresh.CompletenessUpdatesForEvent(event)["pulls_completeness"]; ok {
+			updates["pulls_completeness"] = "sparse"
+		}
+	}
+	if current := strings.TrimSpace(tracked.CommentsCompleteness); current == "" || current == "empty" {
+		if _, ok := refresh.CompletenessUpdatesForEvent(event)["comments_completeness"]; ok {
+			updates["comments_completeness"] = "sparse"
+		}
+	}
+	if current := strings.TrimSpace(tracked.ReviewsCompleteness); current == "" || current == "empty" {
+		if _, ok := refresh.CompletenessUpdatesForEvent(event)["reviews_completeness"]; ok {
+			updates["reviews_completeness"] = "sparse"
+		}
+	}
+
+	return s.db.WithContext(ctx).Model(&database.TrackedRepository{}).
+		Where("id = ?", tracked.ID).
+		Updates(updates).Error
+}
+
+func (s *Service) projectEvent(ctx context.Context, event, action string, payload []byte, fullName string) (uint, error) {
 	if s.projector == nil {
 		return 0, nil
 	}
@@ -146,6 +179,14 @@ func (s *Service) projectEvent(ctx context.Context, event string, payload []byte
 		if err != nil {
 			return 0, err
 		}
+		if action == "deleted" {
+			if err := s.db.WithContext(ctx).
+				Where("repository_id = ? AND number = ?", repo.ID, envelope.Issue.Number).
+				Delete(&database.Issue{}).Error; err != nil {
+				return 0, err
+			}
+			return repo.ID, nil
+		}
 		if _, err := s.projector.UpsertIssue(ctx, repo.ID, envelope.Issue); err != nil {
 			return 0, err
 		}
@@ -165,6 +206,14 @@ func (s *Service) projectEvent(ctx context.Context, event string, payload []byte
 		}
 		if _, err := s.projector.UpsertIssue(ctx, repo.ID, envelope.Issue); err != nil {
 			return 0, err
+		}
+		if action == "deleted" {
+			if err := s.db.WithContext(ctx).
+				Where("github_id = ?", envelope.Comment.ID).
+				Delete(&database.IssueComment{}).Error; err != nil {
+				return 0, err
+			}
+			return repo.ID, nil
 		}
 		if err := s.projector.UpsertIssueComment(ctx, repo.ID, envelope.Comment); err != nil {
 			return 0, err
@@ -221,6 +270,14 @@ func (s *Service) projectEvent(ctx context.Context, event string, payload []byte
 		}
 		if err := s.projector.UpsertPullRequest(ctx, repo.ID, envelope.PullRequest); err != nil {
 			return 0, err
+		}
+		if action == "deleted" {
+			if err := s.db.WithContext(ctx).
+				Where("github_id = ?", envelope.Comment.ID).
+				Delete(&database.PullRequestReviewComment{}).Error; err != nil {
+				return 0, err
+			}
+			return repo.ID, nil
 		}
 		if err := s.projector.UpsertPullRequestReviewComment(ctx, repo.ID, envelope.PullRequest.Number, envelope.Comment); err != nil {
 			return 0, err

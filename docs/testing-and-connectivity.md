@@ -13,9 +13,9 @@ That constraint should shape both the product and the rollout plan.
 
 `ghreplica` should support two ingestion modes from the start.
 
-### 1. Poll-Only Mode
+### 1. Explicit Backfill Mode
 
-This mode works for any public repository.
+This mode works for any public repository, but it should be operator-driven rather than the default steady-state path.
 
 How it works:
 
@@ -27,7 +27,7 @@ How it works:
 
 What it is good for:
 
-- bootstrap
+- deliberate bootstrap
 - mirroring public repositories without installation friction
 - initial development and testing
 - correctness repair even after webhook support exists
@@ -37,7 +37,7 @@ What it is bad for:
 - low-latency updates
 - avoiding excess polling on busy repositories
 
-### 2. Webhook Plus Poll Repair Mode
+### 2. Webhook Projection Plus Repair Mode
 
 This is the preferred long-term mode.
 
@@ -47,14 +47,15 @@ How it works:
 - receive webhook deliveries in `ghreplica`
 - validate signatures
 - persist raw deliveries
-- project changes quickly
-- run periodic repair crawls to handle dropped or incomplete events
+- project the payload directly into canonical tables
+- run explicit targeted repair when the payload is insufficient
 
 What it is good for:
 
 - fresher data
 - lower polling cost
 - better support for active repositories
+- better behavior for very large repositories
 
 What it requires:
 
@@ -133,7 +134,7 @@ Support these options:
 
 Recommended development path:
 
-- start with PAT-based polling for public repos
+- start with explicit PAT-based backfill for public repos
 - add GitHub App support before webhook-first operation
 
 ## Configuration Inputs
@@ -163,10 +164,14 @@ Suggested fields:
 - repo
 - full name
 - sync mode
+- webhook projection enabled
+- manual backfill allowed
 - enabled
 - last bootstrap time
 - last successful crawl time
 - last successful webhook time
+
+The registration record should become a per-repo sync policy record over time.
 
 This gives the system a stable place to manage sync state per repository.
 

@@ -31,6 +31,7 @@ The system is built around:
 - [GCP Deployment](docs/deploy-gcp.md)
 - [Local Development](docs/local-development.md)
 - [Ship Readiness Plan](docs/ship-readiness-plan.md)
+- [Sync Policy And Jobs](docs/sync-policy-and-jobs.md)
 - [Supported Endpoints](docs/supported-endpoints.md)
 - [Testing And Connectivity](docs/testing-and-connectivity.md)
 
@@ -57,8 +58,8 @@ Current limitations:
 
 - full bootstrap crawls are still expensive and should only be used deliberately
 - large repos are only mirrored for the subset of data already seen through webhook events unless you run an explicit bootstrap
-- stale `processing` refresh jobs are not reclaimed automatically
-- unsupported webhook events are ignored, but historical failed jobs still affect `readyz`
+- repo-wide refresh jobs still exist for explicit backfills, even though webhook projection is now the default sync path
+- unsupported webhook events are ignored, but they still add delivery volume and log noise until the GitHub App subscription set is narrowed
 - review and review-comment coverage exists in the schema and API surface, but the live deployment does not yet have meaningful mirrored data for those paths
 
 Practical takeaway:

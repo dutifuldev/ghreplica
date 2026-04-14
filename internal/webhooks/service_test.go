@@ -25,8 +25,8 @@ func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testin
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor := webhooks.NewService(db, projector)
 	payload, err := json.Marshal(map[string]any{
-		"action":      "opened",
-		"repository":  repoFixture(),
+		"action":       "opened",
+		"repository":   repoFixture(),
 		"pull_request": pullsFixture()[0],
 	})
 	require.NoError(t, err)
@@ -61,6 +61,12 @@ func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testin
 	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&tracked).Error)
 	require.NotNil(t, tracked.RepositoryID)
 	require.Equal(t, repo.ID, *tracked.RepositoryID)
+	require.Equal(t, "webhook_only", tracked.SyncMode)
+	require.False(t, tracked.AllowManualBackfill)
+	require.Equal(t, "sparse", tracked.IssuesCompleteness)
+	require.Equal(t, "sparse", tracked.PullsCompleteness)
+	require.Equal(t, "empty", tracked.CommentsCompleteness)
+	require.Equal(t, "empty", tracked.ReviewsCompleteness)
 
 	var jobs int64
 	require.NoError(t, db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Count(&jobs).Error)
@@ -131,6 +137,11 @@ func TestWebhookIngestionProjectsIssueCommentPayload(t *testing.T) {
 	var comments int64
 	require.NoError(t, db.WithContext(ctx).Model(&database.IssueComment{}).Where("repository_id = ?", repo.ID).Count(&comments).Error)
 	require.EqualValues(t, 1, comments)
+
+	var tracked database.TrackedRepository
+	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&tracked).Error)
+	require.Equal(t, "sparse", tracked.IssuesCompleteness)
+	require.Equal(t, "sparse", tracked.CommentsCompleteness)
 }
 
 func repoFixture() github.RepositoryResponse {
