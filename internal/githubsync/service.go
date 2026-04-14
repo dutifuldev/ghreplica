@@ -1,8 +1,12 @@
-package sync
+package githubsync
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
@@ -33,12 +37,17 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 	}
 
 	now := time.Now().UTC()
+	syncMode, err := s.existingSyncMode(ctx, repoResp.FullName)
+	if err != nil {
+		return err
+	}
+
 	tracked := database.TrackedRepository{
 		Owner:           owner,
 		Name:            repo,
 		FullName:        repoResp.FullName,
 		RepositoryID:    &canonicalRepo.ID,
-		SyncMode:        "poll",
+		SyncMode:        syncMode,
 		Enabled:         true,
 		LastBootstrapAt: &now,
 		LastCrawlAt:     &now,
@@ -55,7 +64,11 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 		return err
 	}
 	for _, issue := range issues {
-		if _, err := s.upsertIssue(ctx, canonicalRepo.ID, issue); err != nil {
+		detail, err := s.github.GetIssue(ctx, owner, repo, issue.Number)
+		if err != nil {
+			return err
+		}
+		if _, err := s.upsertIssue(ctx, canonicalRepo.ID, detail); err != nil {
 			return err
 		}
 	}
@@ -65,12 +78,66 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 		return err
 	}
 	for _, pull := range pulls {
-		if err := s.upsertPullRequest(ctx, canonicalRepo.ID, pull); err != nil {
+		detail, err := s.github.GetPullRequest(ctx, owner, repo, pull.Number)
+		if err != nil {
+			return err
+		}
+		if err := s.upsertPullRequest(ctx, canonicalRepo.ID, detail); err != nil {
 			return err
 		}
 	}
 
+	issueComments, err := s.github.ListIssueComments(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+	for _, comment := range issueComments {
+		if err := s.upsertIssueComment(ctx, canonicalRepo.ID, comment); err != nil {
+			return err
+		}
+	}
+
+	for _, pull := range pulls {
+		reviews, err := s.github.ListPullRequestReviews(ctx, owner, repo, pull.Number)
+		if err != nil {
+			return err
+		}
+		for _, review := range reviews {
+			if err := s.upsertPullRequestReview(ctx, canonicalRepo.ID, pull.Number, review); err != nil {
+				return err
+			}
+		}
+
+		reviewComments, err := s.github.ListPullRequestReviewComments(ctx, owner, repo, pull.Number)
+		if err != nil {
+			return err
+		}
+		for _, reviewComment := range reviewComments {
+			if err := s.upsertPullRequestReviewComment(ctx, canonicalRepo.ID, pull.Number, reviewComment); err != nil {
+				return err
+			}
+		}
+	}
+
 	return nil
+}
+
+func (s *Service) existingSyncMode(ctx context.Context, fullName string) (string, error) {
+	var tracked database.TrackedRepository
+	err := s.db.WithContext(ctx).
+		Select("sync_mode").
+		Where("full_name = ?", fullName).
+		First(&tracked).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "poll", nil
+		}
+		return "", err
+	}
+	if strings.TrimSpace(tracked.SyncMode) == "" {
+		return "poll", nil
+	}
+	return tracked.SyncMode, nil
 }
 
 func (s *Service) upsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
@@ -279,6 +346,152 @@ func (s *Service) upsertPullRequest(ctx context.Context, repositoryID uint, pull
 	}).Create(&model).Error
 }
 
+func (s *Service) upsertIssueComment(ctx context.Context, repositoryID uint, comment gh.IssueCommentResponse) error {
+	issueNumber, err := issueNumberFromURL(comment.IssueURL)
+	if err != nil {
+		return err
+	}
+
+	var issue database.Issue
+	if err := s.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repositoryID, issueNumber).First(&issue).Error; err != nil {
+		return err
+	}
+
+	var authorID *uint
+	if comment.User != nil {
+		author, err := s.upsertUser(ctx, *comment.User)
+		if err != nil {
+			return err
+		}
+		authorID = &author.ID
+	}
+
+	raw, err := json.Marshal(comment)
+	if err != nil {
+		return err
+	}
+
+	model := database.IssueComment{
+		GitHubID:        comment.ID,
+		NodeID:          comment.NodeID,
+		RepositoryID:    repositoryID,
+		IssueID:         issue.ID,
+		AuthorID:        authorID,
+		Body:            comment.Body,
+		HTMLURL:         comment.HTMLURL,
+		APIURL:          comment.URL,
+		GitHubCreatedAt: comment.CreatedAt,
+		GitHubUpdatedAt: comment.UpdatedAt,
+		RawJSON:         datatypes.JSON(raw),
+	}
+
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "github_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "issue_id", "author_id", "body", "html_url", "api_url", "github_created_at", "github_updated_at", "raw_json"}),
+	}).Create(&model).Error
+}
+
+func (s *Service) upsertPullRequestReview(ctx context.Context, repositoryID uint, pullNumber int, review gh.PullRequestReviewResponse) error {
+	pullRequestID, err := s.pullRequestIssueID(ctx, repositoryID, pullNumber)
+	if err != nil {
+		return err
+	}
+
+	var authorID *uint
+	if review.User != nil {
+		author, err := s.upsertUser(ctx, *review.User)
+		if err != nil {
+			return err
+		}
+		authorID = &author.ID
+	}
+
+	raw, err := json.Marshal(review)
+	if err != nil {
+		return err
+	}
+
+	model := database.PullRequestReview{
+		GitHubID:        review.ID,
+		NodeID:          review.NodeID,
+		RepositoryID:    repositoryID,
+		PullRequestID:   pullRequestID,
+		AuthorID:        authorID,
+		State:           review.State,
+		Body:            review.Body,
+		CommitID:        review.CommitID,
+		SubmittedAt:     review.SubmittedAt,
+		HTMLURL:         review.HTMLURL,
+		APIURL:          review.URL,
+		GitHubCreatedAt: review.CreatedAt,
+		GitHubUpdatedAt: review.UpdatedAt,
+		RawJSON:         datatypes.JSON(raw),
+	}
+
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "github_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "pull_request_id", "author_id", "state", "body", "commit_id", "submitted_at", "html_url", "api_url", "github_created_at", "github_updated_at", "raw_json"}),
+	}).Create(&model).Error
+}
+
+func (s *Service) upsertPullRequestReviewComment(ctx context.Context, repositoryID uint, pullNumber int, comment gh.PullRequestReviewCommentResponse) error {
+	pullRequestID, err := s.pullRequestIssueID(ctx, repositoryID, pullNumber)
+	if err != nil {
+		return err
+	}
+
+	var authorID *uint
+	if comment.User != nil {
+		author, err := s.upsertUser(ctx, *comment.User)
+		if err != nil {
+			return err
+		}
+		authorID = &author.ID
+	}
+
+	var reviewID *uint
+	if comment.PullRequestReviewID != nil {
+		var review database.PullRequestReview
+		if err := s.db.WithContext(ctx).Where("github_id = ?", *comment.PullRequestReviewID).First(&review).Error; err == nil {
+			reviewID = &review.ID
+		}
+	}
+
+	raw, err := json.Marshal(comment)
+	if err != nil {
+		return err
+	}
+
+	model := database.PullRequestReviewComment{
+		GitHubID:          comment.ID,
+		NodeID:            comment.NodeID,
+		RepositoryID:      repositoryID,
+		PullRequestID:     pullRequestID,
+		ReviewID:          reviewID,
+		InReplyToGitHubID: comment.InReplyToID,
+		AuthorID:          authorID,
+		Path:              comment.Path,
+		DiffHunk:          comment.DiffHunk,
+		Position:          comment.Position,
+		OriginalPosition:  comment.OriginalPosition,
+		Line:              comment.Line,
+		OriginalLine:      comment.OriginalLine,
+		Side:              comment.Side,
+		Body:              comment.Body,
+		HTMLURL:           comment.HTMLURL,
+		APIURL:            comment.URL,
+		PullRequestURL:    comment.PullRequestURL,
+		GitHubCreatedAt:   comment.CreatedAt,
+		GitHubUpdatedAt:   comment.UpdatedAt,
+		RawJSON:           datatypes.JSON(raw),
+	}
+
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "github_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "pull_request_id", "review_id", "in_reply_to_github_id", "author_id", "path", "diff_hunk", "position", "original_position", "line", "original_line", "side", "body", "html_url", "api_url", "pull_request_url", "github_created_at", "github_updated_at", "raw_json"}),
+	}).Create(&model).Error
+}
+
 func (s *Service) ensureIssueForPullRequest(ctx context.Context, repositoryID uint, pull gh.PullRequestResponse) (database.Issue, error) {
 	var existing database.Issue
 	err := s.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repositoryID, pull.Number).First(&existing).Error
@@ -341,4 +554,24 @@ func pullRequestURL(ref *gh.IssuePullRequestRef) string {
 		return ""
 	}
 	return ref.URL
+}
+
+func (s *Service) pullRequestIssueID(ctx context.Context, repositoryID uint, pullNumber int) (uint, error) {
+	var pull database.PullRequest
+	if err := s.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repositoryID, pullNumber).First(&pull).Error; err != nil {
+		return 0, err
+	}
+	return pull.IssueID, nil
+}
+
+func issueNumberFromURL(issueURL string) (int, error) {
+	parts := strings.Split(strings.TrimRight(issueURL, "/"), "/")
+	if len(parts) == 0 {
+		return 0, fmt.Errorf("issue_url is invalid")
+	}
+	number, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		return 0, err
+	}
+	return number, nil
 }

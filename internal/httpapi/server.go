@@ -2,9 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
@@ -14,11 +19,22 @@ import (
 )
 
 type Server struct {
-	db   *gorm.DB
-	echo *echo.Echo
+	db              *gorm.DB
+	echo            *echo.Echo
+	webhookSecret   string
+	webhookIngestor webhookIngestor
 }
 
-func NewServer(db *gorm.DB) *Server {
+type webhookIngestor interface {
+	HandleWebhook(ctx context.Context, deliveryID, event string, headers http.Header, payload []byte) error
+}
+
+type Options struct {
+	GitHubWebhookSecret string
+	WebhookIngestor     webhookIngestor
+}
+
+func NewServer(db *gorm.DB, options Options) *Server {
 	e := echo.New()
 	e.HideBanner = true
 	e.Use(middleware.Recover())
@@ -32,8 +48,10 @@ func NewServer(db *gorm.DB) *Server {
 	}))
 
 	server := &Server{
-		db:   db,
-		echo: e,
+		db:              db,
+		echo:            e,
+		webhookSecret:   strings.TrimSpace(options.GitHubWebhookSecret),
+		webhookIngestor: options.WebhookIngestor,
 	}
 	server.registerRoutes()
 	return server
@@ -66,9 +84,52 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/healthz", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
 	})
+	s.echo.GET("/readyz", s.handleReadiness)
+	s.echo.GET("/metrics", s.handleMetrics)
+	s.echo.POST("/webhooks/github", s.handleGitHubWebhook)
 	s.echo.GET("/repos/:owner/:repo", s.handleGetRepository)
 	s.echo.GET("/repos/:owner/:repo/issues", s.handleListIssues)
+	s.echo.GET("/repos/:owner/:repo/issues/:number", s.handleGetIssue)
+	s.echo.GET("/repos/:owner/:repo/issues/:number/comments", s.handleListIssueComments)
 	s.echo.GET("/repos/:owner/:repo/pulls", s.handleListPullRequests)
+	s.echo.GET("/repos/:owner/:repo/pulls/:number", s.handleGetPullRequest)
+	s.echo.GET("/repos/:owner/:repo/pulls/:number/reviews", s.handleListPullRequestReviews)
+	s.echo.GET("/repos/:owner/:repo/pulls/:number/comments", s.handleListPullRequestReviewComments)
+}
+
+func (s *Server) handleGitHubWebhook(c echo.Context) error {
+	if s.webhookIngestor == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "GitHub webhook handling is not configured"})
+	}
+	if s.webhookSecret == "" {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "GitHub webhook secret is not configured"})
+	}
+
+	payload, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return err
+	}
+
+	signature := c.Request().Header.Get("X-Hub-Signature-256")
+	if !validateGitHubSignature(s.webhookSecret, payload, signature) {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"message": "Invalid webhook signature"})
+	}
+
+	event := strings.TrimSpace(c.Request().Header.Get("X-GitHub-Event"))
+	if event == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Missing X-GitHub-Event header"})
+	}
+
+	deliveryID := strings.TrimSpace(c.Request().Header.Get("X-GitHub-Delivery"))
+	if deliveryID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Missing X-GitHub-Delivery header"})
+	}
+
+	if err := s.webhookIngestor.HandleWebhook(c.Request().Context(), deliveryID, event, c.Request().Header.Clone(), payload); err != nil {
+		return err
+	}
+
+	return c.JSON(http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
 func (s *Server) handleGetRepository(c echo.Context) error {
@@ -80,7 +141,42 @@ func (s *Server) handleGetRepository(c echo.Context) error {
 		return err
 	}
 
-	return c.JSON(http.StatusOK, newRepositoryResponse(repo))
+	payload, err := decodeStoredJSON(repo.RawJSON)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, payload)
+}
+
+func (s *Server) handleGetIssue(c echo.Context) error {
+	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+		return err
+	}
+
+	number := parsePositiveInt(c.Param("number"), 0)
+	if number <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid issue number"})
+	}
+
+	var issue database.Issue
+	if err := s.db.WithContext(c.Request().Context()).
+		Where("repository_id = ? AND number = ?", repo.ID, number).
+		First(&issue).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+		return err
+	}
+
+	payload, err := decodeStoredJSON(issue.RawJSON)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, payload)
 }
 
 func (s *Server) handleListIssues(c echo.Context) error {
@@ -111,11 +207,6 @@ func (s *Server) handleListIssues(c echo.Context) error {
 		return err
 	}
 
-	pullMap, err := loadPullRequestRefs(c.Request().Context(), s.db, issues)
-	if err != nil {
-		return err
-	}
-
 	queryMap := map[string]string{}
 	if state != "" {
 		queryMap["state"] = state
@@ -125,11 +216,10 @@ func (s *Server) handleListIssues(c echo.Context) error {
 		c.Response().Header().Set("Link", link)
 	}
 
-	response := make([]issueResponse, 0, len(issues))
-	for _, issue := range issues {
-		response = append(response, newIssueResponse(issue, pullMap[issue.ID]))
+	response, err := decodeStoredJSONArrayIssues(issues)
+	if err != nil {
+		return err
 	}
-
 	return c.JSON(http.StatusOK, response)
 }
 
@@ -179,12 +269,163 @@ func (s *Server) handleListPullRequests(c echo.Context) error {
 		c.Response().Header().Set("Link", link)
 	}
 
-	response := make([]pullRequestResponse, 0, len(pulls))
-	for _, pull := range pulls {
-		response = append(response, newPullRequestResponse(pull))
+	response, err := decodeStoredJSONArrayPullRequests(pulls)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+func (s *Server) handleGetPullRequest(c echo.Context) error {
+	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+		return err
 	}
 
-	return c.JSON(http.StatusOK, response)
+	number := parsePositiveInt(c.Param("number"), 0)
+	if number <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid pull request number"})
+	}
+
+	var pull database.PullRequest
+	if err := s.db.WithContext(c.Request().Context()).
+		Where("repository_id = ? AND number = ?", repo.ID, number).
+		First(&pull).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+		return err
+	}
+
+	payload, err := decodeStoredJSON(pull.RawJSON)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, payload)
+}
+
+func (s *Server) handleListIssueComments(c echo.Context) error {
+	return s.handleStoredJSONArray(c, func(ctx context.Context, repo database.Repository, number int) ([]any, error) {
+		var issue database.Issue
+		if err := s.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, number).First(&issue).Error; err != nil {
+			return nil, err
+		}
+
+		var comments []database.IssueComment
+		if err := s.db.WithContext(ctx).
+			Where("issue_id = ?", issue.ID).
+			Order("github_created_at ASC").
+			Find(&comments).Error; err != nil {
+			return nil, err
+		}
+		return decodeStoredJSONArrayIssueComments(comments)
+	})
+}
+
+func (s *Server) handleListPullRequestReviews(c echo.Context) error {
+	return s.handleStoredJSONArray(c, func(ctx context.Context, repo database.Repository, number int) ([]any, error) {
+		var pull database.PullRequest
+		if err := s.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, number).First(&pull).Error; err != nil {
+			return nil, err
+		}
+
+		var reviews []database.PullRequestReview
+		if err := s.db.WithContext(ctx).
+			Where("pull_request_id = ?", pull.IssueID).
+			Order("github_created_at ASC").
+			Find(&reviews).Error; err != nil {
+			return nil, err
+		}
+		return decodeStoredJSONArrayPullRequestReviews(reviews)
+	})
+}
+
+func (s *Server) handleListPullRequestReviewComments(c echo.Context) error {
+	return s.handleStoredJSONArray(c, func(ctx context.Context, repo database.Repository, number int) ([]any, error) {
+		var pull database.PullRequest
+		if err := s.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, number).First(&pull).Error; err != nil {
+			return nil, err
+		}
+
+		var comments []database.PullRequestReviewComment
+		if err := s.db.WithContext(ctx).
+			Where("pull_request_id = ?", pull.IssueID).
+			Order("github_created_at ASC").
+			Find(&comments).Error; err != nil {
+			return nil, err
+		}
+		return decodeStoredJSONArrayPullRequestReviewComments(comments)
+	})
+}
+
+func (s *Server) handleReadiness(c echo.Context) error {
+	ctx := c.Request().Context()
+	var pending int64
+	var processing int64
+	var failed int64
+
+	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "pending").Count(&pending).Error; err != nil {
+		return err
+	}
+	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "processing").Count(&processing).Error; err != nil {
+		return err
+	}
+	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "failed").Count(&failed).Error; err != nil {
+		return err
+	}
+
+	status := "ready"
+	if processing > 0 || failed > 0 {
+		status = "degraded"
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"status":          status,
+		"pending_refresh": pending,
+		"processing_jobs": processing,
+		"failed_jobs":     failed,
+	})
+}
+
+func (s *Server) handleMetrics(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	var pending int64
+	var processing int64
+	var failed int64
+	var succeeded int64
+	var deliveries int64
+
+	for _, query := range []struct {
+		model any
+		where string
+		dest  *int64
+	}{
+		{&database.RepositoryRefreshJob{}, "status = 'pending'", &pending},
+		{&database.RepositoryRefreshJob{}, "status = 'processing'", &processing},
+		{&database.RepositoryRefreshJob{}, "status = 'failed'", &failed},
+		{&database.RepositoryRefreshJob{}, "status = 'succeeded'", &succeeded},
+		{&database.WebhookDelivery{}, "", &deliveries},
+	} {
+		dbq := s.db.WithContext(ctx).Model(query.model)
+		if query.where != "" {
+			dbq = dbq.Where(query.where)
+		}
+		if err := dbq.Count(query.dest).Error; err != nil {
+			return err
+		}
+	}
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"webhook_deliveries_total": deliveries,
+		"refresh_jobs_pending":     pending,
+		"refresh_jobs_processing":  processing,
+		"refresh_jobs_failed":      failed,
+		"refresh_jobs_succeeded":   succeeded,
+	})
 }
 
 func findRepository(ctx context.Context, db *gorm.DB, owner, repo string) (database.Repository, error) {
@@ -202,33 +443,29 @@ func applyStateFilter(query *gorm.DB, state string) *gorm.DB {
 	}
 }
 
-func loadPullRequestRefs(ctx context.Context, db *gorm.DB, issues []database.Issue) (map[uint]issuePullRequestRef, error) {
-	issueIDs := make([]uint, 0)
-	for _, issue := range issues {
-		if issue.IsPullRequest {
-			issueIDs = append(issueIDs, issue.ID)
+func (s *Server) handleStoredJSONArray(c echo.Context, loader func(ctx context.Context, repo database.Repository, number int) ([]any, error)) error {
+	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
 		}
-	}
-	if len(issueIDs) == 0 {
-		return map[uint]issuePullRequestRef{}, nil
+		return err
 	}
 
-	var pulls []database.PullRequest
-	if err := db.WithContext(ctx).Where("issue_id IN ?", issueIDs).Find(&pulls).Error; err != nil {
-		return nil, err
+	number := parsePositiveInt(c.Param("number"), 0)
+	if number <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid number"})
 	}
 
-	out := make(map[uint]issuePullRequestRef, len(pulls))
-	for _, pull := range pulls {
-		out[pull.IssueID] = issuePullRequestRef{
-			URL:      pull.APIURL,
-			HTMLURL:  pull.HTMLURL,
-			DiffURL:  pull.DiffURL,
-			PatchURL: pull.PatchURL,
+	payload, err := loader(c.Request().Context(), repo, number)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
 		}
+		return err
 	}
 
-	return out, nil
+	return c.JSON(http.StatusOK, payload)
 }
 
 func parsePositiveInt(raw string, fallback int) int {
@@ -247,4 +484,16 @@ func clamp(value, minValue, maxValue int) int {
 		return maxValue
 	}
 	return value
+}
+
+func validateGitHubSignature(secret string, payload []byte, signature string) bool {
+	signature = strings.TrimSpace(signature)
+	if !strings.HasPrefix(signature, "sha256=") {
+		return false
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expected), []byte(signature))
 }

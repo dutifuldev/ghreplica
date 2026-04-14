@@ -7,18 +7,28 @@ import (
 )
 
 type Config struct {
-	AppAddr       string
-	DatabaseURL   string
-	GitHubBaseURL string
-	GitHubToken   string
+	AppAddr                 string
+	DatabaseURL             string
+	GitHubBaseURL           string
+	GitHubToken             string
+	GitHubAppID             string
+	GitHubInstallationID    string
+	GitHubAppPrivateKeyPEM  string
+	GitHubAppPrivateKeyPath string
+	GitHubWebhookSecret     string
 }
 
 func Load() Config {
 	return Config{
-		AppAddr:       getenvDefault("APP_ADDR", ":8080"),
-		DatabaseURL:   strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		GitHubBaseURL: getenvDefault("GITHUB_BASE_URL", "https://api.github.com"),
-		GitHubToken:   strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+		AppAddr:                 getenvDefault("APP_ADDR", "127.0.0.1:8080"),
+		DatabaseURL:             strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		GitHubBaseURL:           getenvDefault("GITHUB_BASE_URL", "https://api.github.com"),
+		GitHubToken:             strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+		GitHubAppID:             strings.TrimSpace(os.Getenv("GITHUB_APP_ID")),
+		GitHubInstallationID:    strings.TrimSpace(os.Getenv("GITHUB_APP_INSTALLATION_ID")),
+		GitHubAppPrivateKeyPEM:  strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_PEM")),
+		GitHubAppPrivateKeyPath: strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH")),
+		GitHubWebhookSecret:     strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET")),
 	}
 }
 

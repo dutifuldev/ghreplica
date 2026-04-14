@@ -27,8 +27,18 @@ The system is built around:
 - [Compatibility Strategy](docs/compatibility-strategy.md)
 - [GitHub API Surface Research](docs/github-api-surface.md)
 - [Data Model For PR Triage](docs/data-model.md)
+- [Local Development](docs/local-development.md)
+- [Ship Readiness Plan](docs/ship-readiness-plan.md)
+- [Supported Endpoints](docs/supported-endpoints.md)
 - [Testing And Connectivity](docs/testing-and-connectivity.md)
 
 ## Status
 
-Early design phase.
+Initial vertical slice implemented:
+
+- Postgres or sqlite-backed storage via GORM
+- bootstrap sync for repositories, issues, pull requests, issue comments, reviews, and review comments
+- Echo read API for repository, issue, pull request, and discussion endpoints
+- GitHub webhook receiver that validates signatures, stores raw deliveries, queues repository refresh jobs, and refreshes them asynchronously
+- PAT auth and GitHub App installation-token auth for upstream GitHub access
+- readiness and metrics endpoints for local and service operation

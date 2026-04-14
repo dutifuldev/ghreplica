@@ -23,5 +23,8 @@ vendor/
 *.swp
 *.swo
 
+# Local environment files
+.env
+
 # OS files
 .DS_Store

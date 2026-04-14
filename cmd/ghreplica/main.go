@@ -9,12 +9,15 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/config"
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/github"
+	"github.com/dutifuldev/ghreplica/internal/githubsync"
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
-	syncsvc "github.com/dutifuldev/ghreplica/internal/sync"
+	"github.com/dutifuldev/ghreplica/internal/refresh"
+	"github.com/dutifuldev/ghreplica/internal/webhooks"
 )
 
 func main() {
@@ -36,6 +39,8 @@ func run(args []string) error {
 		return runServe(cfg)
 	case "migrate":
 		return runMigrate(cfg, args[1:])
+	case "refresh":
+		return runRefresh(cfg, args[1:])
 	case "sync":
 		return runSync(cfg, args[1:])
 	default:
@@ -53,10 +58,31 @@ func runServe(cfg config.Config) error {
 		return err
 	}
 
-	server := httpapi.NewServer(db)
+	githubSync := githubsync.NewService(db, github.NewClient(cfg.GitHubBaseURL, github.AuthConfig{
+		Token:          cfg.GitHubToken,
+		AppID:          cfg.GitHubAppID,
+		InstallationID: cfg.GitHubInstallationID,
+		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
+		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
+	}))
+	scheduler := refresh.NewScheduler(db)
+	webhookIngestor := webhooks.NewService(db, scheduler)
+	worker := refresh.NewWorker(db, githubSync, 2*time.Second)
+
+	server := httpapi.NewServer(db, httpapi.Options{
+		GitHubWebhookSecret: cfg.GitHubWebhookSecret,
+		WebhookIngestor:     webhookIngestor,
+	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	go func() {
+		if err := worker.Start(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("refresh worker stopped", "error", err)
+			stop()
+		}
+	}()
 
 	return server.Start(ctx, cfg.AppAddr)
 }
@@ -107,16 +133,56 @@ func runSync(cfg config.Config, args []string) error {
 		return err
 	}
 
-	client := github.NewClient(cfg.GitHubBaseURL, cfg.GitHubToken)
-	service := syncsvc.NewService(db, client)
+	client := github.NewClient(cfg.GitHubBaseURL, github.AuthConfig{
+		Token:          cfg.GitHubToken,
+		AppID:          cfg.GitHubAppID,
+		InstallationID: cfg.GitHubInstallationID,
+		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
+		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
+	})
+	service := githubsync.NewService(db, client)
 
 	return service.BootstrapRepository(context.Background(), owner, repo)
+}
+
+func runRefresh(cfg config.Config, args []string) error {
+	refreshFlags := flag.NewFlagSet("refresh", flag.ContinueOnError)
+	if err := refreshFlags.Parse(args); err != nil {
+		return err
+	}
+
+	rest := refreshFlags.Args()
+	if len(rest) != 2 || rest[0] != "repo" {
+		return errors.New("usage: ghreplica refresh repo <owner>/<repo>")
+	}
+
+	owner, repo, err := config.ParseFullName(rest[1])
+	if err != nil {
+		return err
+	}
+	if err := cfg.ValidateDatabase(); err != nil {
+		return err
+	}
+
+	db, err := database.Open(cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+
+	return refresh.NewScheduler(db).EnqueueRepositoryRefresh(context.Background(), refresh.Request{
+		Owner:      owner,
+		Name:       repo,
+		FullName:   owner + "/" + repo,
+		Source:     "manual",
+		DeliveryID: "",
+	})
 }
 
 func usageError() error {
 	fmt.Fprintf(os.Stderr, "usage:\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica serve\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica migrate up\n")
+	fmt.Fprintf(os.Stderr, "  ghreplica refresh repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica sync repo <owner>/<repo>\n")
 	return errors.New("invalid command")
 }

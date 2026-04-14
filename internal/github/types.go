@@ -56,6 +56,18 @@ type IssueResponse struct {
 	ClosedAt    *time.Time           `json:"closed_at"`
 }
 
+type IssueCommentResponse struct {
+	ID        int64         `json:"id"`
+	NodeID    string        `json:"node_id"`
+	Body      string        `json:"body"`
+	User      *UserResponse `json:"user"`
+	IssueURL  string        `json:"issue_url"`
+	HTMLURL   string        `json:"html_url"`
+	URL       string        `json:"url"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
 type PullBranchRepository struct {
 	ID            int64         `json:"id"`
 	NodeID        string        `json:"node_id"`
@@ -108,4 +120,39 @@ type PullRequestResponse struct {
 	PatchURL       string        `json:"patch_url"`
 	CreatedAt      time.Time     `json:"created_at"`
 	UpdatedAt      time.Time     `json:"updated_at"`
+}
+
+type PullRequestReviewResponse struct {
+	ID          int64         `json:"id"`
+	NodeID      string        `json:"node_id"`
+	User        *UserResponse `json:"user"`
+	Body        string        `json:"body"`
+	State       string        `json:"state"`
+	HTMLURL     string        `json:"html_url"`
+	URL         string        `json:"url"`
+	CommitID    string        `json:"commit_id"`
+	SubmittedAt *time.Time    `json:"submitted_at"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+}
+
+type PullRequestReviewCommentResponse struct {
+	ID                  int64         `json:"id"`
+	NodeID              string        `json:"node_id"`
+	PullRequestURL      string        `json:"pull_request_url"`
+	PullRequestReviewID *int64        `json:"pull_request_review_id"`
+	HTMLURL             string        `json:"html_url"`
+	URL                 string        `json:"url"`
+	Body                string        `json:"body"`
+	Path                string        `json:"path"`
+	DiffHunk            string        `json:"diff_hunk"`
+	Position            *int          `json:"position"`
+	OriginalPosition    *int          `json:"original_position"`
+	Line                *int          `json:"line"`
+	OriginalLine        *int          `json:"original_line"`
+	Side                string        `json:"side"`
+	User                *UserResponse `json:"user"`
+	InReplyToID         *int64        `json:"in_reply_to_id"`
+	CreatedAt           time.Time     `json:"created_at"`
+	UpdatedAt           time.Time     `json:"updated_at"`
 }
