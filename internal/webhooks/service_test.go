@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,79 +11,60 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/github"
 	"github.com/dutifuldev/ghreplica/internal/githubsync"
-	"github.com/dutifuldev/ghreplica/internal/refresh"
 	"github.com/dutifuldev/ghreplica/internal/webhooks"
 	"github.com/stretchr/testify/require"
 )
 
-func TestWebhookIngestionQueuesRefreshAndWorkerMirrorsRepository(t *testing.T) {
+func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testing.T) {
 	ctx := context.Background()
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(db))
 
-	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/acme/widgets":
-			writeJSON(t, w, repoFixture())
-		case "/repos/acme/widgets/issues":
-			writeJSON(t, w, issuesFixture())
-		case "/repos/acme/widgets/issues/2":
-			writeJSON(t, w, issuesFixture()[0])
-		case "/repos/acme/widgets/pulls":
-			writeJSON(t, w, pullsFixture())
-		case "/repos/acme/widgets/pulls/2":
-			writeJSON(t, w, pullsFixture()[0])
-		case "/repos/acme/widgets/issues/comments":
-			writeJSON(t, w, issueCommentsFixture())
-		case "/repos/acme/widgets/pulls/2/reviews":
-			writeJSON(t, w, pullReviewsFixture())
-		case "/repos/acme/widgets/pulls/2/comments":
-			writeJSON(t, w, pullReviewCommentsFixture())
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(githubServer.Close)
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
+	payload, err := json.Marshal(map[string]any{
+		"action":      "opened",
+		"repository":  repoFixture(),
+		"pull_request": pullsFixture()[0],
+	})
+	require.NoError(t, err)
 
-	scheduler := refresh.NewScheduler(db)
-	ingestor := webhooks.NewService(db, scheduler)
 	err = ingestor.HandleWebhook(
 		ctx,
 		"delivery-1",
-		"ping",
-		http.Header{"X-GitHub-Event": []string{"ping"}},
-		[]byte(`{"repository":{"name":"widgets","full_name":"acme/widgets","owner":{"login":"acme"}}}`),
+		"pull_request",
+		http.Header{"X-GitHub-Event": []string{"pull_request"}},
+		payload,
 	)
 	require.NoError(t, err)
 
 	var delivery database.WebhookDelivery
 	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-1").First(&delivery).Error)
-	require.Equal(t, "ping", delivery.Event)
+	require.Equal(t, "pull_request", delivery.Event)
 	require.NotNil(t, delivery.ProcessedAt)
-
-	var job database.RepositoryRefreshJob
-	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&job).Error)
-	require.Equal(t, "pending", job.Status)
-
-	bootstrap := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
-	worker := refresh.NewWorker(db, bootstrap, time.Millisecond)
-	processed, err := worker.RunOnce(ctx)
-	require.NoError(t, err)
-	require.True(t, processed)
-
-	require.NoError(t, db.WithContext(ctx).First(&job, job.ID).Error)
-	require.Equal(t, "succeeded", job.Status)
-	require.NotNil(t, job.FinishedAt)
+	require.NotNil(t, delivery.RepositoryID)
 
 	var repo database.Repository
 	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&repo).Error)
+
+	var issue database.Issue
+	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 2).First(&issue).Error)
+	require.True(t, issue.IsPullRequest)
+
+	var pull database.PullRequest
+	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 2).First(&pull).Error)
+	require.Equal(t, "fix/parser", pull.HeadRef)
 
 	var tracked database.TrackedRepository
 	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&tracked).Error)
 	require.NotNil(t, tracked.RepositoryID)
 	require.Equal(t, repo.ID, *tracked.RepositoryID)
+
+	var jobs int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Count(&jobs).Error)
+	require.Zero(t, jobs)
 }
 
 func TestWebhookIngestionIgnoresUnsupportedEventsForRefreshScheduling(t *testing.T) {
@@ -94,8 +74,8 @@ func TestWebhookIngestionIgnoresUnsupportedEventsForRefreshScheduling(t *testing
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(db))
 
-	scheduler := refresh.NewScheduler(db)
-	ingestor := webhooks.NewService(db, scheduler)
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
 	err = ingestor.HandleWebhook(
 		ctx,
 		"delivery-unsupported",
@@ -116,7 +96,41 @@ func TestWebhookIngestionIgnoresUnsupportedEventsForRefreshScheduling(t *testing
 
 	var tracked int64
 	require.NoError(t, db.WithContext(ctx).Model(&database.TrackedRepository{}).Count(&tracked).Error)
-	require.Zero(t, tracked)
+	require.EqualValues(t, 1, tracked)
+}
+
+func TestWebhookIngestionProjectsIssueCommentPayload(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
+	payload, err := json.Marshal(map[string]any{
+		"action":     "created",
+		"repository": repoFixture(),
+		"issue":      issuesFixture()[0],
+		"comment":    issueCommentsFixture()[0],
+	})
+	require.NoError(t, err)
+
+	err = ingestor.HandleWebhook(
+		ctx,
+		"delivery-comment",
+		"issue_comment",
+		http.Header{"X-GitHub-Event": []string{"issue_comment"}},
+		payload,
+	)
+	require.NoError(t, err)
+
+	var repo database.Repository
+	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&repo).Error)
+
+	var comments int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.IssueComment{}).Where("repository_id = ?", repo.ID).Count(&comments).Error)
+	require.EqualValues(t, 1, comments)
 }
 
 func repoFixture() github.RepositoryResponse {

@@ -65,8 +65,7 @@ func runServe(cfg config.Config) error {
 		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
 		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
 	}))
-	scheduler := refresh.NewScheduler(db)
-	webhookIngestor := webhooks.NewService(db, scheduler)
+	webhookIngestor := webhooks.NewService(db, githubSync)
 	worker := refresh.NewWorker(db, githubSync, 2*time.Second)
 
 	server := httpapi.NewServer(db, httpapi.Options{

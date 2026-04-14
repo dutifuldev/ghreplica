@@ -25,6 +25,30 @@ func NewService(db *gorm.DB, githubClient *gh.Client) *Service {
 	return &Service{db: db, github: githubClient}
 }
 
+func (s *Service) UpsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
+	return s.upsertRepository(ctx, repo)
+}
+
+func (s *Service) UpsertIssue(ctx context.Context, repositoryID uint, issue gh.IssueResponse) (database.Issue, error) {
+	return s.upsertIssue(ctx, repositoryID, issue)
+}
+
+func (s *Service) UpsertPullRequest(ctx context.Context, repositoryID uint, pull gh.PullRequestResponse) error {
+	return s.upsertPullRequest(ctx, repositoryID, pull)
+}
+
+func (s *Service) UpsertIssueComment(ctx context.Context, repositoryID uint, comment gh.IssueCommentResponse) error {
+	return s.upsertIssueComment(ctx, repositoryID, comment)
+}
+
+func (s *Service) UpsertPullRequestReview(ctx context.Context, repositoryID uint, pullNumber int, review gh.PullRequestReviewResponse) error {
+	return s.upsertPullRequestReview(ctx, repositoryID, pullNumber, review)
+}
+
+func (s *Service) UpsertPullRequestReviewComment(ctx context.Context, repositoryID uint, pullNumber int, comment gh.PullRequestReviewCommentResponse) error {
+	return s.upsertPullRequestReviewComment(ctx, repositoryID, pullNumber, comment)
+}
+
 func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) error {
 	repoResp, err := s.github.GetRepository(ctx, owner, repo)
 	if err != nil {

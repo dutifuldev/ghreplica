@@ -9,22 +9,28 @@ import (
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
+	gh "github.com/dutifuldev/ghreplica/internal/github"
 	"github.com/dutifuldev/ghreplica/internal/refresh"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-type RefreshScheduler interface {
-	EnqueueRepositoryRefresh(ctx context.Context, request refresh.Request) error
+type WebhookProjector interface {
+	UpsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error)
+	UpsertIssue(ctx context.Context, repositoryID uint, issue gh.IssueResponse) (database.Issue, error)
+	UpsertPullRequest(ctx context.Context, repositoryID uint, pull gh.PullRequestResponse) error
+	UpsertIssueComment(ctx context.Context, repositoryID uint, comment gh.IssueCommentResponse) error
+	UpsertPullRequestReview(ctx context.Context, repositoryID uint, pullNumber int, review gh.PullRequestReviewResponse) error
+	UpsertPullRequestReviewComment(ctx context.Context, repositoryID uint, pullNumber int, comment gh.PullRequestReviewCommentResponse) error
 }
 
 type Service struct {
 	db        *gorm.DB
-	scheduler RefreshScheduler
+	projector WebhookProjector
 }
 
-var supportedRefreshEvents = map[string]struct{}{
+var supportedWebhookEvents = map[string]struct{}{
 	"ping":                        {},
 	"issues":                      {},
 	"issue_comment":               {},
@@ -35,8 +41,8 @@ var supportedRefreshEvents = map[string]struct{}{
 	"repository":                  {},
 }
 
-func NewService(db *gorm.DB, scheduler RefreshScheduler) *Service {
-	return &Service{db: db, scheduler: scheduler}
+func NewService(db *gorm.DB, projector WebhookProjector) *Service {
+	return &Service{db: db, projector: projector}
 }
 
 func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, headers http.Header, payload []byte) error {
@@ -58,32 +64,34 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, h
 		return nil
 	}
 
-	if _, ok := supportedRefreshEvents[event]; !ok {
-		return s.db.WithContext(ctx).Model(&database.WebhookDelivery{}).
-			Where("delivery_id = ?", deliveryID).
-			Updates(map[string]any{"processed_at": now}).Error
-	}
-
 	if repoRef != nil {
 		tracked, err := refresh.UpsertTrackedRepositoryForWebhook(ctx, s.db, repoRef.Owner, repoRef.Name, repoRef.FullName, now)
 		if err != nil {
 			return err
 		}
 
-		if err := s.scheduler.EnqueueRepositoryRefresh(ctx, refresh.Request{
-			Owner:      repoRef.Owner,
-			Name:       repoRef.Name,
-			FullName:   repoRef.FullName,
-			Source:     "webhook",
-			DeliveryID: deliveryID,
-		}); err != nil {
-			return err
-		}
-
 		updates := map[string]any{
 			"processed_at": now,
 		}
-		if tracked.RepositoryID != nil {
+		if _, ok := supportedWebhookEvents[event]; ok {
+			repositoryID, err := s.projectEvent(ctx, event, payload, repoRef.FullName)
+			if err != nil {
+				return err
+			}
+			if repositoryID != 0 {
+				updates["repository_id"] = repositoryID
+				if tracked.RepositoryID == nil || *tracked.RepositoryID != repositoryID {
+					if err := s.db.WithContext(ctx).Model(&database.TrackedRepository{}).
+						Where("id = ?", tracked.ID).
+						Updates(map[string]any{
+							"repository_id": repositoryID,
+							"updated_at":    now,
+						}).Error; err != nil {
+						return err
+					}
+				}
+			}
+		} else if tracked.RepositoryID != nil {
 			updates["repository_id"] = *tracked.RepositoryID
 		} else {
 			var repository database.Repository
@@ -104,6 +112,140 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, h
 	return s.db.WithContext(ctx).Model(&database.WebhookDelivery{}).
 		Where("delivery_id = ?", deliveryID).
 		Updates(map[string]any{"processed_at": now}).Error
+}
+
+func (s *Service) projectEvent(ctx context.Context, event string, payload []byte, fullName string) (uint, error) {
+	if s.projector == nil {
+		return 0, nil
+	}
+
+	switch event {
+	case "ping", "push":
+		return repositoryIDByFullName(ctx, s.db, fullName)
+	case "repository":
+		var envelope struct {
+			Repository gh.RepositoryResponse `json:"repository"`
+		}
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return 0, err
+		}
+		repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
+		if err != nil {
+			return 0, err
+		}
+		return repo.ID, nil
+	case "issues":
+		var envelope struct {
+			Repository gh.RepositoryResponse `json:"repository"`
+			Issue      gh.IssueResponse      `json:"issue"`
+		}
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return 0, err
+		}
+		repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := s.projector.UpsertIssue(ctx, repo.ID, envelope.Issue); err != nil {
+			return 0, err
+		}
+		return repo.ID, nil
+	case "issue_comment":
+		var envelope struct {
+			Repository gh.RepositoryResponse   `json:"repository"`
+			Issue      gh.IssueResponse        `json:"issue"`
+			Comment    gh.IssueCommentResponse `json:"comment"`
+		}
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return 0, err
+		}
+		repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := s.projector.UpsertIssue(ctx, repo.ID, envelope.Issue); err != nil {
+			return 0, err
+		}
+		if err := s.projector.UpsertIssueComment(ctx, repo.ID, envelope.Comment); err != nil {
+			return 0, err
+		}
+		return repo.ID, nil
+	case "pull_request":
+		var envelope struct {
+			Repository  gh.RepositoryResponse  `json:"repository"`
+			PullRequest gh.PullRequestResponse `json:"pull_request"`
+		}
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return 0, err
+		}
+		repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
+		if err != nil {
+			return 0, err
+		}
+		if err := s.projector.UpsertPullRequest(ctx, repo.ID, envelope.PullRequest); err != nil {
+			return 0, err
+		}
+		return repo.ID, nil
+	case "pull_request_review":
+		var envelope struct {
+			Repository  gh.RepositoryResponse        `json:"repository"`
+			PullRequest gh.PullRequestResponse       `json:"pull_request"`
+			Review      gh.PullRequestReviewResponse `json:"review"`
+		}
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return 0, err
+		}
+		repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
+		if err != nil {
+			return 0, err
+		}
+		if err := s.projector.UpsertPullRequest(ctx, repo.ID, envelope.PullRequest); err != nil {
+			return 0, err
+		}
+		if err := s.projector.UpsertPullRequestReview(ctx, repo.ID, envelope.PullRequest.Number, envelope.Review); err != nil {
+			return 0, err
+		}
+		return repo.ID, nil
+	case "pull_request_review_comment":
+		var envelope struct {
+			Repository  gh.RepositoryResponse               `json:"repository"`
+			PullRequest gh.PullRequestResponse              `json:"pull_request"`
+			Comment     gh.PullRequestReviewCommentResponse `json:"comment"`
+		}
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return 0, err
+		}
+		repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
+		if err != nil {
+			return 0, err
+		}
+		if err := s.projector.UpsertPullRequest(ctx, repo.ID, envelope.PullRequest); err != nil {
+			return 0, err
+		}
+		if err := s.projector.UpsertPullRequestReviewComment(ctx, repo.ID, envelope.PullRequest.Number, envelope.Comment); err != nil {
+			return 0, err
+		}
+		return repo.ID, nil
+	default:
+		return repositoryIDByFullName(ctx, s.db, fullName)
+	}
+}
+
+func repositoryIDByFullName(ctx context.Context, db *gorm.DB, fullName string) (uint, error) {
+	if strings.TrimSpace(fullName) == "" {
+		return 0, nil
+	}
+
+	var repository database.Repository
+	err := db.WithContext(ctx).Where("full_name = ?", fullName).First(&repository).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	return repository.ID, nil
 }
 
 type repositoryRef struct {
