@@ -17,14 +17,17 @@ The system is built around:
 
 - webhook and crawl ingestion
 - a canonical internal model of GitHub objects
+- GORM-backed persistence over relational storage
 - storage adapters for different backends
 - API-compatible read handlers built with Echo
 
 ## Docs
 
 - [Architecture](docs/architecture.md)
+- [Compatibility Strategy](docs/compatibility-strategy.md)
 - [GitHub API Surface Research](docs/github-api-surface.md)
 - [Data Model For PR Triage](docs/data-model.md)
+- [Testing And Connectivity](docs/testing-and-connectivity.md)
 
 ## Status
 
