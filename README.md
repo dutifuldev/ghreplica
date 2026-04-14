@@ -1,25 +1,96 @@
 # ghreplica
 
-`ghreplica` is a backend-agnostic GitHub mirror written in Go.
+`ghreplica` is a GitHub-shaped mirror for repository data.
 
-It ingests GitHub repository data through webhooks and crawls, reconstructs that data into a local model, and serves a GitHub-compatible API on top. The project is intended to support tooling such as triage systems, reviewer agents, and offline analysis without forcing each tool to build its own partial GitHub sync layer.
+It ingests GitHub webhooks, applies those events into a local canonical model, and serves a GitHub-compatible read API on top of that stored state. The project is built for tooling that needs reliable repository data without each consumer reimplementing its own crawler, cache, and webhook pipeline.
 
-## Goals
+Current deployment:
 
-- replicate GitHub repo data with high fidelity
-- stay agnostic to the underlying storage backend
-- expose a GitHub-compatible read API
-- support both operational workloads and async analytics exports
+- API: `https://ghreplica.dutiful.dev`
+- Read CLI: `ghr`
+- Upstream auth: GitHub App installation tokens
+- Runtime: Go, Echo, GORM, Cloud SQL
 
-## Approach
+## What It Does
 
-The system is built around:
+- receives GitHub webhook deliveries and persists the raw payloads
+- projects supported events directly into canonical GitHub-shaped tables
+- serves mirrored repository, issue, pull request, and discussion endpoints
+- supports explicit bootstrap and backfill flows when needed
+- keeps a thin read CLI over the mirrored API
 
-- webhook and crawl ingestion
-- a canonical internal model of GitHub objects
-- GORM-backed persistence over relational storage
-- storage adapters for different backends
-- API-compatible read handlers built with Echo
+## Current Surface
+
+- repository view
+- issue list
+- issue view
+- issue comments
+- pull request list
+- pull request view
+- pull request reviews
+- pull request review comments
+
+The mirror preserves GitHub-native field names and response shapes wherever the data already exists on GitHub.
+
+## Sync Model
+
+`ghreplica` is webhook-first.
+
+- supported webhook events are persisted and projected into canonical tables
+- full bootstrap is an explicit operator action, not the default webhook path
+- large repositories can be filled incrementally from received events
+- repo sync behavior is governed by explicit sync policy rather than one global crawl mode
+
+This keeps normal ingestion bounded while still allowing targeted repair and backfill when needed.
+
+## CLI
+
+`ghr` is a thin read client over the hosted mirror.
+
+Examples:
+
+```bash
+ghr repo view openclaw/openclaw
+ghr issue list -R openclaw/openclaw --state all
+ghr issue view -R openclaw/openclaw 66797
+ghr pr list -R openclaw/openclaw --state all
+ghr pr view -R openclaw/openclaw 66795
+```
+
+Default target:
+
+- `https://ghreplica.dutiful.dev`
+
+So for normal use you do not need to pass `--base-url`.
+
+## Local Development
+
+```bash
+make db-up
+make migrate
+make serve
+```
+
+Manual sync:
+
+```bash
+go run ./cmd/ghreplica sync repo dutifuldev/ghreplica
+```
+
+Build the read CLI:
+
+```bash
+go build ./cmd/ghr
+```
+
+## Deployment
+
+The current hosted instance runs on GCP with:
+
+- Caddy for public HTTPS
+- `ghreplica` as the API process
+- Cloud SQL for persisted mirror state
+- GitHub App webhooks pointed at `https://ghreplica.dutiful.dev/webhooks/github`
 
 ## Docs
 
@@ -32,39 +103,6 @@ The system is built around:
 - [GCP Deployment](docs/deploy-gcp.md)
 - [Local Development](docs/local-development.md)
 - [Ship Readiness Plan](docs/ship-readiness-plan.md)
-- [Sync Policy And Jobs](docs/sync-policy-and-jobs.md)
 - [Supported Endpoints](docs/supported-endpoints.md)
+- [Sync Policy And Jobs](docs/sync-policy-and-jobs.md)
 - [Testing And Connectivity](docs/testing-and-connectivity.md)
-
-## Status
-
-Current state:
-
-- live staging deployment at `https://ghreplica.dutiful.dev`
-- Cloud SQL-backed storage via GORM
-- GitHub App installation-token auth for upstream GitHub access
-- Echo read API for repository, issue, pull request, and discussion endpoints
-- Cobra-based `ghr` read CLI for repo, issue, and pull request inspection
-- webhook receiver with signature validation, raw delivery persistence, and direct event projection into canonical tables
-- explicit manual sync command for full bootstrap crawls
-- local dev flow for Postgres, sqlite, and GCP deployment
-
-What works well today:
-
-- small repos can be bootstrapped and served end to end
-- webhook-driven updates can populate repository metadata, issues, pull requests, and issue comments without triggering a full repo crawl
-- the service can run locally and on GCP behind Caddy with a GitHub App webhook
-- large repos like `openclaw/openclaw` can now be filled incrementally from received webhook events instead of forcing a full bootstrap
-
-Current limitations:
-
-- full bootstrap crawls are still expensive and should only be used deliberately
-- large repos are only mirrored for the subset of data already seen through webhook events unless you run an explicit bootstrap
-- repo-wide refresh jobs still exist for explicit backfills, even though webhook projection is now the default sync path
-- unsupported webhook events are ignored, but they still add delivery volume and log noise until the GitHub App subscription set is narrowed
-- review and review-comment coverage exists in the schema and API surface, but the live deployment does not yet have meaningful mirrored data for those paths
-
-Practical takeaway:
-
-- `ghreplica` is usable as a working prototype and staging service
-- it is not yet a scalable full-fidelity mirror for very large repositories like `openclaw/openclaw`
