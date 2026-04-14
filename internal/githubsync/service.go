@@ -164,6 +164,100 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 	return nil
 }
 
+func (s *Service) SyncIssue(ctx context.Context, owner, repo string, number int) error {
+	repoResp, err := s.github.GetRepository(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+
+	canonicalRepo, err := s.upsertRepository(ctx, repoResp)
+	if err != nil {
+		return err
+	}
+
+	issue, err := s.github.GetIssue(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	if _, err := s.upsertIssue(ctx, canonicalRepo.ID, issue); err != nil {
+		return err
+	}
+
+	comments, err := s.github.ListIssueCommentsForIssue(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	for _, comment := range comments {
+		if err := s.upsertIssueComment(ctx, canonicalRepo.ID, comment); err != nil {
+			return err
+		}
+	}
+
+	now := time.Now().UTC()
+	return s.updateTrackedRepositoryAfterTargetedSync(ctx, repoResp.FullName, canonicalRepo.ID, now, map[string]any{
+		"issues_completeness":   "sparse",
+		"comments_completeness": "sparse",
+	})
+}
+
+func (s *Service) SyncPullRequest(ctx context.Context, owner, repo string, number int) error {
+	repoResp, err := s.github.GetRepository(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+
+	canonicalRepo, err := s.upsertRepository(ctx, repoResp)
+	if err != nil {
+		return err
+	}
+
+	pull, err := s.github.GetPullRequest(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	if err := s.upsertPullRequest(ctx, canonicalRepo.ID, pull); err != nil {
+		return err
+	}
+
+	issueComments, err := s.github.ListIssueCommentsForIssue(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	for _, comment := range issueComments {
+		if err := s.upsertIssueComment(ctx, canonicalRepo.ID, comment); err != nil {
+			return err
+		}
+	}
+
+	reviews, err := s.github.ListPullRequestReviews(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	for _, review := range reviews {
+		if err := s.upsertPullRequestReview(ctx, canonicalRepo.ID, number, review); err != nil {
+			return err
+		}
+	}
+
+	reviewComments, err := s.github.ListPullRequestReviewComments(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	for _, reviewComment := range reviewComments {
+		if err := s.upsertPullRequestReviewComment(ctx, canonicalRepo.ID, number, reviewComment); err != nil {
+			return err
+		}
+	}
+
+	now := time.Now().UTC()
+	return s.updateTrackedRepositoryAfterTargetedSync(ctx, repoResp.FullName, canonicalRepo.ID, now, map[string]any{
+		"issues_completeness":   "sparse",
+		"pulls_completeness":    "sparse",
+		"comments_completeness": "sparse",
+		"reviews_completeness":  "sparse",
+	})
+}
+
 func (s *Service) existingSyncMode(ctx context.Context, fullName string) (string, error) {
 	var tracked database.TrackedRepository
 	err := s.db.WithContext(ctx).
@@ -183,6 +277,74 @@ func (s *Service) existingSyncMode(ctx context.Context, fullName string) (string
 		return "webhook_only", nil
 	}
 	return tracked.SyncMode, nil
+}
+
+func (s *Service) updateTrackedRepositoryAfterTargetedSync(ctx context.Context, fullName string, repositoryID uint, now time.Time, completeness map[string]any) error {
+	owner, name, err := splitFullName(fullName)
+	if err != nil {
+		return err
+	}
+
+	var existing database.TrackedRepository
+	err = s.db.WithContext(ctx).Where("full_name = ?", fullName).First(&existing).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	syncMode := "webhook_only"
+	webhookProjectionEnabled := true
+	allowManualBackfill := true
+	enabled := true
+	if err == nil {
+		if strings.TrimSpace(existing.SyncMode) != "" {
+			syncMode = existing.SyncMode
+		}
+		webhookProjectionEnabled = existing.WebhookProjectionEnabled
+		allowManualBackfill = existing.AllowManualBackfill
+		enabled = existing.Enabled
+	}
+
+	model := database.TrackedRepository{
+		Owner:                    owner,
+		Name:                     name,
+		FullName:                 fullName,
+		RepositoryID:             &repositoryID,
+		SyncMode:                 syncMode,
+		WebhookProjectionEnabled: webhookProjectionEnabled,
+		AllowManualBackfill:      allowManualBackfill,
+		Enabled:                  enabled,
+	}
+	if value, ok := completeness["issues_completeness"].(string); ok {
+		model.IssuesCompleteness = value
+	}
+	if value, ok := completeness["pulls_completeness"].(string); ok {
+		model.PullsCompleteness = value
+	}
+	if value, ok := completeness["comments_completeness"].(string); ok {
+		model.CommentsCompleteness = value
+	}
+	if value, ok := completeness["reviews_completeness"].(string); ok {
+		model.ReviewsCompleteness = value
+	}
+
+	updates := map[string]any{
+		"owner":                      owner,
+		"name":                       name,
+		"repository_id":              repositoryID,
+		"sync_mode":                  syncMode,
+		"webhook_projection_enabled": webhookProjectionEnabled,
+		"allow_manual_backfill":      allowManualBackfill,
+		"enabled":                    enabled,
+		"updated_at":                 now,
+	}
+	for key, value := range completeness {
+		updates[key] = value
+	}
+
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "full_name"}},
+		DoUpdates: clause.Assignments(updates),
+	}).Create(&model).Error
 }
 
 func (s *Service) upsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
@@ -619,4 +781,12 @@ func issueNumberFromURL(issueURL string) (int, error) {
 		return 0, err
 	}
 	return number, nil
+}
+
+func splitFullName(fullName string) (string, string, error) {
+	parts := strings.Split(strings.TrimSpace(fullName), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("repository full name is invalid")
+	}
+	return parts[0], parts[1], nil
 }

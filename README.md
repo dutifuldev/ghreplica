@@ -17,6 +17,7 @@ Current deployment:
 - projects supported events directly into canonical GitHub-shaped tables
 - serves mirrored repository, issue, pull request, and discussion endpoints
 - supports explicit bootstrap and backfill flows when needed
+- supports bounded issue and pull request repair flows
 - keeps a thin read CLI over the mirrored API
 
 ## Current Surface
@@ -29,6 +30,7 @@ Current deployment:
 - pull request view
 - pull request reviews
 - pull request review comments
+- repo mirror status
 
 The mirror preserves GitHub-native field names and response shapes wherever the data already exists on GitHub.
 
@@ -51,10 +53,11 @@ Examples:
 
 ```bash
 ghr repo view openclaw/openclaw
+ghr repo status -R openclaw/openclaw
 ghr issue list -R openclaw/openclaw --state all
-ghr issue view -R openclaw/openclaw 66797
+ghr issue view -R openclaw/openclaw 66797 --comments
 ghr pr list -R openclaw/openclaw --state all
-ghr pr view -R openclaw/openclaw 66795
+ghr pr view -R openclaw/openclaw 66863 --comments
 ```
 
 Default target:
@@ -75,6 +78,8 @@ Manual sync:
 
 ```bash
 go run ./cmd/ghreplica sync repo dutifuldev/ghreplica
+go run ./cmd/ghreplica sync issue openclaw/openclaw 66797
+go run ./cmd/ghreplica sync pr openclaw/openclaw 66863
 ```
 
 Build the read CLI:

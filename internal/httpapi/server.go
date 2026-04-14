@@ -88,6 +88,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/metrics", s.handleMetrics)
 	s.echo.POST("/webhooks/github", s.handleGitHubWebhook)
 	s.echo.GET("/repos/:owner/:repo", s.handleGetRepository)
+	s.echo.GET("/repos/:owner/:repo/_ghreplica", s.handleGetMirrorStatus)
 	s.echo.GET("/repos/:owner/:repo/issues", s.handleListIssues)
 	s.echo.GET("/repos/:owner/:repo/issues/:number", s.handleGetIssue)
 	s.echo.GET("/repos/:owner/:repo/issues/:number/comments", s.handleListIssueComments)

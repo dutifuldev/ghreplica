@@ -117,6 +117,35 @@ type pullRequestResponse struct {
 	UpdatedAt      time.Time          `json:"updated_at"`
 }
 
+type mirrorCountsResponse struct {
+	Issues                    int64 `json:"issues"`
+	Pulls                     int64 `json:"pulls"`
+	IssueComments             int64 `json:"issue_comments"`
+	PullRequestReviews        int64 `json:"pull_request_reviews"`
+	PullRequestReviewComments int64 `json:"pull_request_review_comments"`
+}
+
+type mirrorStatusResponse struct {
+	FullName                 string               `json:"full_name"`
+	RepositoryPresent        bool                 `json:"repository_present"`
+	TrackedRepositoryPresent bool                 `json:"tracked_repository_present"`
+	TrackedRepositoryID      *uint                `json:"tracked_repository_id,omitempty"`
+	RepositoryID             *uint                `json:"repository_id,omitempty"`
+	Repository               *repositoryResponse  `json:"repository,omitempty"`
+	Enabled                  bool                 `json:"enabled"`
+	SyncMode                 string               `json:"sync_mode"`
+	WebhookProjectionEnabled bool                 `json:"webhook_projection_enabled"`
+	AllowManualBackfill      bool                 `json:"allow_manual_backfill"`
+	IssuesCompleteness       string               `json:"issues_completeness"`
+	PullsCompleteness        string               `json:"pulls_completeness"`
+	CommentsCompleteness     string               `json:"comments_completeness"`
+	ReviewsCompleteness      string               `json:"reviews_completeness"`
+	LastBootstrapAt          *time.Time           `json:"last_bootstrap_at,omitempty"`
+	LastCrawlAt              *time.Time           `json:"last_crawl_at,omitempty"`
+	LastWebhookAt            *time.Time           `json:"last_webhook_at,omitempty"`
+	Counts                   mirrorCountsResponse `json:"counts"`
+}
+
 func newRepositoryResponse(repo database.Repository) repositoryResponse {
 	return repositoryResponse{
 		ID:            repo.GitHubID,
@@ -325,5 +354,13 @@ func utcTimePtr(value *time.Time) *time.Time {
 		return nil
 	}
 	converted := value.UTC()
+	return &converted
+}
+
+func uintPtr(value uint) *uint {
+	if value == 0 {
+		return nil
+	}
+	converted := value
 	return &converted
 }

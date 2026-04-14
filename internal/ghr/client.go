@@ -18,6 +18,35 @@ type Client struct {
 	http    *http.Client
 }
 
+type MirrorCountsResponse struct {
+	Issues                    int64 `json:"issues"`
+	Pulls                     int64 `json:"pulls"`
+	IssueComments             int64 `json:"issue_comments"`
+	PullRequestReviews        int64 `json:"pull_request_reviews"`
+	PullRequestReviewComments int64 `json:"pull_request_review_comments"`
+}
+
+type MirrorStatusResponse struct {
+	FullName                 string                 `json:"full_name"`
+	RepositoryPresent        bool                   `json:"repository_present"`
+	TrackedRepositoryPresent bool                   `json:"tracked_repository_present"`
+	TrackedRepositoryID      *uint                  `json:"tracked_repository_id"`
+	RepositoryID             *uint                  `json:"repository_id"`
+	Repository               *gh.RepositoryResponse `json:"repository"`
+	Enabled                  bool                   `json:"enabled"`
+	SyncMode                 string                 `json:"sync_mode"`
+	WebhookProjectionEnabled bool                   `json:"webhook_projection_enabled"`
+	AllowManualBackfill      bool                   `json:"allow_manual_backfill"`
+	IssuesCompleteness       string                 `json:"issues_completeness"`
+	PullsCompleteness        string                 `json:"pulls_completeness"`
+	CommentsCompleteness     string                 `json:"comments_completeness"`
+	ReviewsCompleteness      string                 `json:"reviews_completeness"`
+	LastBootstrapAt          *time.Time             `json:"last_bootstrap_at"`
+	LastCrawlAt              *time.Time             `json:"last_crawl_at"`
+	LastWebhookAt            *time.Time             `json:"last_webhook_at"`
+	Counts                   MirrorCountsResponse   `json:"counts"`
+}
+
 func NewClient(baseURL string) *Client {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
@@ -34,6 +63,12 @@ func NewClient(baseURL string) *Client {
 func (c *Client) GetRepository(ctx context.Context, repo string) (gh.RepositoryResponse, error) {
 	var out gh.RepositoryResponse
 	err := c.getJSON(ctx, "/repos/"+repo, &out)
+	return out, err
+}
+
+func (c *Client) GetMirrorStatus(ctx context.Context, repo string) (MirrorStatusResponse, error) {
+	var out MirrorStatusResponse
+	err := c.getJSON(ctx, "/repos/"+repo+"/_ghreplica", &out)
 	return out, err
 }
 

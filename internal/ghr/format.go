@@ -93,6 +93,31 @@ func printRepoView(out io.Writer, repo gh.RepositoryResponse) {
 	_ = tw.Flush()
 }
 
+func printRepoStatus(out io.Writer, status MirrorStatusResponse) {
+	fmt.Fprintf(out, "%s\n\n", status.FullName)
+
+	tw := newTabWriter(out)
+	fmt.Fprintf(tw, "Repository present:\t%t\n", status.RepositoryPresent)
+	fmt.Fprintf(tw, "Tracked repo present:\t%t\n", status.TrackedRepositoryPresent)
+	fmt.Fprintf(tw, "Enabled:\t%t\n", status.Enabled)
+	fmt.Fprintf(tw, "Sync mode:\t%s\n", status.SyncMode)
+	fmt.Fprintf(tw, "Webhook projection:\t%t\n", status.WebhookProjectionEnabled)
+	fmt.Fprintf(tw, "Allow manual backfill:\t%t\n", status.AllowManualBackfill)
+	fmt.Fprintf(tw, "Issues completeness:\t%s\n", status.IssuesCompleteness)
+	fmt.Fprintf(tw, "Pulls completeness:\t%s\n", status.PullsCompleteness)
+	fmt.Fprintf(tw, "Comments completeness:\t%s\n", status.CommentsCompleteness)
+	fmt.Fprintf(tw, "Reviews completeness:\t%s\n", status.ReviewsCompleteness)
+	fmt.Fprintf(tw, "Last bootstrap:\t%s\n", humanTimePtr(status.LastBootstrapAt))
+	fmt.Fprintf(tw, "Last crawl:\t%s\n", humanTimePtr(status.LastCrawlAt))
+	fmt.Fprintf(tw, "Last webhook:\t%s\n", humanTimePtr(status.LastWebhookAt))
+	fmt.Fprintf(tw, "Issue count:\t%d\n", status.Counts.Issues)
+	fmt.Fprintf(tw, "Pull count:\t%d\n", status.Counts.Pulls)
+	fmt.Fprintf(tw, "Issue comments:\t%d\n", status.Counts.IssueComments)
+	fmt.Fprintf(tw, "PR reviews:\t%d\n", status.Counts.PullRequestReviews)
+	fmt.Fprintf(tw, "PR review comments:\t%d\n", status.Counts.PullRequestReviewComments)
+	_ = tw.Flush()
+}
+
 func printIssueList(out io.Writer, issues []gh.IssueResponse) {
 	if len(issues) == 0 {
 		fmt.Fprintln(out, "no issues found")
@@ -146,6 +171,17 @@ func printIssueComments(out io.Writer, comments []gh.IssueCommentResponse) {
 		fmt.Fprintf(out, "%s commented %s\n\n", author, humanTime(comment.CreatedAt))
 		fmt.Fprintln(out, strings.TrimSpace(comment.Body))
 	}
+}
+
+func printIssueCommentsSection(out io.Writer, comments []gh.IssueCommentResponse) {
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Comments")
+	fmt.Fprintln(out)
+	if len(comments) == 0 {
+		fmt.Fprintln(out, "no issue comments found")
+		return
+	}
+	printIssueComments(out, comments)
 }
 
 func printPullList(out io.Writer, pulls []gh.PullRequestResponse) {
@@ -259,6 +295,13 @@ func humanTime(t time.Time) string {
 		return ""
 	}
 	return t.UTC().Format(time.RFC3339)
+}
+
+func humanTimePtr(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return humanTime(*t)
 }
 
 func truncate(value string, max int) string {

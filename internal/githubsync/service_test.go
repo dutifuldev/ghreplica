@@ -196,6 +196,60 @@ func TestUpsertRepositoryTracksRenameByGitHubID(t *testing.T) {
 	require.Equal(t, "acme/widgets-renamed", repos[0].FullName)
 }
 
+func TestTargetedSyncIssueAndPullRequest(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/widgets":
+			writeJSON(t, w, repoFixture())
+		case "/repos/acme/widgets/issues/2":
+			writeJSON(t, w, issuesFixture()[0])
+		case "/repos/acme/widgets/issues/2/comments":
+			writeJSON(t, w, issueCommentsFixture())
+		case "/repos/acme/widgets/pulls/2":
+			writeJSON(t, w, pullsFixture()[0])
+		case "/repos/acme/widgets/pulls/2/reviews":
+			writeJSON(t, w, pullReviewsFixture())
+		case "/repos/acme/widgets/pulls/2/comments":
+			writeJSON(t, w, pullReviewCommentsFixture())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	require.NoError(t, service.SyncIssue(ctx, "acme", "widgets", 2))
+	require.NoError(t, service.SyncPullRequest(ctx, "acme", "widgets", 2))
+
+	var tracked database.TrackedRepository
+	require.NoError(t, db.Where("full_name = ?", "acme/widgets").First(&tracked).Error)
+	require.Equal(t, "webhook_only", tracked.SyncMode)
+	require.Equal(t, "sparse", tracked.ReviewsCompleteness)
+	require.Equal(t, "sparse", tracked.CommentsCompleteness)
+
+	var issues int64
+	var pulls int64
+	var issueComments int64
+	var reviews int64
+	var reviewComments int64
+	require.NoError(t, db.Model(&database.Issue{}).Count(&issues).Error)
+	require.NoError(t, db.Model(&database.PullRequest{}).Count(&pulls).Error)
+	require.NoError(t, db.Model(&database.IssueComment{}).Count(&issueComments).Error)
+	require.NoError(t, db.Model(&database.PullRequestReview{}).Count(&reviews).Error)
+	require.NoError(t, db.Model(&database.PullRequestReviewComment{}).Count(&reviewComments).Error)
+	require.EqualValues(t, 1, issues)
+	require.EqualValues(t, 1, pulls)
+	require.EqualValues(t, 1, issueComments)
+	require.EqualValues(t, 1, reviews)
+	require.EqualValues(t, 1, reviewComments)
+}
+
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 	return "sqlite://file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"

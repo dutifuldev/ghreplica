@@ -12,6 +12,7 @@
 ## Repository Endpoints
 
 - `GET /repos/{owner}/{repo}`
+- `GET /repos/{owner}/{repo}/_ghreplica`
 
 ## Issue Endpoints
 
@@ -30,4 +31,5 @@
 
 - compatibility is strongest for the repository, issue, and pull endpoints listed in [Compatibility Strategy](./compatibility-strategy.md)
 - comments and reviews are mirrored and served, but do not yet have the same breadth of contract coverage as the core read endpoints
+- `GET /repos/{owner}/{repo}/_ghreplica` is intentionally `ghreplica`-specific and exposes mirror policy, completeness, and local counts
 - unsupported endpoints should be treated as out of scope until explicitly added here

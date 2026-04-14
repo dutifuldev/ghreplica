@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -114,15 +115,9 @@ func runSync(cfg config.Config, args []string) error {
 	}
 
 	rest := syncFlags.Args()
-	if len(rest) != 2 || rest[0] != "repo" {
-		return errors.New("usage: ghreplica sync repo <owner>/<repo>")
+	if len(rest) < 2 {
+		return errors.New("usage: ghreplica sync {repo <owner>/<repo> | issue <owner>/<repo> <number> | pr <owner>/<repo> <number>}")
 	}
-
-	owner, repo, err := config.ParseFullName(rest[1])
-	if err != nil {
-		return err
-	}
-
 	if err := cfg.ValidateDatabase(); err != nil {
 		return err
 	}
@@ -141,7 +136,45 @@ func runSync(cfg config.Config, args []string) error {
 	})
 	service := githubsync.NewService(db, client)
 
-	return service.BootstrapRepository(context.Background(), owner, repo)
+	switch rest[0] {
+	case "repo":
+		if len(rest) != 2 {
+			return errors.New("usage: ghreplica sync repo <owner>/<repo>")
+		}
+		owner, repo, err := config.ParseFullName(rest[1])
+		if err != nil {
+			return err
+		}
+		return service.BootstrapRepository(context.Background(), owner, repo)
+	case "issue":
+		if len(rest) != 3 {
+			return errors.New("usage: ghreplica sync issue <owner>/<repo> <number>")
+		}
+		owner, repo, err := config.ParseFullName(rest[1])
+		if err != nil {
+			return err
+		}
+		number, err := parseNumberArg(rest[2])
+		if err != nil {
+			return err
+		}
+		return service.SyncIssue(context.Background(), owner, repo, number)
+	case "pr":
+		if len(rest) != 3 {
+			return errors.New("usage: ghreplica sync pr <owner>/<repo> <number>")
+		}
+		owner, repo, err := config.ParseFullName(rest[1])
+		if err != nil {
+			return err
+		}
+		number, err := parseNumberArg(rest[2])
+		if err != nil {
+			return err
+		}
+		return service.SyncPullRequest(context.Background(), owner, repo, number)
+	default:
+		return errors.New("usage: ghreplica sync {repo <owner>/<repo> | issue <owner>/<repo> <number> | pr <owner>/<repo> <number>}")
+	}
 }
 
 func runRefresh(cfg config.Config, args []string) error {
@@ -183,5 +216,15 @@ func usageError() error {
 	fmt.Fprintf(os.Stderr, "  ghreplica migrate up\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica refresh repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica sync repo <owner>/<repo>\n")
+	fmt.Fprintf(os.Stderr, "  ghreplica sync issue <owner>/<repo> <number>\n")
+	fmt.Fprintf(os.Stderr, "  ghreplica sync pr <owner>/<repo> <number>\n")
 	return errors.New("invalid command")
+}
+
+func parseNumberArg(raw string) (int, error) {
+	number, err := strconv.Atoi(raw)
+	if err != nil || number <= 0 {
+		return 0, fmt.Errorf("invalid number: %q", raw)
+	}
+	return number, nil
 }
