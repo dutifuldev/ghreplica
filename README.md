@@ -44,6 +44,7 @@ Current state:
 - Cloud SQL-backed storage via GORM
 - GitHub App installation-token auth for upstream GitHub access
 - Echo read API for repository, issue, pull request, and discussion endpoints
+- Cobra-based `ghr` read CLI for repo, issue, and pull request inspection
 - webhook receiver with signature validation, raw delivery persistence, and direct event projection into canonical tables
 - explicit manual sync command for full bootstrap crawls
 - local dev flow for Postgres, sqlite, and GCP deployment
