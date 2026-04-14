@@ -211,6 +211,14 @@ func (s *Service) SyncPullRequest(ctx context.Context, owner, repo string, numbe
 		return err
 	}
 
+	issue, err := s.github.GetIssue(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	if _, err := s.upsertIssue(ctx, canonicalRepo.ID, issue); err != nil {
+		return err
+	}
+
 	pull, err := s.github.GetPullRequest(ctx, owner, repo, number)
 	if err != nil {
 		return err
