@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type TrackedRepository struct {
@@ -137,6 +139,80 @@ type PullRequest struct {
 	UpdatedAt       time.Time
 }
 
+type IssueComment struct {
+	ID              uint  `gorm:"primaryKey"`
+	GitHubID        int64 `gorm:"column:github_id;uniqueIndex"`
+	NodeID          string
+	RepositoryID    uint `gorm:"index"`
+	Repository      Repository
+	IssueID         uint `gorm:"index"`
+	Issue           Issue
+	AuthorID        *uint
+	Author          *User
+	Body            string
+	HTMLURL         string
+	APIURL          string
+	GitHubCreatedAt time.Time      `gorm:"column:github_created_at"`
+	GitHubUpdatedAt time.Time      `gorm:"column:github_updated_at"`
+	RawJSON         datatypes.JSON `gorm:"type:jsonb"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type PullRequestReview struct {
+	ID              uint  `gorm:"primaryKey"`
+	GitHubID        int64 `gorm:"column:github_id;uniqueIndex"`
+	NodeID          string
+	RepositoryID    uint `gorm:"index"`
+	Repository      Repository
+	PullRequestID   uint        `gorm:"index"`
+	PullRequest     PullRequest `gorm:"foreignKey:PullRequestID;references:IssueID"`
+	AuthorID        *uint
+	Author          *User
+	State           string
+	Body            string
+	CommitID        string
+	SubmittedAt     *time.Time
+	HTMLURL         string
+	APIURL          string
+	GitHubCreatedAt time.Time      `gorm:"column:github_created_at"`
+	GitHubUpdatedAt time.Time      `gorm:"column:github_updated_at"`
+	RawJSON         datatypes.JSON `gorm:"type:jsonb"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type PullRequestReviewComment struct {
+	ID                uint  `gorm:"primaryKey"`
+	GitHubID          int64 `gorm:"column:github_id;uniqueIndex"`
+	NodeID            string
+	RepositoryID      uint `gorm:"index"`
+	Repository        Repository
+	PullRequestID     uint        `gorm:"index"`
+	PullRequest       PullRequest `gorm:"foreignKey:PullRequestID;references:IssueID"`
+	ReviewID          *uint
+	Review            *PullRequestReview
+	InReplyToGitHubID *int64 `gorm:"column:in_reply_to_github_id"`
+	AuthorID          *uint
+	Author            *User
+	Path              string
+	DiffHunk          string
+	Position          *int
+	OriginalPosition  *int
+	Line              *int
+	OriginalLine      *int
+	Side              string
+	Body              string
+	HTMLURL           string
+	APIURL            string
+	PullRequestURL    string
+	GitHubCreatedAt   time.Time      `gorm:"column:github_created_at"`
+	GitHubUpdatedAt   time.Time      `gorm:"column:github_updated_at"`
+	RawJSON           datatypes.JSON `gorm:"type:jsonb"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
 type WebhookDelivery struct {
 	ID           uint   `gorm:"primaryKey"`
 	DeliveryID   string `gorm:"uniqueIndex"`
@@ -149,12 +225,42 @@ type WebhookDelivery struct {
 	ProcessedAt  *time.Time
 }
 
+type RepositoryRefreshJob struct {
+	ID                  uint `gorm:"primaryKey"`
+	TrackedRepositoryID *uint
+	TrackedRepository   *TrackedRepository
+	RepositoryID        *uint
+	Repository          *Repository
+	Owner               string `gorm:"index"`
+	Name                string
+	FullName            string `gorm:"index"`
+	Source              string
+	DeliveryID          string
+	Status              string `gorm:"index"`
+	Attempts            int
+	MaxAttempts         int
+	LastError           string
+	RequestedAt         time.Time
+	NextAttemptAt       *time.Time `gorm:"index"`
+	StartedAt           *time.Time
+	FinishedAt          *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
 func Open(databaseURL string) (*gorm.DB, error) {
-	if IsSQLiteURL(databaseURL) {
-		return gorm.Open(sqlite.Open(strings.TrimPrefix(databaseURL, "sqlite://")), &gorm.Config{})
+	gormConfig := &gorm.Config{
+		Logger: logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
+			LogLevel:                  logger.Warn,
+			IgnoreRecordNotFoundError: true,
+		}),
 	}
 
-	return gorm.Open(postgres.Open(databaseURL), &gorm.Config{})
+	if IsSQLiteURL(databaseURL) {
+		return gorm.Open(sqlite.Open(strings.TrimPrefix(databaseURL, "sqlite://")), gormConfig)
+	}
+
+	return gorm.Open(postgres.Open(databaseURL), gormConfig)
 }
 
 func IsSQLiteURL(databaseURL string) bool {
@@ -168,7 +274,11 @@ func AutoMigrate(db *gorm.DB) error {
 		&Repository{},
 		&Issue{},
 		&PullRequest{},
+		&IssueComment{},
+		&PullRequestReview{},
+		&PullRequestReviewComment{},
 		&WebhookDelivery{},
+		&RepositoryRefreshJob{},
 	)
 }
 

@@ -425,13 +425,21 @@ The system should not rely on ad hoc manual testing for core correctness.
 
 ## Bottom Line
 
-The first implementation should connect to a small owned fixture repository through polling, not webhooks.
+The first implementation should still center on a small owned fixture repository and polling-based bootstrap.
 
-That is the fastest path to:
+That remains the fastest path to:
 
 - deterministic testing
 - schema validation
 - API contract checks
 - usable initial development
 
-After that, webhook support should be added for freshness, and a GitHub App should be added for multi-repo adoption.
+`ghreplica` now also has a thin repository webhook path for local development and controlled repos:
+
+- GitHub signs the delivery
+- `ghreplica` validates the signature
+- the raw delivery is stored in `webhook_deliveries`
+- a repository refresh job is queued
+- the in-process worker refreshes the affected repository through the existing poller
+
+That is enough for freshness in local and fixture-repo testing. A GitHub App should still be added later for serious multi-repo adoption.

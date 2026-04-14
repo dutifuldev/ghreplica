@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
@@ -132,8 +133,8 @@ func newRepositoryResponse(repo database.Repository) repositoryResponse {
 		Visibility:    repo.Visibility,
 		Archived:      repo.Archived,
 		Disabled:      repo.Disabled,
-		CreatedAt:     repo.CreatedAt,
-		UpdatedAt:     repo.UpdatedAt,
+		CreatedAt:     utcTime(repo.CreatedAt),
+		UpdatedAt:     utcTime(repo.UpdatedAt),
 	}
 }
 
@@ -158,9 +159,9 @@ func newIssueResponse(issue database.Issue, prRef issuePullRequestRef) issueResp
 		PullRequest: pullRequest,
 		HTMLURL:     issue.HTMLURL,
 		URL:         issue.APIURL,
-		CreatedAt:   issue.GitHubCreatedAt,
-		UpdatedAt:   issue.GitHubUpdatedAt,
-		ClosedAt:    issue.ClosedAt,
+		CreatedAt:   utcTime(issue.GitHubCreatedAt),
+		UpdatedAt:   utcTime(issue.GitHubUpdatedAt),
+		ClosedAt:    utcTimePtr(issue.ClosedAt),
 	}
 }
 
@@ -179,7 +180,7 @@ func newPullRequestResponse(pr database.PullRequest) pullRequestResponse {
 		Mergeable:      pr.Mergeable,
 		MergeableState: pr.MergeableState,
 		Merged:         pr.Merged,
-		MergedAt:       pr.MergedAt,
+		MergedAt:       utcTimePtr(pr.MergedAt),
 		MergedBy:       newUserResponse(pr.MergedBy),
 		MergeCommitSHA: pr.MergeCommitSHA,
 		Additions:      pr.Additions,
@@ -190,8 +191,8 @@ func newPullRequestResponse(pr database.PullRequest) pullRequestResponse {
 		URL:            pr.APIURL,
 		DiffURL:        pr.DiffURL,
 		PatchURL:       pr.PatchURL,
-		CreatedAt:      pr.GitHubCreatedAt,
-		UpdatedAt:      pr.GitHubUpdatedAt,
+		CreatedAt:      utcTime(pr.GitHubCreatedAt),
+		UpdatedAt:      utcTime(pr.GitHubUpdatedAt),
 	}
 }
 
@@ -223,8 +224,8 @@ func newPullBranchRepositoryResponse(repo *database.Repository) *pullBranchRepos
 		Visibility:    repo.Visibility,
 		Archived:      repo.Archived,
 		Disabled:      repo.Disabled,
-		CreatedAt:     repo.CreatedAt,
-		UpdatedAt:     repo.UpdatedAt,
+		CreatedAt:     utcTime(repo.CreatedAt),
+		UpdatedAt:     utcTime(repo.UpdatedAt),
 	}
 
 	return &out
@@ -245,4 +246,84 @@ func newUserResponse(user *database.User) *userResponse {
 		SiteAdmin: user.SiteAdmin,
 		URL:       user.APIURL,
 	}
+}
+
+func decodeStoredJSON(raw []byte) (any, error) {
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func decodeStoredJSONArrayIssueComments(comments []database.IssueComment) ([]any, error) {
+	out := make([]any, 0, len(comments))
+	for _, comment := range comments {
+		payload, err := decodeStoredJSON(comment.RawJSON)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, payload)
+	}
+	return out, nil
+}
+
+func decodeStoredJSONArrayIssues(issues []database.Issue) ([]any, error) {
+	out := make([]any, 0, len(issues))
+	for _, issue := range issues {
+		payload, err := decodeStoredJSON(issue.RawJSON)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, payload)
+	}
+	return out, nil
+}
+
+func decodeStoredJSONArrayPullRequests(pulls []database.PullRequest) ([]any, error) {
+	out := make([]any, 0, len(pulls))
+	for _, pull := range pulls {
+		payload, err := decodeStoredJSON(pull.RawJSON)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, payload)
+	}
+	return out, nil
+}
+
+func decodeStoredJSONArrayPullRequestReviews(reviews []database.PullRequestReview) ([]any, error) {
+	out := make([]any, 0, len(reviews))
+	for _, review := range reviews {
+		payload, err := decodeStoredJSON(review.RawJSON)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, payload)
+	}
+	return out, nil
+}
+
+func decodeStoredJSONArrayPullRequestReviewComments(comments []database.PullRequestReviewComment) ([]any, error) {
+	out := make([]any, 0, len(comments))
+	for _, comment := range comments {
+		payload, err := decodeStoredJSON(comment.RawJSON)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, payload)
+	}
+	return out, nil
+}
+
+func utcTime(value time.Time) time.Time {
+	return value.UTC()
+}
+
+func utcTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	converted := value.UTC()
+	return &converted
 }

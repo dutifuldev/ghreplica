@@ -1,4 +1,4 @@
-package sync_test
+package githubsync_test
 
 import (
 	"context"
@@ -10,8 +10,8 @@ import (
 
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/github"
+	"github.com/dutifuldev/ghreplica/internal/githubsync"
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
-	syncsvc "github.com/dutifuldev/ghreplica/internal/sync"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,18 +28,30 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 			writeJSON(t, w, repoFixture())
 		case "/repos/acme/widgets/issues":
 			writeJSON(t, w, issuesFixture())
+		case "/repos/acme/widgets/issues/1":
+			writeJSON(t, w, issuesFixture()[1])
+		case "/repos/acme/widgets/issues/2":
+			writeJSON(t, w, issuesFixture()[0])
 		case "/repos/acme/widgets/pulls":
 			writeJSON(t, w, pullsFixture())
+		case "/repos/acme/widgets/pulls/2":
+			writeJSON(t, w, pullsFixture()[0])
+		case "/repos/acme/widgets/issues/comments":
+			writeJSON(t, w, issueCommentsFixture())
+		case "/repos/acme/widgets/pulls/2/reviews":
+			writeJSON(t, w, pullReviewsFixture())
+		case "/repos/acme/widgets/pulls/2/comments":
+			writeJSON(t, w, pullReviewCommentsFixture())
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(githubServer.Close)
 
-	service := syncsvc.NewService(db, github.NewClient(githubServer.URL, ""))
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
 	require.NoError(t, service.BootstrapRepository(ctx, "acme", "widgets"))
 
-	server := httpapi.NewServer(db)
+	server := httpapi.NewServer(db, httpapi.Options{})
 
 	req := httptest.NewRequest(http.MethodGet, "/repos/acme/widgets", nil)
 	rec := httptest.NewRecorder()
@@ -68,6 +80,40 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	require.Len(t, pulls, 1)
 	require.Equal(t, "Fix parser", pulls[0]["title"])
 	require.Equal(t, "fix/parser", pulls[0]["head"].(map[string]any)["ref"])
+
+	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/issues/2", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/issues/2/comments", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var issueComments []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &issueComments))
+	require.Len(t, issueComments, 1)
+
+	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/pulls/2", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/pulls/2/reviews", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var reviews []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &reviews))
+	require.Len(t, reviews, 1)
+
+	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/pulls/2/comments", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var reviewComments []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &reviewComments))
+	require.Len(t, reviewComments, 1)
 }
 
 func repoFixture() github.RepositoryResponse {
@@ -182,6 +228,64 @@ func pullsFixture() []github.PullRequestResponse {
 			UpdatedAt:      now,
 		},
 	}
+}
+
+func issueCommentsFixture() []github.IssueCommentResponse {
+	now := time.Date(2026, 4, 14, 14, 0, 0, 0, time.UTC)
+	author := &github.UserResponse{ID: 21, NodeID: "U_author", Login: "octo", Type: "User", AvatarURL: "https://example.com/octo.png", HTMLURL: "https://github.com/octo", URL: "https://api.github.com/users/octo"}
+	return []github.IssueCommentResponse{{
+		ID:        301,
+		NodeID:    "IC_kwDO301",
+		Body:      "Looks good",
+		User:      author,
+		IssueURL:  "https://api.github.com/repos/acme/widgets/issues/2",
+		HTMLURL:   "https://github.com/acme/widgets/issues/2#issuecomment-301",
+		URL:       "https://api.github.com/repos/acme/widgets/issues/comments/301",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}}
+}
+
+func pullReviewsFixture() []github.PullRequestReviewResponse {
+	now := time.Date(2026, 4, 14, 15, 0, 0, 0, time.UTC)
+	author := &github.UserResponse{ID: 31, NodeID: "U_reviewer", Login: "reviewer", Type: "User", AvatarURL: "https://example.com/reviewer.png", HTMLURL: "https://github.com/reviewer", URL: "https://api.github.com/users/reviewer"}
+	return []github.PullRequestReviewResponse{{
+		ID:          401,
+		NodeID:      "PRR_kwDO401",
+		User:        author,
+		Body:        "Approved",
+		State:       "APPROVED",
+		HTMLURL:     "https://github.com/acme/widgets/pull/2#pullrequestreview-401",
+		URL:         "https://api.github.com/repos/acme/widgets/pulls/2/reviews/401",
+		CommitID:    "abc123",
+		SubmittedAt: &now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}}
+}
+
+func pullReviewCommentsFixture() []github.PullRequestReviewCommentResponse {
+	now := time.Date(2026, 4, 14, 15, 5, 0, 0, time.UTC)
+	author := &github.UserResponse{ID: 31, NodeID: "U_reviewer", Login: "reviewer", Type: "User", AvatarURL: "https://example.com/reviewer.png", HTMLURL: "https://github.com/reviewer", URL: "https://api.github.com/users/reviewer"}
+	reviewID := int64(401)
+	line := 12
+	return []github.PullRequestReviewCommentResponse{{
+		ID:                  501,
+		NodeID:              "PRRC_kwDO501",
+		PullRequestURL:      "https://api.github.com/repos/acme/widgets/pulls/2",
+		PullRequestReviewID: &reviewID,
+		HTMLURL:             "https://github.com/acme/widgets/pull/2#discussion_r501",
+		URL:                 "https://api.github.com/repos/acme/widgets/pulls/comments/501",
+		Body:                "Please rename this variable",
+		Path:                "parser.go",
+		DiffHunk:            "@@ -1,1 +1,1 @@",
+		Line:                &line,
+		OriginalLine:        &line,
+		Side:                "RIGHT",
+		User:                author,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}}
 }
 
 func boolPtr(value bool) *bool {
