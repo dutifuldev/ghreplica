@@ -3,6 +3,7 @@ package githubsync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -36,12 +37,17 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 	}
 
 	now := time.Now().UTC()
+	syncMode, err := s.existingSyncMode(ctx, repoResp.FullName)
+	if err != nil {
+		return err
+	}
+
 	tracked := database.TrackedRepository{
 		Owner:           owner,
 		Name:            repo,
 		FullName:        repoResp.FullName,
 		RepositoryID:    &canonicalRepo.ID,
-		SyncMode:        "poll",
+		SyncMode:        syncMode,
 		Enabled:         true,
 		LastBootstrapAt: &now,
 		LastCrawlAt:     &now,
@@ -114,6 +120,24 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 	}
 
 	return nil
+}
+
+func (s *Service) existingSyncMode(ctx context.Context, fullName string) (string, error) {
+	var tracked database.TrackedRepository
+	err := s.db.WithContext(ctx).
+		Select("sync_mode").
+		Where("full_name = ?", fullName).
+		First(&tracked).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "poll", nil
+		}
+		return "", err
+	}
+	if strings.TrimSpace(tracked.SyncMode) == "" {
+		return "poll", nil
+	}
+	return tracked.SyncMode, nil
 }
 
 func (s *Service) upsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +19,7 @@ import (
 func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	ctx := context.Background()
 
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
+	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(db))
 
@@ -114,6 +115,59 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	var reviewComments []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &reviewComments))
 	require.Len(t, reviewComments, 1)
+}
+
+func TestBootstrapRepositoryPreservesWebhookSyncMode(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, db.Create(&database.TrackedRepository{
+		Owner:    "acme",
+		Name:     "widgets",
+		FullName: "acme/widgets",
+		SyncMode: "webhook",
+		Enabled:  true,
+	}).Error)
+
+	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/widgets":
+			writeJSON(t, w, repoFixture())
+		case "/repos/acme/widgets/issues":
+			writeJSON(t, w, issuesFixture())
+		case "/repos/acme/widgets/issues/1":
+			writeJSON(t, w, issuesFixture()[1])
+		case "/repos/acme/widgets/issues/2":
+			writeJSON(t, w, issuesFixture()[0])
+		case "/repos/acme/widgets/pulls":
+			writeJSON(t, w, pullsFixture())
+		case "/repos/acme/widgets/pulls/2":
+			writeJSON(t, w, pullsFixture()[0])
+		case "/repos/acme/widgets/issues/comments":
+			writeJSON(t, w, issueCommentsFixture())
+		case "/repos/acme/widgets/pulls/2/reviews":
+			writeJSON(t, w, pullReviewsFixture())
+		case "/repos/acme/widgets/pulls/2/comments":
+			writeJSON(t, w, pullReviewCommentsFixture())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	require.NoError(t, service.BootstrapRepository(ctx, "acme", "widgets"))
+
+	var tracked database.TrackedRepository
+	require.NoError(t, db.Where("full_name = ?", "acme/widgets").First(&tracked).Error)
+	require.Equal(t, "webhook", tracked.SyncMode)
+}
+
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	return "sqlite://file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
 }
 
 func repoFixture() github.RepositoryResponse {
