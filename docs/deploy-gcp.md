@@ -24,6 +24,7 @@ Deployment artifacts live under [deploy/gcp](../deploy/gcp):
 - [deploy/gcp/docker-compose.yml](../deploy/gcp/docker-compose.yml)
 - [deploy/gcp/Caddyfile](../deploy/gcp/Caddyfile)
 - [deploy/gcp/ghreplica.env.example](../deploy/gcp/ghreplica.env.example)
+- [deploy/gcp/github-app.env.example](../deploy/gcp/github-app.env.example)
 
 The app image is built from the repo [Dockerfile](../Dockerfile).
 
@@ -121,8 +122,21 @@ Populate:
 - `CLOUD_SQL_INSTANCE_CONNECTION_NAME`
 - `DB_NAME=ghreplica`
 - `DB_IAM_USER_URLENCODED=bob-gcloud%40dutiful-20260414.iam`
-- `GITHUB_TOKEN`
 - `GITHUB_WEBHOOK_SECRET`
+- `GITHUB_APP_ID`
+- `GITHUB_APP_INSTALLATION_ID`
+- `GITHUB_APP_PRIVATE_KEY_PATH`
+
+Recommended GitHub App private key path on the VM:
+
+- `/home/bob/ghreplica/secrets/github-app.private-key.pem`
+
+Create the secrets directory on the VM if needed:
+
+```bash
+mkdir -p ~/ghreplica/secrets
+chmod 700 ~/ghreplica/secrets
+```
 
 ## 4. Run Migrations And Start The Stack
 
@@ -157,4 +171,5 @@ The configured secret must exactly match `GITHUB_WEBHOOK_SECRET`.
 
 - The app itself is not published directly; only `caddy` exposes ports.
 - `cloud-sql-proxy` runs with IAM auth, using the VM service account.
+- Prefer GitHub App auth over `GITHUB_TOKEN` for this deployment.
 - This is a staging-first deployment shape. Add user-facing auth before opening the API broadly to other people.
