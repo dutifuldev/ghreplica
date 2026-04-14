@@ -127,6 +127,23 @@ Reasonable defaults:
 
 ## Implementation Guidance
 
+Use `Cobra` as the CLI framework.
+
+Why:
+
+- it is the standard choice for multi-command Go CLIs
+- it matches the command-tree style we want
+- GitHub CLI itself uses a Cobra-based command layout
+- it keeps help, completions, and nested subcommands straightforward
+
+So the intended stack for the read CLI is:
+
+- `Cobra` for command and flag structure
+- a thin HTTP client for talking to `ghreplica`
+- formatting code that mirrors `gh` output conventions
+
+Avoid inventing a custom parser layer unless Cobra becomes a real limitation.
+
 Use the local `gh` CLI source as the UX reference:
 
 - `~/repos/gh-cli/pkg/cmd/issue`
