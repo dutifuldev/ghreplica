@@ -26,7 +26,7 @@ func TestRepoViewHumanOutput(t *testing.T) {
 func TestIssueListHumanOutput(t *testing.T) {
 	server := newTestServer(t)
 	cmd := NewRootCmd()
-	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "issue", "list", "acme/widgets", "--state", "all", "--limit", "10")
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "issue", "list", "--state", "all", "--limit", "10")
 	require.NoError(t, err)
 	require.Contains(t, stdout, "NUMBER")
 	require.Contains(t, stdout, "#1")
@@ -50,7 +50,7 @@ func TestIssueViewJSONOutput(t *testing.T) {
 func TestIssueCommentsHumanOutput(t *testing.T) {
 	server := newTestServer(t)
 	cmd := NewRootCmd()
-	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "issue", "comments", "acme/widgets", "1")
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "issue", "comments", "1")
 	require.NoError(t, err)
 	require.Contains(t, stdout, "octocat commented")
 	require.Contains(t, stdout, "I can reproduce this.")
@@ -59,7 +59,7 @@ func TestIssueCommentsHumanOutput(t *testing.T) {
 func TestPRListHumanOutput(t *testing.T) {
 	server := newTestServer(t)
 	cmd := NewRootCmd()
-	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "pr", "list", "acme/widgets", "--state", "all", "--limit", "10")
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "pr", "list", "--state", "all", "--limit", "10")
 	require.NoError(t, err)
 	require.Contains(t, stdout, "#2")
 	require.Contains(t, stdout, "Fix parser")
@@ -90,6 +90,30 @@ func TestPRReviewsAndCommentsEmptyOutput(t *testing.T) {
 	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "pr", "comments", "3")
 	require.NoError(t, err)
 	require.Contains(t, stdout, "no review comments found")
+}
+
+func TestIssueAndPRCommandsRejectPositionalRepoArgs(t *testing.T) {
+	server := newTestServer(t)
+
+	issueListCmd := NewRootCmd()
+	_, _, err := executeCommand(issueListCmd, "--base-url", server.URL, "issue", "list", "acme/widgets")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "acme/widgets")
+
+	issueViewCmd := NewRootCmd()
+	_, _, err = executeCommand(issueViewCmd, "--base-url", server.URL, "issue", "view", "acme/widgets", "1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "received 2")
+
+	prListCmd := NewRootCmd()
+	_, _, err = executeCommand(prListCmd, "--base-url", server.URL, "pr", "list", "acme/widgets")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "acme/widgets")
+
+	prViewCmd := NewRootCmd()
+	_, _, err = executeCommand(prViewCmd, "--base-url", server.URL, "pr", "view", "acme/widgets", "2")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "received 2")
 }
 
 func executeCommand(cmd *cobra.Command, args ...string) (string, string, error) {

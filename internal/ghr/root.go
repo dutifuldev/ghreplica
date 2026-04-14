@@ -55,31 +55,12 @@ func resolveRepo(arg string, opts *RootOptions) (string, error) {
 	return strings.TrimSpace(parts[0]) + "/" + strings.TrimSpace(parts[1]), nil
 }
 
-func resolveRepoAndNumber(args []string, opts *RootOptions) (string, int, error) {
-	switch len(args) {
-	case 1:
-		repo, err := resolveRepo("", opts)
-		if err != nil {
-			return "", 0, err
-		}
-		number, err := strconv.Atoi(args[0])
-		if err != nil || number <= 0 {
-			return "", 0, fmt.Errorf("invalid number: %q", args[0])
-		}
-		return repo, number, nil
-	case 2:
-		repo, err := resolveRepo(args[0], opts)
-		if err != nil {
-			return "", 0, err
-		}
-		number, err := strconv.Atoi(args[1])
-		if err != nil || number <= 0 {
-			return "", 0, fmt.Errorf("invalid number: %q", args[1])
-		}
-		return repo, number, nil
-	default:
-		return "", 0, errors.New("expected [OWNER/REPO] NUMBER")
+func resolveNumberArg(raw string) (int, error) {
+	number, err := strconv.Atoi(raw)
+	if err != nil || number <= 0 {
+		return 0, fmt.Errorf("invalid number: %q", raw)
 	}
+	return number, nil
 }
 
 func newRepoCmd(opts *RootOptions) *cobra.Command {
@@ -138,15 +119,11 @@ func newIssueListCmd(opts *RootOptions) *cobra.Command {
 	var limit int
 	var jsonFields string
 	cmd := &cobra.Command{
-		Use:   "list [OWNER/REPO]",
+		Use:   "list",
 		Short: "List issues in a repository",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repoArg := ""
-			if len(args) == 1 {
-				repoArg = args[0]
-			}
-			repo, err := resolveRepo(repoArg, opts)
+			repo, err := resolveRepo("", opts)
 			if err != nil {
 				return err
 			}
@@ -171,11 +148,15 @@ func newIssueListCmd(opts *RootOptions) *cobra.Command {
 func newIssueViewCmd(opts *RootOptions) *cobra.Command {
 	var jsonFields string
 	cmd := &cobra.Command{
-		Use:   "view [OWNER/REPO] NUMBER",
+		Use:   "view <number>",
 		Short: "View an issue",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, number, err := resolveRepoAndNumber(args, opts)
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			number, err := resolveNumberArg(args[0])
 			if err != nil {
 				return err
 			}
@@ -198,11 +179,15 @@ func newIssueViewCmd(opts *RootOptions) *cobra.Command {
 func newIssueCommentsCmd(opts *RootOptions) *cobra.Command {
 	var jsonFields string
 	cmd := &cobra.Command{
-		Use:   "comments [OWNER/REPO] NUMBER",
+		Use:   "comments <number>",
 		Short: "View issue comments",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, number, err := resolveRepoAndNumber(args, opts)
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			number, err := resolveNumberArg(args[0])
 			if err != nil {
 				return err
 			}
@@ -239,15 +224,11 @@ func newPRListCmd(opts *RootOptions) *cobra.Command {
 	var limit int
 	var jsonFields string
 	cmd := &cobra.Command{
-		Use:   "list [OWNER/REPO]",
+		Use:   "list",
 		Short: "List pull requests in a repository",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repoArg := ""
-			if len(args) == 1 {
-				repoArg = args[0]
-			}
-			repo, err := resolveRepo(repoArg, opts)
+			repo, err := resolveRepo("", opts)
 			if err != nil {
 				return err
 			}
@@ -272,11 +253,15 @@ func newPRListCmd(opts *RootOptions) *cobra.Command {
 func newPRViewCmd(opts *RootOptions) *cobra.Command {
 	var jsonFields string
 	cmd := &cobra.Command{
-		Use:   "view [OWNER/REPO] NUMBER",
+		Use:   "view <number>",
 		Short: "View a pull request",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, number, err := resolveRepoAndNumber(args, opts)
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			number, err := resolveNumberArg(args[0])
 			if err != nil {
 				return err
 			}
@@ -299,11 +284,15 @@ func newPRViewCmd(opts *RootOptions) *cobra.Command {
 func newPRReviewsCmd(opts *RootOptions) *cobra.Command {
 	var jsonFields string
 	cmd := &cobra.Command{
-		Use:   "reviews [OWNER/REPO] NUMBER",
+		Use:   "reviews <number>",
 		Short: "View pull request reviews",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, number, err := resolveRepoAndNumber(args, opts)
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			number, err := resolveNumberArg(args[0])
 			if err != nil {
 				return err
 			}
@@ -326,11 +315,15 @@ func newPRReviewsCmd(opts *RootOptions) *cobra.Command {
 func newPRCommentsCmd(opts *RootOptions) *cobra.Command {
 	var jsonFields string
 	cmd := &cobra.Command{
-		Use:   "comments [OWNER/REPO] NUMBER",
+		Use:   "comments <number>",
 		Short: "View pull request review comments",
-		Args:  cobra.RangeArgs(1, 2),
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, number, err := resolveRepoAndNumber(args, opts)
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			number, err := resolveNumberArg(args[0])
 			if err != nil {
 				return err
 			}

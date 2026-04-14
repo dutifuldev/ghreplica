@@ -46,6 +46,11 @@ The CLI should not:
 
 The command tree should follow the `gh` mental model.
 
+Repository selection should also follow `gh`:
+
+- `repo view` may take a positional `OWNER/REPO`
+- `issue` and `pr` commands should use `-R/--repo` instead of a positional repo argument
+
 Current command shape:
 
 - `ghr issue list`
@@ -63,13 +68,13 @@ Examples:
 
 ```bash
 ghr repo view openclaw/openclaw
-ghr issue list openclaw/openclaw --state all
-ghr issue view openclaw/openclaw 66797
-ghr issue comments openclaw/openclaw 66797
-ghr pr list openclaw/openclaw --state all
-ghr pr view openclaw/openclaw 66795
-ghr pr reviews openclaw/openclaw 66795
-ghr pr comments openclaw/openclaw 66795
+ghr issue list -R openclaw/openclaw --state all
+ghr issue view -R openclaw/openclaw 66797
+ghr issue comments -R openclaw/openclaw 66797
+ghr pr list -R openclaw/openclaw --state all
+ghr pr view -R openclaw/openclaw 66795
+ghr pr reviews -R openclaw/openclaw 66795
+ghr pr comments -R openclaw/openclaw 66795
 ```
 
 ## Compatibility Expectations
