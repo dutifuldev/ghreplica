@@ -23,6 +23,17 @@ func TestRepoViewHumanOutput(t *testing.T) {
 	require.Contains(t, stdout, "https://github.com/acme/widgets")
 }
 
+func TestRepoStatusHumanOutput(t *testing.T) {
+	server := newTestServer(t)
+	cmd := NewRootCmd()
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "repo", "status")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets")
+	require.Contains(t, stdout, "Sync mode:")
+	require.Contains(t, stdout, "webhook_only")
+	require.Contains(t, stdout, "PR review comments:")
+}
+
 func TestIssueListHumanOutput(t *testing.T) {
 	server := newTestServer(t)
 	cmd := NewRootCmd()
@@ -45,6 +56,15 @@ func TestIssueViewJSONOutput(t *testing.T) {
 	require.Equal(t, "Broken thing", payload["title"])
 	require.Equal(t, "open", payload["state"])
 	require.Len(t, payload, 3)
+}
+
+func TestIssueViewCommentsOutput(t *testing.T) {
+	server := newTestServer(t)
+	cmd := NewRootCmd()
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "issue", "view", "1", "--comments")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "Comments")
+	require.Contains(t, stdout, "I can reproduce this.")
 }
 
 func TestIssueCommentsHumanOutput(t *testing.T) {
@@ -77,6 +97,16 @@ func TestPRViewJSONOutput(t *testing.T) {
 	require.Equal(t, "Fix parser", payload["title"])
 	require.Contains(t, payload, "head")
 	require.Contains(t, payload, "base")
+}
+
+func TestPRViewCommentsOutput(t *testing.T) {
+	server := newTestServer(t)
+	cmd := NewRootCmd()
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "pr", "view", "2", "--comments")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "Fix parser")
+	require.Contains(t, stdout, "Comments")
+	require.Contains(t, stdout, "I can reproduce this.")
 }
 
 func TestPRReviewsAndCommentsEmptyOutput(t *testing.T) {
@@ -116,6 +146,38 @@ func TestIssueAndPRCommandsRejectPositionalRepoArgs(t *testing.T) {
 	require.Contains(t, err.Error(), "received 2")
 }
 
+func TestWebFlagsOpenBrowser(t *testing.T) {
+	server := newTestServer(t)
+	opened := []string{}
+	original := openURL
+	openURL = func(target string) error {
+		opened = append(opened, target)
+		return nil
+	}
+	defer func() { openURL = original }()
+
+	tests := []struct {
+		args   []string
+		target string
+	}{
+		{[]string{"--base-url", server.URL, "repo", "view", "acme/widgets", "--web"}, "https://github.com/acme/widgets"},
+		{[]string{"--base-url", server.URL, "--repo", "acme/widgets", "issue", "view", "1", "--web"}, "https://github.com/acme/widgets/issues/1"},
+		{[]string{"--base-url", server.URL, "--repo", "acme/widgets", "pr", "view", "2", "--web"}, "https://github.com/acme/widgets/pull/2"},
+	}
+
+	for _, tc := range tests {
+		cmd := NewRootCmd()
+		_, _, err := executeCommand(cmd, tc.args...)
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, []string{
+		"https://github.com/acme/widgets",
+		"https://github.com/acme/widgets/issues/1",
+		"https://github.com/acme/widgets/pull/2",
+	}, opened)
+}
+
 func executeCommand(cmd *cobra.Command, args ...string) (string, string, error) {
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
@@ -135,10 +197,33 @@ func newTestServer(t *testing.T) *httptest.Server {
 	issueComments := []gh.IssueCommentResponse{issueCommentFixture()}
 	reviews := []gh.PullRequestReviewResponse{{}}
 	reviewComments := []gh.PullRequestReviewCommentResponse{{}}
+	status := MirrorStatusResponse{
+		FullName:                 "acme/widgets",
+		RepositoryPresent:        true,
+		TrackedRepositoryPresent: true,
+		Enabled:                  true,
+		SyncMode:                 "webhook_only",
+		WebhookProjectionEnabled: true,
+		AllowManualBackfill:      true,
+		IssuesCompleteness:       "sparse",
+		PullsCompleteness:        "sparse",
+		CommentsCompleteness:     "sparse",
+		ReviewsCompleteness:      "sparse",
+		Counts: MirrorCountsResponse{
+			Issues:                    1,
+			Pulls:                     1,
+			IssueComments:             1,
+			PullRequestReviews:        0,
+			PullRequestReviewComments: 0,
+		},
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/widgets", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, repo)
+	})
+	mux.HandleFunc("/repos/acme/widgets/_ghreplica", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, status)
 	})
 	mux.HandleFunc("/repos/acme/widgets/issues", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, issues)
@@ -154,6 +239,9 @@ func newTestServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/repos/acme/widgets/pulls/2", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, pulls[0])
+	})
+	mux.HandleFunc("/repos/acme/widgets/issues/2/comments", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, issueComments)
 	})
 	mux.HandleFunc("/repos/acme/widgets/pulls/2/reviews", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, reviews[:0])

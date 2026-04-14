@@ -49,6 +49,7 @@ The command tree should follow the `gh` mental model.
 Repository selection should also follow `gh`:
 
 - `repo view` may take a positional `OWNER/REPO`
+- `repo status` is a `ghreplica`-specific command and should use `-R/--repo`
 - `issue` and `pr` commands should use `-R/--repo` instead of a positional repo argument
 
 Current command shape:
@@ -60,6 +61,7 @@ Current command shape:
 - `ghr pr view`
 - `ghr pr reviews`
 - `ghr pr comments`
+- `ghr repo status`
 - `ghr repo view`
 
 The first target is read-only parity for the endpoints `ghreplica` already serves.
@@ -68,11 +70,12 @@ Examples:
 
 ```bash
 ghr repo view openclaw/openclaw
+ghr repo status -R openclaw/openclaw
 ghr issue list -R openclaw/openclaw --state all
-ghr issue view -R openclaw/openclaw 66797
+ghr issue view -R openclaw/openclaw 66797 --comments
 ghr issue comments -R openclaw/openclaw 66797
 ghr pr list -R openclaw/openclaw --state all
-ghr pr view -R openclaw/openclaw 66795
+ghr pr view -R openclaw/openclaw 66863 --comments
 ghr pr reviews -R openclaw/openclaw 66795
 ghr pr comments -R openclaw/openclaw 66795
 ```
@@ -94,6 +97,8 @@ This is especially important for:
 - `pr list`
 - `pr view`
 - `repo view`
+
+`repo status` is the exception because it exposes mirror metadata that GitHub does not define.
 
 If `gh` prints GitHub-native data in a certain shape, `ghr` should aim to print the mirrored data the same way.
 
@@ -119,6 +124,8 @@ This should support:
 
 - `--json`
 - `-R, --repo`
+- `--comments` on `issue view` and `pr view`
+- `--web` on `repo view`, `issue view`, and `pr view`
 - later, possibly `--jq`
 - later, possibly `--template`
 
@@ -175,6 +182,7 @@ The goal is to copy the user-facing contract:
 Current read scope matches the server endpoints already supported:
 
 - repository view
+- repository mirror status
 - issue list
 - issue view
 - issue comments

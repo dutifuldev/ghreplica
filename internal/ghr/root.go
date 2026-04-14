@@ -69,11 +69,13 @@ func newRepoCmd(opts *RootOptions) *cobra.Command {
 		Short: "View mirrored repository data",
 	}
 	cmd.AddCommand(newRepoViewCmd(opts))
+	cmd.AddCommand(newRepoStatusCmd(opts))
 	return cmd
 }
 
 func newRepoViewCmd(opts *RootOptions) *cobra.Command {
 	var jsonFields string
+	var openInBrowser bool
 	cmd := &cobra.Command{
 		Use:   "view [OWNER/REPO]",
 		Short: "View a repository",
@@ -92,10 +94,41 @@ func newRepoViewCmd(opts *RootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if openInBrowser {
+				return openURL(resp.HTMLURL)
+			}
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), resp, jsonFields)
 			}
 			printRepoView(cmd.OutOrStdout(), resp)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
+	cmd.Flags().BoolVarP(&openInBrowser, "web", "w", false, "Open a repository in the browser")
+	return cmd
+}
+
+func newRepoStatusCmd(opts *RootOptions) *cobra.Command {
+	var jsonFields string
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "View ghreplica mirror status for a repository",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			client := clientFor(opts)
+			status, err := client.GetMirrorStatus(context.Background(), repo)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(jsonFields) != "" {
+				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
+			}
+			printRepoStatus(cmd.OutOrStdout(), status)
 			return nil
 		},
 	}
@@ -147,6 +180,8 @@ func newIssueListCmd(opts *RootOptions) *cobra.Command {
 
 func newIssueViewCmd(opts *RootOptions) *cobra.Command {
 	var jsonFields string
+	var showComments bool
+	var openInBrowser bool
 	cmd := &cobra.Command{
 		Use:   "view <number>",
 		Short: "View an issue",
@@ -165,14 +200,26 @@ func newIssueViewCmd(opts *RootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if openInBrowser {
+				return openURL(issue.HTMLURL)
+			}
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), issue, jsonFields)
 			}
 			printIssueView(cmd.OutOrStdout(), repo, issue)
+			if showComments {
+				comments, err := client.ListIssueComments(context.Background(), repo, number)
+				if err != nil {
+					return err
+				}
+				printIssueCommentsSection(cmd.OutOrStdout(), comments)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
+	cmd.Flags().BoolVarP(&showComments, "comments", "c", false, "View issue comments")
+	cmd.Flags().BoolVarP(&openInBrowser, "web", "w", false, "Open an issue in the browser")
 	return cmd
 }
 
@@ -252,6 +299,8 @@ func newPRListCmd(opts *RootOptions) *cobra.Command {
 
 func newPRViewCmd(opts *RootOptions) *cobra.Command {
 	var jsonFields string
+	var showComments bool
+	var openInBrowser bool
 	cmd := &cobra.Command{
 		Use:   "view <number>",
 		Short: "View a pull request",
@@ -270,14 +319,26 @@ func newPRViewCmd(opts *RootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if openInBrowser {
+				return openURL(pr.HTMLURL)
+			}
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), pr, jsonFields)
 			}
 			printPullView(cmd.OutOrStdout(), repo, pr)
+			if showComments {
+				comments, err := client.ListIssueComments(context.Background(), repo, number)
+				if err != nil {
+					return err
+				}
+				printIssueCommentsSection(cmd.OutOrStdout(), comments)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
+	cmd.Flags().BoolVarP(&showComments, "comments", "c", false, "View pull request comments")
+	cmd.Flags().BoolVarP(&openInBrowser, "web", "w", false, "Open a pull request in the browser")
 	return cmd
 }
 

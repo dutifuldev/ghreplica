@@ -87,6 +87,10 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string) ([]I
 	return listAll[IssueCommentResponse](ctx, c, fmt.Sprintf("/repos/%s/%s/issues/comments?per_page=100", owner, repo))
 }
 
+func (c *Client) ListIssueCommentsForIssue(ctx context.Context, owner, repo string, number int) ([]IssueCommentResponse, error) {
+	return listAll[IssueCommentResponse](ctx, c, fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, number))
+}
+
 func (c *Client) ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]PullRequestReviewResponse, error) {
 	return listAll[PullRequestReviewResponse](ctx, c, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews?per_page=100", owner, repo, number))
 }
