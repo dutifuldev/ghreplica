@@ -38,6 +38,7 @@ Before deployment, confirm:
 - current VM zone: `europe-west1-b`
 - Cloud SQL instance: `horse-pg`
 - Cloud SQL connection name, in `project:region:instance` form
+- if the database is reused from another project, that project must be used in the connection name, for example `horse-460221:europe-west1:horse-pg`
 - Service account on the VM: `bob-gcloud@dutiful-20260414.iam.gserviceaccount.com`
 
 The VM service account must already be able to connect to the `ghreplica` database and must not have access to the Horse databases.
