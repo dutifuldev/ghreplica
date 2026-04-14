@@ -19,6 +19,7 @@ The design follows GitHub's structure closely enough to preserve compatibility, 
 - Preserve GitHub IDs and numbers.
 - Store raw webhook and crawl data for replay and repair.
 - Use JSONB for long-tail fields, not core query paths.
+- Keep the table design explicit even if the implementation uses GORM models.
 
 ## Table Layers
 
@@ -30,6 +31,8 @@ The schema should be split into three layers:
    - webhook deliveries and crawl snapshots
 3. projection tables
    - triage-optimized materializations
+
+In implementation terms, these tables should map to distinct GORM models rather than one generic persistence model.
 
 ## Canonical Tables
 

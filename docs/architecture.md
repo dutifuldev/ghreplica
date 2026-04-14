@@ -39,6 +39,21 @@ That gives you:
 
 This is materially better than a direct `webhook -> database row -> API` design because GitHub webhooks are incomplete, can arrive out of order, and do not cover every query shape you need.
 
+## Chosen Stack
+
+The intended application stack is:
+
+- `Echo` for the HTTP surface
+- `GORM` for persistence models and database access
+- `Postgres` as the primary transactional backend
+
+How to apply that choice cleanly:
+
+- use GORM models for canonical tables, raw sync tables, and projection tables
+- keep model boundaries explicit instead of letting handlers query tables ad hoc
+- keep schema changes versioned and reviewable even if GORM is used for model management
+- reserve direct SQL for exceptional cases where GORM would make a query or migration path unclear
+
 ## Tables
 
 Yes, the system should have tables when the backend is relational.
@@ -221,11 +236,14 @@ Define narrow ports such as:
 
 This is what backend agnostic should mean in practice: the domain depends on these ports, and concrete adapters implement them for Postgres, SQLite, object storage, or HF-backed sinks where appropriate.
 
+In the default implementation, the relational adapters should be GORM-backed.
+
 ## Recommended Default Backend
 
 For the first real version:
 
 - `Postgres` for cursors, canonical entities, projections, and outbox
+- `GORM` for relational persistence and model mapping
 - `S3`, `MinIO`, or buckets for large raw payloads and archives
 - `Redis` only if distributed queues or caching become necessary
 
@@ -339,6 +357,7 @@ internal/
   jobs/
   storage/
     ports/
+    gorm/
     postgres/
     sqlite/
     blob/
@@ -365,7 +384,7 @@ GitHub webhook or API
 ## Implementation Plan
 
 1. Define canonical entities and storage ports.
-2. Implement Postgres plus blob storage adapters.
+2. Implement GORM-backed Postgres models plus blob storage adapters.
 3. Implement webhook receiver and raw event persistence.
 4. Implement repo bootstrap crawler.
 5. Implement normalizers for repos, issues, PRs, comments, labels, and commits.
@@ -379,6 +398,7 @@ GitHub webhook or API
 The recommended architecture is:
 
 - Echo for the HTTP surface
+- GORM for relational persistence
 - event-driven ingestion from both webhooks and crawls
 - canonical internal model
 - replayable projections

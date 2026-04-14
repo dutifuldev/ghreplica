@@ -1,0 +1,344 @@
+package sync
+
+import (
+	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/dutifuldev/ghreplica/internal/database"
+	gh "github.com/dutifuldev/ghreplica/internal/github"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+type Service struct {
+	db     *gorm.DB
+	github *gh.Client
+}
+
+func NewService(db *gorm.DB, githubClient *gh.Client) *Service {
+	return &Service{db: db, github: githubClient}
+}
+
+func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) error {
+	repoResp, err := s.github.GetRepository(ctx, owner, repo)
+	if err != nil {
+		return err
+	}
+
+	canonicalRepo, err := s.upsertRepository(ctx, repoResp)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	tracked := database.TrackedRepository{
+		Owner:           owner,
+		Name:            repo,
+		FullName:        repoResp.FullName,
+		RepositoryID:    &canonicalRepo.ID,
+		SyncMode:        "poll",
+		Enabled:         true,
+		LastBootstrapAt: &now,
+		LastCrawlAt:     &now,
+	}
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "full_name"}},
+		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "sync_mode", "enabled", "last_bootstrap_at", "last_crawl_at"}),
+	}).Create(&tracked).Error; err != nil {
+		return err
+	}
+
+	issues, err := s.github.ListIssues(ctx, owner, repo, "all")
+	if err != nil {
+		return err
+	}
+	for _, issue := range issues {
+		if _, err := s.upsertIssue(ctx, canonicalRepo.ID, issue); err != nil {
+			return err
+		}
+	}
+
+	pulls, err := s.github.ListPullRequests(ctx, owner, repo, "all")
+	if err != nil {
+		return err
+	}
+	for _, pull := range pulls {
+		if err := s.upsertPullRequest(ctx, canonicalRepo.ID, pull); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) upsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
+	var ownerID *uint
+	if repo.Owner != nil {
+		user, err := s.upsertUser(ctx, *repo.Owner)
+		if err != nil {
+			return database.Repository{}, err
+		}
+		ownerID = &user.ID
+	}
+	ownerLogin := ""
+	if repo.Owner != nil {
+		ownerLogin = repo.Owner.Login
+	}
+
+	raw, err := json.Marshal(repo)
+	if err != nil {
+		return database.Repository{}, err
+	}
+
+	model := database.Repository{
+		GitHubID:      repo.ID,
+		NodeID:        repo.NodeID,
+		OwnerID:       ownerID,
+		OwnerLogin:    ownerLogin,
+		Name:          repo.Name,
+		FullName:      repo.FullName,
+		Private:       repo.Private,
+		Archived:      repo.Archived,
+		Disabled:      repo.Disabled,
+		DefaultBranch: repo.DefaultBranch,
+		Description:   repo.Description,
+		HTMLURL:       repo.HTMLURL,
+		APIURL:        repo.URL,
+		Visibility:    repo.Visibility,
+		Fork:          repo.Fork,
+		RawJSON:       datatypes.JSON(raw),
+		CreatedAt:     repo.CreatedAt,
+		UpdatedAt:     repo.UpdatedAt,
+	}
+
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "full_name"}},
+		DoUpdates: clause.AssignmentColumns([]string{"github_id", "node_id", "owner_id", "owner_login", "name", "private", "archived", "disabled", "default_branch", "description", "html_url", "api_url", "visibility", "fork", "raw_json", "created_at", "updated_at"}),
+	}).Create(&model).Error; err != nil {
+		return database.Repository{}, err
+	}
+
+	var stored database.Repository
+	err = s.db.WithContext(ctx).Preload("Owner").Where("full_name = ?", repo.FullName).First(&stored).Error
+	return stored, err
+}
+
+func (s *Service) upsertUser(ctx context.Context, user gh.UserResponse) (database.User, error) {
+	raw, err := json.Marshal(user)
+	if err != nil {
+		return database.User{}, err
+	}
+
+	model := database.User{
+		GitHubID:  user.ID,
+		NodeID:    user.NodeID,
+		Login:     user.Login,
+		Type:      user.Type,
+		SiteAdmin: user.SiteAdmin,
+		Name:      user.Name,
+		AvatarURL: user.AvatarURL,
+		HTMLURL:   user.HTMLURL,
+		APIURL:    user.URL,
+		RawJSON:   datatypes.JSON(raw),
+	}
+
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "github_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"node_id", "login", "type", "site_admin", "name", "avatar_url", "html_url", "api_url", "raw_json"}),
+	}).Create(&model).Error; err != nil {
+		return database.User{}, err
+	}
+
+	var stored database.User
+	err = s.db.WithContext(ctx).Where("github_id = ?", user.ID).First(&stored).Error
+	return stored, err
+}
+
+func (s *Service) upsertIssue(ctx context.Context, repositoryID uint, issue gh.IssueResponse) (database.Issue, error) {
+	var authorID *uint
+	if issue.User != nil {
+		author, err := s.upsertUser(ctx, *issue.User)
+		if err != nil {
+			return database.Issue{}, err
+		}
+		authorID = &author.ID
+	}
+
+	raw, err := json.Marshal(issue)
+	if err != nil {
+		return database.Issue{}, err
+	}
+
+	model := database.Issue{
+		RepositoryID:      repositoryID,
+		GitHubID:          issue.ID,
+		NodeID:            issue.NodeID,
+		Number:            issue.Number,
+		Title:             issue.Title,
+		Body:              issue.Body,
+		State:             issue.State,
+		StateReason:       issue.StateReason,
+		AuthorID:          authorID,
+		CommentsCount:     issue.Comments,
+		Locked:            issue.Locked,
+		IsPullRequest:     issue.PullRequest != nil,
+		PullRequestAPIURL: pullRequestURL(issue.PullRequest),
+		HTMLURL:           issue.HTMLURL,
+		APIURL:            issue.URL,
+		GitHubCreatedAt:   issue.CreatedAt,
+		GitHubUpdatedAt:   issue.UpdatedAt,
+		RawJSON:           datatypes.JSON(raw),
+	}
+	if issue.ClosedAt != nil {
+		closedAt := *issue.ClosedAt
+		model.ClosedAt = &closedAt
+	}
+
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "repository_id"}, {Name: "number"}},
+		DoUpdates: clause.AssignmentColumns([]string{"github_id", "node_id", "title", "body", "state", "state_reason", "author_id", "comments_count", "locked", "is_pull_request", "pull_request_api_url", "html_url", "api_url", "github_created_at", "github_updated_at", "closed_at", "raw_json"}),
+	}).Create(&model).Error; err != nil {
+		return database.Issue{}, err
+	}
+
+	var stored database.Issue
+	err = s.db.WithContext(ctx).Preload("Author").Where("repository_id = ? AND number = ?", repositoryID, issue.Number).First(&stored).Error
+	return stored, err
+}
+
+func (s *Service) upsertPullRequest(ctx context.Context, repositoryID uint, pull gh.PullRequestResponse) error {
+	issue, err := s.ensureIssueForPullRequest(ctx, repositoryID, pull)
+	if err != nil {
+		return err
+	}
+
+	var mergedByID *uint
+	if pull.MergedBy != nil {
+		mergedBy, err := s.upsertUser(ctx, *pull.MergedBy)
+		if err != nil {
+			return err
+		}
+		mergedByID = &mergedBy.ID
+	}
+
+	headRepoID, err := s.ensureRepositoryRef(ctx, pull.Head.Repo)
+	if err != nil {
+		return err
+	}
+	baseRepoID, err := s.ensureRepositoryRef(ctx, pull.Base.Repo)
+	if err != nil {
+		return err
+	}
+
+	raw, err := json.Marshal(pull)
+	if err != nil {
+		return err
+	}
+
+	model := database.PullRequest{
+		IssueID:         issue.ID,
+		RepositoryID:    repositoryID,
+		GitHubID:        pull.ID,
+		NodeID:          pull.NodeID,
+		Number:          pull.Number,
+		State:           pull.State,
+		Draft:           pull.Draft,
+		HeadRepoID:      headRepoID,
+		HeadRef:         pull.Head.Ref,
+		HeadSHA:         pull.Head.SHA,
+		BaseRepoID:      baseRepoID,
+		BaseRef:         pull.Base.Ref,
+		BaseSHA:         pull.Base.SHA,
+		Mergeable:       pull.Mergeable,
+		MergeableState:  pull.MergeableState,
+		Merged:          pull.Merged,
+		MergedByID:      mergedByID,
+		MergeCommitSHA:  pull.MergeCommitSHA,
+		Additions:       pull.Additions,
+		Deletions:       pull.Deletions,
+		ChangedFiles:    pull.ChangedFiles,
+		CommitsCount:    pull.Commits,
+		HTMLURL:         pull.HTMLURL,
+		APIURL:          pull.URL,
+		DiffURL:         pull.DiffURL,
+		PatchURL:        pull.PatchURL,
+		GitHubCreatedAt: pull.CreatedAt,
+		GitHubUpdatedAt: pull.UpdatedAt,
+		RawJSON:         datatypes.JSON(raw),
+	}
+	if pull.MergedAt != nil {
+		mergedAt := *pull.MergedAt
+		model.MergedAt = &mergedAt
+	}
+
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "issue_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "github_id", "node_id", "number", "state", "draft", "head_repo_id", "head_ref", "head_sha", "base_repo_id", "base_ref", "base_sha", "mergeable", "mergeable_state", "merged", "merged_at", "merged_by_id", "merge_commit_sha", "additions", "deletions", "changed_files", "commits_count", "html_url", "api_url", "diff_url", "patch_url", "github_created_at", "github_updated_at", "raw_json"}),
+	}).Create(&model).Error
+}
+
+func (s *Service) ensureIssueForPullRequest(ctx context.Context, repositoryID uint, pull gh.PullRequestResponse) (database.Issue, error) {
+	var existing database.Issue
+	err := s.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repositoryID, pull.Number).First(&existing).Error
+	if err == nil {
+		return existing, nil
+	}
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return database.Issue{}, err
+	}
+
+	issueLike := gh.IssueResponse{
+		ID:          pull.ID,
+		NodeID:      pull.NodeID,
+		Number:      pull.Number,
+		Title:       pull.Title,
+		Body:        pull.Body,
+		State:       pull.State,
+		User:        pull.User,
+		PullRequest: &gh.IssuePullRequestRef{URL: pull.URL},
+		HTMLURL:     pull.HTMLURL,
+		URL:         pull.URL,
+		CreatedAt:   pull.CreatedAt,
+		UpdatedAt:   pull.UpdatedAt,
+	}
+	return s.upsertIssue(ctx, repositoryID, issueLike)
+}
+
+func (s *Service) ensureRepositoryRef(ctx context.Context, repo *gh.PullBranchRepository) (*uint, error) {
+	if repo == nil {
+		return nil, nil
+	}
+
+	stored, err := s.upsertRepository(ctx, gh.RepositoryResponse{
+		ID:            repo.ID,
+		NodeID:        repo.NodeID,
+		Name:          repo.Name,
+		FullName:      repo.FullName,
+		Private:       repo.Private,
+		Owner:         repo.Owner,
+		HTMLURL:       repo.HTMLURL,
+		Description:   repo.Description,
+		Fork:          repo.Fork,
+		URL:           repo.URL,
+		DefaultBranch: repo.DefaultBranch,
+		Visibility:    repo.Visibility,
+		Archived:      repo.Archived,
+		Disabled:      repo.Disabled,
+		CreatedAt:     repo.CreatedAt,
+		UpdatedAt:     repo.UpdatedAt,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &stored.ID, nil
+}
+
+func pullRequestURL(ref *gh.IssuePullRequestRef) string {
+	if ref == nil {
+		return ""
+	}
+	return ref.URL
+}
