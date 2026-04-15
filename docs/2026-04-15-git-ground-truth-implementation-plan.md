@@ -251,6 +251,66 @@ It should:
 
 Git should be local to the worker, not the primary request-path datastore.
 
+## API Shape
+
+The API should be separated into three surfaces.
+
+### 1. GitHub-Compatible Surface
+
+This surface should remain GitHub-shaped.
+
+All of these endpoints should live under `/v1/github/...`.
+
+Examples:
+
+- `/v1/github/repos/{owner}/{repo}`
+- `/v1/github/repos/{owner}/{repo}/issues/{number}`
+- `/v1/github/repos/{owner}/{repo}/pulls/{number}`
+
+This surface is for normal mirrored GitHub resources and should continue to follow GitHub's contracts closely.
+
+### 2. Change Surface
+
+This surface should expose normalized Git-backed change truth.
+
+All of these endpoints should live under `/v1/changes/...`.
+
+Examples:
+
+- `/v1/changes/repos/{owner}/{repo}/commits/{sha}`
+- `/v1/changes/repos/{owner}/{repo}/commits/{sha}/files`
+- `/v1/changes/repos/{owner}/{repo}/pulls/{number}`
+- `/v1/changes/repos/{owner}/{repo}/pulls/{number}/files`
+- `/v1/changes/repos/{owner}/{repo}/compare/{base}...{head}`
+
+This surface is for exact Git-derived change data that is not necessarily a GitHub API contract but is still objective and explainable.
+
+### 3. Search Surface
+
+This surface should expose overlap and related-change queries.
+
+All of these endpoints should live under `/v1/search/...`.
+
+Examples:
+
+- `/v1/search/repos/{owner}/{repo}/pulls/{number}/related?mode=path_overlap`
+- `/v1/search/repos/{owner}/{repo}/pulls/{number}/related?mode=range_overlap`
+- `/v1/search/repos/{owner}/{repo}/pulls/by-paths`
+- `/v1/search/repos/{owner}/{repo}/pulls/by-ranges`
+
+This separation keeps the API clean:
+
+- GitHub-native resources stay under `/v1/github/...`
+- Git-backed normalized change data lives under `/v1/changes/...`
+- overlap and similarity queries live under `/v1/search/...`
+
+Search responses should be explainable. They should include not only the related PRs, but also why they matched, for example:
+
+- matched file paths
+- overlapping line ranges
+- score
+- match mode
+
 ## Handling Rewrites
 
 The implementation must explicitly support:

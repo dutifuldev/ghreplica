@@ -24,6 +24,14 @@ Current deployment:
 
 ## Current Surface
 
+The intended long-term API structure is:
+
+- `/v1/github/...` for GitHub-compatible mirrored resources
+- `/v1/changes/...` for normalized Git-backed change data
+- `/v1/search/...` for overlap and related-change queries
+
+The currently implemented read API still lives on the legacy `/repos/...` surface while that transition is designed.
+
 - repository view
 - issue list
 - issue view
