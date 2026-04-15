@@ -73,6 +73,7 @@ Current command shape:
 - `ghr search related-prs`
 - `ghr search prs-by-paths`
 - `ghr search prs-by-ranges`
+- `ghr search mentions`
 
 The first target is read-only parity for the endpoints `ghreplica` already serves.
 
@@ -98,6 +99,9 @@ ghr changes compare -R openclaw/openclaw main...5a3d3e54d93a03ee6f775d0010d1b1c4
 ghr search related-prs -R openclaw/openclaw 59883 --mode path_overlap
 ghr search prs-by-paths -R openclaw/openclaw --path src/acp/control-plane/manager.core.ts --state all
 ghr search prs-by-ranges -R openclaw/openclaw --path extensions/telegram/src/fetch.ts --start 24 --end 36 --state all
+ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts --scope pull_requests --scope issues
+ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
+ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
 ```
 
 ## API Mapping
@@ -163,6 +167,29 @@ That keeps GitHub-shaped reads separate from normalized git-change reads and `gh
 - `ghr search mentions -R <owner>/<repo> --query <expr>`
   - `POST /v1/search/repos/{owner}/{repo}/mentions`
 
+### Search workflow
+
+The `search` group has two distinct jobs:
+
+- overlap search over mirrored code-change data
+  - `related-prs`
+  - `prs-by-paths`
+  - `prs-by-ranges`
+- text search over mirrored GitHub discussion data
+  - `mentions`
+
+Use `ghr search mentions` when the question is:
+
+- where was this phrase mentioned
+- which PRs talked about this topic
+- did anyone mention something close to this wording
+
+Use the overlap commands when the question is:
+
+- which PRs touched the same file
+- which PRs touched overlapping lines
+- what other PRs are similar by code change
+
 Flags for `ghr search mentions`:
 
 - `--mode`
@@ -179,6 +206,15 @@ Flags for `ghr search mentions`:
 - `--author`
 - `--limit`
 - `--page`
+
+Recommended usage:
+
+- start with `--mode fts` for normal keyword or phrase search
+- use `--mode fuzzy` for approximate wording, split words, or misspellings
+- use `--mode regex` when you need exact pattern hunting
+- add one or more `--scope` flags whenever you know the kind of object you want
+- use `--state all` when closed PRs or issues matter
+- use `--author` when you want only one person’s PR text or comments
 
 The `search` responses should preserve the reasons for the match, not just the PR numbers.
 
@@ -215,6 +251,13 @@ That means surfacing fields like:
 - `excerpt`
 - `score`
 
+Default human-readable output should make it easy to scan:
+
+- object type and number
+- matched field
+- score
+- excerpt
+
 Examples:
 
 ```bash
@@ -222,6 +265,7 @@ ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts
 ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
 ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
 ghr search mentions -R openclaw/openclaw --query "greptile" --mode fts --scope pull_request_reviews --scope pull_request_review_comments
+ghr search mentions -R openclaw/openclaw --query "acp" --mode fts --scope pull_requests --state all --json resource,matched_field,score
 ```
 
 ## Compatibility Expectations
@@ -279,6 +323,19 @@ This should support:
 
 The JSON output should preserve GitHub field names and nested object structure.
 
+For `ghr search mentions`, `--json` is the preferred scripting mode.
+
+Example:
+
+```bash
+ghr search mentions \
+  -R openclaw/openclaw \
+  --query "heartbeat watchdog" \
+  --mode fts \
+  --scope pull_requests \
+  --json resource,matched_field,excerpt,score
+```
+
 ## Configuration
 
 The CLI should accept:
@@ -291,6 +348,36 @@ Reasonable defaults:
 - `GHR_BASE_URL`
 - default local base URL for development
 - explicit base URL for hosted environments such as `https://ghreplica.dutiful.dev`
+
+Current hosted default:
+
+- `https://ghreplica.dutiful.dev`
+
+So normal production use usually does not need `--base-url`.
+
+## Search Caveats
+
+`ghr search mentions` searches mirrored text that has already been indexed into `search_documents`.
+
+That means:
+
+- it does not call GitHub’s live search API
+- results reflect what `ghreplica` has already mirrored
+- older mirrored repos may need a text-index rebuild before repo-wide text search is complete
+
+The overlap commands depend on `/v1/changes/...` coverage instead.
+
+That means:
+
+- `mentions` depends on text-index coverage
+- `related-prs`, `prs-by-paths`, and `prs-by-ranges` depend on git-change index coverage
+
+If search results look incomplete:
+
+- check `ghr changes repo status -R <owner>/<repo>`
+- check `ghr changes pr status -R <owner>/<repo> <number>`
+- materialize a specific PR with `ghreplica sync pr <owner>/<repo> <number>`
+- rebuild text search with `ghreplica search-index repo <owner>/<repo>` when needed
 
 ## Implementation Guidance
 
