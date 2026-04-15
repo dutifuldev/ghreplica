@@ -43,12 +43,24 @@ func OpenClawIssue66863(t *testing.T) gh.IssueResponse {
 	return LoadJSON[gh.IssueResponse](t, "openclaw/issue_66863.json")
 }
 
+func OpenClawIssue67094Closed(t *testing.T) gh.IssueResponse {
+	return LoadJSON[gh.IssueResponse](t, "openclaw/issue_67094_closed.json")
+}
+
 func OpenClawIssue66863Comments(t *testing.T) []gh.IssueCommentResponse {
 	return LoadJSON[[]gh.IssueCommentResponse](t, "openclaw/issue_66863_comments.json")
 }
 
 func OpenClawPull66863(t *testing.T) gh.PullRequestResponse {
 	return LoadJSON[gh.PullRequestResponse](t, "openclaw/pull_66863.json")
+}
+
+func OpenClawPull67079Closed(t *testing.T) gh.PullRequestResponse {
+	return LoadJSON[gh.PullRequestResponse](t, "openclaw/pull_67079_closed.json")
+}
+
+func OpenClawPull67096Open(t *testing.T) gh.PullRequestResponse {
+	return LoadJSON[gh.PullRequestResponse](t, "openclaw/pull_67096_open.json")
 }
 
 func OpenClawPull66863Reviews(t *testing.T) []gh.PullRequestReviewResponse {

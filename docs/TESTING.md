@@ -34,6 +34,8 @@ These real payloads should be:
 - frozen as deterministic fixtures
 - used in offline tests only
 
+When a stored webhook delivery is not the most practical source for a specific action transition, it is also acceptable to freeze real GitHub or mirrored API object responses and wrap them in test webhook envelopes locally. The object body must still come from real captured data; do not invent GitHub-shaped fixtures from scratch for complex cases.
+
 Normal CI should not depend on live GitHub state.
 
 ## Priorities

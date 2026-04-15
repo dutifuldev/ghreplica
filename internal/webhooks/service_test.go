@@ -301,6 +301,155 @@ func TestWebhookIngestionDeletesIssueAndReviewComments(t *testing.T) {
 	require.EqualValues(t, 2, issueRows)
 }
 
+func TestWebhookIngestionProjectsClosedIssuePayloadFromRealFixture(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
+
+	payload, err := json.Marshal(map[string]any{
+		"action":     "closed",
+		"repository": testfixtures.OpenClawRepository(t),
+		"issue":      testfixtures.OpenClawIssue67094Closed(t),
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(
+		ctx,
+		"delivery-issue-closed",
+		"issues",
+		http.Header{"X-GitHub-Event": []string{"issues"}},
+		payload,
+	))
+
+	var issue database.Issue
+	require.NoError(t, db.WithContext(ctx).Where("github_id = ?", int64(4267632693)).First(&issue).Error)
+	require.Equal(t, 67094, issue.Number)
+	require.Equal(t, "closed", issue.State)
+	require.Equal(t, "not_planned", issue.StateReason)
+
+	var tracked database.TrackedRepository
+	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&tracked).Error)
+	require.Equal(t, "webhook_only", tracked.SyncMode)
+	require.Equal(t, "sparse", tracked.IssuesCompleteness)
+}
+
+func TestWebhookIngestionProjectsPullRequestActionMatrixFromRealFixtures(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
+
+	repo := testfixtures.OpenClawRepository(t)
+	openPull := testfixtures.OpenClawPull67096Open(t)
+	closedPull := testfixtures.OpenClawPull67079Closed(t)
+
+	for _, tc := range []struct {
+		deliveryID string
+		action     string
+		pull       github.PullRequestResponse
+	}{
+		{deliveryID: "delivery-pr-sync", action: "synchronize", pull: openPull},
+		{deliveryID: "delivery-pr-ready", action: "ready_for_review", pull: openPull},
+		{deliveryID: "delivery-pr-closed", action: "closed", pull: closedPull},
+	} {
+		payload, err := json.Marshal(map[string]any{
+			"action":       tc.action,
+			"repository":   repo,
+			"pull_request": tc.pull,
+		})
+		require.NoError(t, err)
+		require.NoError(t, ingestor.HandleWebhook(
+			ctx,
+			tc.deliveryID,
+			"pull_request",
+			http.Header{"X-GitHub-Event": []string{"pull_request"}},
+			payload,
+		))
+	}
+
+	var pulls []database.PullRequest
+	require.NoError(t, db.WithContext(ctx).Order("number asc").Find(&pulls).Error)
+	require.Len(t, pulls, 2)
+	require.Equal(t, 67079, pulls[0].Number)
+	require.Equal(t, "closed", pulls[0].State)
+	require.Equal(t, "fix/66975-telegram-commands-registry-caching", pulls[0].HeadRef)
+	require.Equal(t, 67096, pulls[1].Number)
+	require.Equal(t, "open", pulls[1].State)
+	require.Equal(t, "ci/upgrade-v4-actions", pulls[1].HeadRef)
+
+	var tracked database.TrackedRepository
+	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&tracked).Error)
+	require.Equal(t, "sparse", tracked.IssuesCompleteness)
+	require.Equal(t, "sparse", tracked.PullsCompleteness)
+}
+
+func TestWebhookIngestionReplaysReviewAndReviewCommentEditsWithoutDuplicates(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
+
+	repo := testfixtures.OpenClawRepository(t)
+	pull := testfixtures.OpenClawPull66863(t)
+	review := testfixtures.OpenClawPull66863Reviews(t)[0]
+	reviewComment := testfixtures.OpenClawPull66863ReviewComments(t)[0]
+
+	reviewPayload, err := json.Marshal(map[string]any{
+		"action":       "submitted",
+		"repository":   repo,
+		"pull_request": pull,
+		"review":       review,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-submit", "pull_request_review", http.Header{"X-GitHub-Event": []string{"pull_request_review"}}, reviewPayload))
+
+	reviewPayload, err = json.Marshal(map[string]any{
+		"action":       "edited",
+		"repository":   repo,
+		"pull_request": pull,
+		"review":       review,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-edit", "pull_request_review", http.Header{"X-GitHub-Event": []string{"pull_request_review"}}, reviewPayload))
+
+	reviewCommentPayload, err := json.Marshal(map[string]any{
+		"action":       "created",
+		"repository":   repo,
+		"pull_request": pull,
+		"comment":      reviewComment,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-comment-create", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, reviewCommentPayload))
+
+	reviewCommentPayload, err = json.Marshal(map[string]any{
+		"action":       "edited",
+		"repository":   repo,
+		"pull_request": pull,
+		"comment":      reviewComment,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-comment-edit", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, reviewCommentPayload))
+
+	var reviews int64
+	var reviewComments int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.PullRequestReview{}).Count(&reviews).Error)
+	require.NoError(t, db.WithContext(ctx).Model(&database.PullRequestReviewComment{}).Count(&reviewComments).Error)
+	require.EqualValues(t, 1, reviews)
+	require.EqualValues(t, 1, reviewComments)
+}
+
 func repoFixture() github.RepositoryResponse {
 	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
 	return github.RepositoryResponse{
