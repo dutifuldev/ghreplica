@@ -9,6 +9,7 @@ import (
 	"time"
 
 	gh "github.com/dutifuldev/ghreplica/internal/github"
+	"github.com/dutifuldev/ghreplica/internal/gitindex"
 	"github.com/dutifuldev/ghreplica/internal/testfixtures"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
@@ -176,6 +177,82 @@ func TestPRReviewsAndCommentsEmptyOutput(t *testing.T) {
 	require.Contains(t, stdout, "no review comments found")
 }
 
+func TestChangesPRAndCompareCommands(t *testing.T) {
+	server := newTestServer(t)
+	cmd := NewRootCmd()
+
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "pr", "view", "2")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets#2 change snapshot")
+	require.Contains(t, stdout, "Indexed as:")
+	require.Contains(t, stdout, "current")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "pr", "files", "2")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "PATH")
+	require.Contains(t, stdout, "src/parser.ts")
+	require.Contains(t, stdout, "test/parser_test.ts")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "compare", "main...abc123")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets compare main...abc123")
+	require.Contains(t, stdout, "Snapshot PR:")
+	require.Contains(t, stdout, "#2")
+}
+
+func TestChangesCommitCommands(t *testing.T) {
+	server := newTestServer(t)
+	cmd := NewRootCmd()
+
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "commit", "view", "abc123")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets commit abc123")
+	require.Contains(t, stdout, "Fix parser")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "commit", "files", "abc123", "--json", "parent_sha,file")
+	require.NoError(t, err)
+	var payload []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &payload))
+	require.Len(t, payload, 2)
+	require.Equal(t, "def456", payload[0]["parent_sha"])
+}
+
+func TestSearchCommands(t *testing.T) {
+	server := newTestServer(t)
+	cmd := NewRootCmd()
+
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "related-prs", "2", "--mode", "path_overlap", "--state", "all")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "#7")
+	require.Contains(t, stdout, "paths=src/parser.ts")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "prs-by-paths", "--path", "src/parser.ts", "--path", "test/parser_test.ts", "--json", "pull_request_number,shared_paths")
+	require.NoError(t, err)
+	var pathMatches []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &pathMatches))
+	require.Len(t, pathMatches, 2)
+	require.EqualValues(t, 7, pathMatches[0]["pull_request_number"])
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "prs-by-ranges", "--path", "src/parser.ts", "--start", "11", "--end", "18")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "#7")
+	require.Contains(t, stdout, "overlapping_hunks=2")
+}
+
+func TestSearchByRangesRejectsMismatchedFlags(t *testing.T) {
+	server := newTestServer(t)
+	cmd := NewRootCmd()
+
+	_, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "prs-by-ranges", "--path", "src/parser.ts", "--start", "11")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--path, --start, and --end must be provided the same number of times")
+}
+
 func TestIssueAndPRCommandsRejectPositionalRepoArgs(t *testing.T) {
 	server := newTestServer(t)
 
@@ -273,41 +350,65 @@ func newTestServer(t *testing.T) *httptest.Server {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/acme/widgets", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, repo)
 	})
 	mux.HandleFunc("/repos/acme/widgets/_ghreplica", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, status)
 	})
-	mux.HandleFunc("/repos/acme/widgets/issues", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets/issues", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, issues)
 	})
-	mux.HandleFunc("/repos/acme/widgets/issues/1", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets/issues/1", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, issues[0])
 	})
-	mux.HandleFunc("/repos/acme/widgets/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets/issues/1/comments", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, issueComments)
 	})
-	mux.HandleFunc("/repos/acme/widgets/pulls", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets/pulls", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, pulls)
 	})
-	mux.HandleFunc("/repos/acme/widgets/pulls/2", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets/pulls/2", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, pulls[0])
 	})
-	mux.HandleFunc("/repos/acme/widgets/issues/2/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets/issues/2/comments", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, issueComments)
 	})
-	mux.HandleFunc("/repos/acme/widgets/pulls/2/reviews", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets/pulls/2/reviews", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, reviews[:0])
 	})
-	mux.HandleFunc("/repos/acme/widgets/pulls/2/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets/pulls/2/comments", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, reviewComments[:0])
 	})
-	mux.HandleFunc("/repos/acme/widgets/pulls/3/reviews", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets/pulls/3/reviews", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, reviews[:0])
 	})
-	mux.HandleFunc("/repos/acme/widgets/pulls/3/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/acme/widgets/pulls/3/comments", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, reviewComments[:0])
+	})
+	mux.HandleFunc("/v1/changes/repos/acme/widgets/pulls/2", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, pullRequestChangeSnapshotFixture())
+	})
+	mux.HandleFunc("/v1/changes/repos/acme/widgets/pulls/2/files", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, fileChangesFixture())
+	})
+	mux.HandleFunc("/v1/changes/repos/acme/widgets/commits/abc123", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, commitFixture())
+	})
+	mux.HandleFunc("/v1/changes/repos/acme/widgets/commits/abc123/files", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, commitFilesFixture())
+	})
+	mux.HandleFunc("/v1/changes/repos/acme/widgets/compare/main...abc123", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, compareFixture())
+	})
+	mux.HandleFunc("/v1/search/repos/acme/widgets/pulls/2/related", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, searchMatchesFixture())
+	})
+	mux.HandleFunc("/v1/search/repos/acme/widgets/pulls/by-paths", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, searchMatchesFixture())
+	})
+	mux.HandleFunc("/v1/search/repos/acme/widgets/pulls/by-ranges", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, []gitindex.SearchMatch{searchMatchesFixture()[0]})
 	})
 
 	return httptest.NewServer(mux)
@@ -345,34 +446,34 @@ func newOpenClawTestServer(t *testing.T) *httptest.Server {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/openclaw/openclaw", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/openclaw/openclaw", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, repo)
 	})
 	mux.HandleFunc("/repos/openclaw/openclaw/_ghreplica", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, status)
 	})
-	mux.HandleFunc("/repos/openclaw/openclaw/issues", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/openclaw/openclaw/issues", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, []gh.IssueResponse{issue})
 	})
-	mux.HandleFunc("/repos/openclaw/openclaw/issues/66797", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/openclaw/openclaw/issues/66797", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, issue)
 	})
-	mux.HandleFunc("/repos/openclaw/openclaw/issues/66797/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/openclaw/openclaw/issues/66797/comments", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, issueComments)
 	})
-	mux.HandleFunc("/repos/openclaw/openclaw/pulls", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/openclaw/openclaw/pulls", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, []gh.PullRequestResponse{pull})
 	})
-	mux.HandleFunc("/repos/openclaw/openclaw/pulls/66863", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/openclaw/openclaw/pulls/66863", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, pull)
 	})
-	mux.HandleFunc("/repos/openclaw/openclaw/issues/66863/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/openclaw/openclaw/issues/66863/comments", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, prIssueComments)
 	})
-	mux.HandleFunc("/repos/openclaw/openclaw/pulls/66863/reviews", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/openclaw/openclaw/pulls/66863/reviews", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, reviews)
 	})
-	mux.HandleFunc("/repos/openclaw/openclaw/pulls/66863/comments", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/github/repos/openclaw/openclaw/pulls/66863/comments", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, reviewComments)
 	})
 
@@ -484,3 +585,157 @@ func pullFixture() gh.PullRequestResponse {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+func pullRequestChangeSnapshotFixture() PullRequestChangeSnapshotResponse {
+	now := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
+	return PullRequestChangeSnapshotResponse{
+		PullRequestNumber: 2,
+		HeadSHA:           "abc123",
+		BaseSHA:           "def456",
+		MergeBaseSHA:      "def456",
+		BaseRef:           "main",
+		State:             "open",
+		Draft:             false,
+		IndexedAs:         "full",
+		IndexFreshness:    "current",
+		PathCount:         2,
+		IndexedFileCount:  2,
+		HunkCount:         3,
+		Additions:         10,
+		Deletions:         2,
+		PatchBytes:        128,
+		LastIndexedAt:     &now,
+	}
+}
+
+func fileChangesFixture() []gitindex.FileChange {
+	return []gitindex.FileChange{
+		{
+			Path:        "src/parser.ts",
+			Status:      "modified",
+			FileKind:    "text",
+			IndexedAs:   "full",
+			HeadBlobSHA: "111111",
+			BaseBlobSHA: "222222",
+			Additions:   8,
+			Deletions:   1,
+			Changes:     9,
+			Hunks: []gitindex.Hunk{
+				{Index: 0, DiffHunk: "@@ -11,2 +11,5 @@", OldStart: 11, OldCount: 2, OldEnd: 12, NewStart: 11, NewCount: 5, NewEnd: 15},
+				{Index: 1, DiffHunk: "@@ -21,1 +24,2 @@", OldStart: 21, OldCount: 1, OldEnd: 21, NewStart: 24, NewCount: 2, NewEnd: 25},
+			},
+		},
+		{
+			Path:        "test/parser_test.ts",
+			Status:      "modified",
+			FileKind:    "text",
+			IndexedAs:   "full",
+			HeadBlobSHA: "333333",
+			BaseBlobSHA: "444444",
+			Additions:   2,
+			Deletions:   1,
+			Changes:     3,
+			Hunks: []gitindex.Hunk{
+				{Index: 0, DiffHunk: "@@ -5,1 +5,2 @@", OldStart: 5, OldCount: 1, OldEnd: 5, NewStart: 5, NewCount: 2, NewEnd: 6},
+			},
+		},
+	}
+}
+
+func commitFixture() CommitResponse {
+	now := time.Date(2026, 4, 15, 9, 55, 0, 0, time.UTC)
+	return CommitResponse{
+		SHA:             "abc123",
+		TreeSHA:         "tree123",
+		AuthorName:      "Octo Cat",
+		AuthorEmail:     "octo@example.com",
+		AuthoredAt:      now,
+		CommitterName:   "Octo Cat",
+		CommitterEmail:  "octo@example.com",
+		CommittedAt:     now,
+		Message:         "Fix parser",
+		MessageEncoding: "UTF-8",
+		Parents:         []string{"def456"},
+	}
+}
+
+func commitFilesFixture() []map[string]any {
+	files := fileChangesFixture()
+	return []map[string]any{
+		{
+			"parent_sha":   "def456",
+			"parent_index": 0,
+			"file": map[string]any{
+				"path":          files[0].Path,
+				"status":        files[0].Status,
+				"file_kind":     files[0].FileKind,
+				"indexed_as":    files[0].IndexedAs,
+				"additions":     files[0].Additions,
+				"deletions":     files[0].Deletions,
+				"changes":       files[0].Changes,
+				"head_blob_sha": files[0].HeadBlobSHA,
+				"base_blob_sha": files[0].BaseBlobSHA,
+			},
+		},
+		{
+			"parent_sha":   "def456",
+			"parent_index": 0,
+			"file": map[string]any{
+				"path":          files[1].Path,
+				"status":        files[1].Status,
+				"file_kind":     files[1].FileKind,
+				"indexed_as":    files[1].IndexedAs,
+				"additions":     files[1].Additions,
+				"deletions":     files[1].Deletions,
+				"changes":       files[1].Changes,
+				"head_blob_sha": files[1].HeadBlobSHA,
+				"base_blob_sha": files[1].BaseBlobSHA,
+			},
+		},
+	}
+}
+
+func compareFixture() CompareResponse {
+	resp := CompareResponse{
+		Base:     "main",
+		Head:     "abc123",
+		Snapshot: pullRequestChangeSnapshotFixture(),
+		Files:    fileChangesFixture(),
+	}
+	resp.Resolved.Base = "def456"
+	resp.Resolved.Head = "abc123"
+	return resp
+}
+
+func searchMatchesFixture() []gitindex.SearchMatch {
+	return []gitindex.SearchMatch{
+		{
+			PullRequestNumber: 7,
+			State:             "open",
+			Draft:             false,
+			HeadSHA:           "fedcba",
+			BaseRef:           "main",
+			IndexedAs:         "full",
+			IndexFreshness:    "current",
+			Score:             24,
+			SharedPaths:       []string{"src/parser.ts", "test/parser_test.ts"},
+			OverlappingHunks:  2,
+			MatchedRanges: []gitindex.MatchedPath{
+				{Path: "src/parser.ts", NewStart: 11, NewEnd: 18},
+			},
+			Reasons: []string{"shared_paths", "range_overlap"},
+		},
+		{
+			PullRequestNumber: 8,
+			State:             "closed",
+			Draft:             false,
+			HeadSHA:           "beaded",
+			BaseRef:           "main",
+			IndexedAs:         "paths_only",
+			IndexFreshness:    "current",
+			Score:             12,
+			SharedPaths:       []string{"src/parser.ts"},
+			Reasons:           []string{"shared_paths"},
+		},
+	}
+}
