@@ -378,6 +378,20 @@ func (s *Server) handleSearchMentions(c echo.Context) error {
 	return c.JSON(http.StatusOK, matches)
 }
 
+func (s *Server) handleGetRepoSearchStatus(c echo.Context) error {
+	if s.search == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "Search is not configured"})
+	}
+	status, err := s.search.GetRepoStatus(c.Request().Context(), c.Param("owner"), c.Param("repo"))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+		return err
+	}
+	return c.JSON(http.StatusOK, status)
+}
+
 func (s *Server) handleSearchRelatedPullRequests(c echo.Context) error {
 	repo, snapshot, err := s.loadSnapshot(c)
 	if err != nil {

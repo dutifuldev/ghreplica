@@ -57,6 +57,7 @@ Implemented today:
   - related pull requests by overlapping hunks
   - pull request search by paths
   - pull request search by ranges
+  - repo-level text-search status
   - mirrored text search across PRs, issues, comments, reviews, and review comments
 - `/repos/{owner}/{repo}/_ghreplica`
   - repo mirror status
@@ -67,6 +68,7 @@ The mirror preserves GitHub-native field names and response shapes wherever the 
 
 The mirrored text-search surface is:
 
+- `GET /v1/search/repos/{owner}/{repo}/status`
 - `POST /v1/search/repos/{owner}/{repo}/mentions`
 
 It supports three modes:
@@ -89,10 +91,13 @@ The search corpus includes:
 Example:
 
 ```bash
+ghr search status -R openclaw/openclaw
 ghr search mentions -R openclaw/openclaw --query "acp" --mode fts --scope pull_requests --state all
 ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
 ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
 ```
+
+Use `ghr search status` first when you need to know whether mirrored text search is complete and current enough to trust an empty result.
 
 ## Sync Model
 
@@ -126,6 +131,7 @@ ghr changes compare -R openclaw/openclaw main...5a3d3e54d93a03ee6f775d0010d1b1c4
 ghr search related-prs -R openclaw/openclaw 59883 --mode path_overlap --state all
 ghr search prs-by-paths -R openclaw/openclaw --path src/acp/control-plane/manager.core.ts --state all
 ghr search prs-by-ranges -R openclaw/openclaw --path extensions/telegram/src/fetch.ts --start 24 --end 36 --state all
+ghr search status -R openclaw/openclaw
 ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts --scope pull_requests --scope issues
 ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
 ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all

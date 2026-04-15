@@ -37,6 +37,8 @@ Use:
   - when you want git-backed truth, PR snapshots, files, commits, compare results, or indexing status
 - `search related-prs`, `search prs-by-paths`, or `search prs-by-ranges`
   - when you want related PRs by changed files or overlapping line ranges
+- `search status`
+  - when you need to know whether mirrored text search is complete, current, or stale
 - `search mentions`
   - when you want to find where a phrase or topic was mentioned in mirrored PRs, issues, comments, reviews, or review comments
 
@@ -88,6 +90,19 @@ Use this surface for questions like:
 - which PRs are related by changed code
 
 ## Text search with `ghr search mentions`
+
+Check status first when search completeness matters:
+
+```bash
+ghr search status -R openclaw/openclaw
+```
+
+Use this when the question is:
+
+- is the text index present
+- is it current or stale
+- is an empty `mentions` result trustworthy
+- should we rebuild text search for this repo
 
 Use `ghr search mentions` when the question is about what people wrote.
 
@@ -196,6 +211,7 @@ That means:
 
 If results look incomplete:
 
+- check `ghr search status -R <owner>/<repo>`
 - check `ghr changes repo status -R <owner>/<repo>`
 - check `ghr changes pr status -R <owner>/<repo> <number>`
 - materialize a specific PR with `ghreplica sync pr <owner>/<repo> <number>`

@@ -82,6 +82,8 @@ type MentionSearchRequest = searchindex.MentionRequest
 
 type MentionMatch = searchindex.MentionMatch
 
+type RepoSearchStatusResponse = searchindex.RepoStatus
+
 func (c *Client) GetPullRequestChangeSnapshot(ctx context.Context, repo string, number int) (PullRequestChangeSnapshotResponse, error) {
 	var out PullRequestChangeSnapshotResponse
 	err := c.getJSON(ctx, fmt.Sprintf("/v1/changes/repos/%s/pulls/%d", repo, number), &out)
@@ -167,5 +169,11 @@ func (c *Client) SearchPullRequestsByRanges(ctx context.Context, repo string, ra
 func (c *Client) SearchMentions(ctx context.Context, repo string, request MentionSearchRequest) ([]MentionMatch, error) {
 	var out []MentionMatch
 	err := c.postJSON(ctx, fmt.Sprintf("/v1/search/repos/%s/mentions", repo), request, &out)
+	return out, err
+}
+
+func (c *Client) GetRepoSearchStatus(ctx context.Context, repo string) (RepoSearchStatusResponse, error) {
+	var out RepoSearchStatusResponse
+	err := c.getJSON(ctx, fmt.Sprintf("/v1/search/repos/%s/status", repo), &out)
 	return out, err
 }

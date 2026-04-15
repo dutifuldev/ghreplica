@@ -333,6 +333,42 @@ func TestSearchMentionsEndpoint(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestSearchStatusEndpoint(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	repo := seedMentionSearchData(t, db)
+	server := httpapi.NewServer(db, httpapi.Options{})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/search/repos/acme/widgets/status", nil)
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var status map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &status))
+	require.Equal(t, "missing", status["text_index_status"])
+	require.Equal(t, "empty", status["coverage"])
+	require.EqualValues(t, 0, status["document_count"])
+
+	require.NoError(t, searchindex.NewService(db).RebuildRepositoryByID(ctx, repo.ID))
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/search/repos/acme/widgets/status", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &status))
+	require.Equal(t, "ready", status["text_index_status"])
+	require.Equal(t, "current", status["freshness"])
+	require.Equal(t, "complete", status["coverage"])
+	require.EqualValues(t, 3, status["document_count"])
+	require.NotEmpty(t, status["last_indexed_at"])
+	require.NotEmpty(t, status["last_source_update_at"])
+}
+
 func seedMentionSearchData(t *testing.T, db *gorm.DB) database.Repository {
 	t.Helper()
 

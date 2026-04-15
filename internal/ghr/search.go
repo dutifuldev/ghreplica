@@ -12,12 +12,40 @@ import (
 func newSearchCmd(opts *RootOptions) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "search",
-		Short: "Query ghreplica-specific overlap and related-pull-request searches",
+		Short: "Query ghreplica-specific search surfaces",
 	}
+	cmd.AddCommand(newSearchStatusCmd(opts))
 	cmd.AddCommand(newSearchRelatedPRsCmd(opts))
 	cmd.AddCommand(newSearchPRsByPathsCmd(opts))
 	cmd.AddCommand(newSearchPRsByRangesCmd(opts))
 	cmd.AddCommand(newSearchMentionsCmd(opts))
+	return cmd
+}
+
+func newSearchStatusCmd(opts *RootOptions) *cobra.Command {
+	var jsonFields string
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show repo-level text-search indexing status",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			client := clientFor(opts)
+			status, err := client.GetRepoSearchStatus(context.Background(), repo)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(jsonFields) != "" {
+				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
+			}
+			printRepoSearchStatus(cmd.OutOrStdout(), status)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
 	return cmd
 }
 

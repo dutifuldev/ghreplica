@@ -57,6 +57,7 @@ The original mirrored read endpoints are also still served on the legacy unversi
 - `GET /v1/search/repos/{owner}/{repo}/pulls/{number}/related`
 - `POST /v1/search/repos/{owner}/{repo}/pulls/by-paths`
 - `POST /v1/search/repos/{owner}/{repo}/pulls/by-ranges`
+- `GET /v1/search/repos/{owner}/{repo}/status`
 - `POST /v1/search/repos/{owner}/{repo}/mentions`
 
 Text-search request features:
@@ -78,6 +79,19 @@ Text-search request features:
 - `page`
 
 Text-search response features:
+
+- status response:
+  - `repository`
+    - `owner`
+    - `name`
+    - `full_name`
+  - `text_index_status`
+  - `document_count`
+  - `last_indexed_at`
+  - `last_source_update_at`
+  - `freshness`
+  - `coverage`
+  - `last_error`
 
 - `resource`
   - `type`
