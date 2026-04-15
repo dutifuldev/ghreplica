@@ -302,16 +302,24 @@ The critical indexes are:
 - btree on `(repository_id, path)`
 - btree on `(repository_id, pull_request_number)`
 - btree on `(repository_id, state, draft)`
-- GiST on `(repository_id, path, old_line_range)`
-- GiST on `(repository_id, path, new_line_range)`
-
-If Postgres composite GiST performance is not good enough in practice, the fallback is:
-
-- btree on `(repository_id, path)`
 - GiST on `old_line_range`
 - GiST on `new_line_range`
 
-and the planner filters by `repository_id` and `path` first.
+The default design should rely on index combination:
+
+- btree narrows by repository and path
+- GiST handles range overlap
+- Postgres combines them with bitmap index scans
+
+Do not make a multicolumn GiST index with `repository_id` as the first column the default plan.
+
+PostgreSQL's multicolumn GiST behavior makes the first column the most important one for scan reduction, so a low-distinctness leading column like `repository_id` is a poor default.
+
+If profiling later shows that one combined index is materially better for the real workload, then:
+
+- use `btree_gist`
+- put the most selective scalar column first
+- keep the plain btree path index anyway
 
 ### Concrete Query Flow
 
@@ -493,14 +501,28 @@ The preflight flow should be:
 
 For preflight collection, prefer cheap Git commands first:
 
-- `git diff --name-status --find-renames <merge-base>...<head>`
-- `git diff --numstat --find-renames <merge-base>...<head>`
+- `git diff --raw -z --no-ext-diff --no-textconv --find-renames=<threshold> -l<rename-limit> <merge-base>...<head>`
+- `git diff --numstat -z --no-ext-diff --no-textconv --find-renames=<threshold> -l<rename-limit> <merge-base>...<head>`
 
 Only if the PR stays under budget should the worker parse full patch text with:
 
-- `git diff --find-renames --unified=0 <merge-base>...<head>`
+- `git diff -z --no-ext-diff --no-textconv --find-renames=<threshold> -l<rename-limit> --unified=0 <merge-base>...<head>`
 
 That keeps the expensive parse behind a cheap guardrail.
+
+These flags are important:
+
+- `-z` makes rename records machine-safe
+- `--no-ext-diff` avoids environment-specific diff drivers
+- `--no-textconv` avoids human-oriented conversions that are not stable machine truth
+
+`--numstat` is the right preflight source for line counts because Git documents that binary files emit `-` and `-` instead of fake numeric line counts.
+
+`--raw -z` is the right source for status and object identity because it carries:
+
+- blob object IDs
+- status letters such as `A`, `D`, `M`, `R`, and `T`
+- preimage and postimage paths for renames
 
 Rename detection must also be fixed by policy.
 
@@ -508,9 +530,29 @@ The worker should:
 
 - always use the same rename detection mode
 - always use the same similarity threshold
+- always use the same rename candidate limit
 - record whether a rename was inferred by Git or was not available
 
 That avoids index drift across deployments.
+
+The default policy should be:
+
+- enable rename detection
+- do not enable copy detection
+- use an explicit similarity threshold rather than relying on process defaults
+- use an explicit rename limit so the worker does not fall into unbounded quadratic matching
+
+Copy detection should stay off by default because Git documents it as much more expensive, especially with `--find-copies-harder`.
+
+A sane initial policy is:
+
+- `--find-renames=50%`
+- `-l1000`
+
+If the candidate set exceeds the rename limit:
+
+- fall back to non-rename indexing for that PR snapshot
+- mark rename continuity as unavailable instead of pretending it was computed
 
 ### Partial Indexing Rules
 
