@@ -234,14 +234,22 @@ func runRefresh(cfg config.Config, args []string) error {
 }
 
 func runBackfill(cfg config.Config, args []string) error {
+	var targetArgs, flagArgs []string
+	if len(args) >= 2 && args[0] == "repo" {
+		targetArgs = args[:2]
+		flagArgs = args[2:]
+	} else {
+		flagArgs = args
+	}
+
 	backfillFlags := flag.NewFlagSet("backfill", flag.ContinueOnError)
 	mode := backfillFlags.String("mode", "open_only", "backfill mode")
 	priority := backfillFlags.Int("priority", 0, "backfill priority")
-	if err := backfillFlags.Parse(args); err != nil {
+	if err := backfillFlags.Parse(flagArgs); err != nil {
 		return err
 	}
 
-	rest := backfillFlags.Args()
+	rest := append(targetArgs, backfillFlags.Args()...)
 	if len(rest) != 2 || rest[0] != "repo" {
 		return errors.New("usage: ghreplica backfill repo <owner>/<repo> [--mode open_only] [--priority N]")
 	}
