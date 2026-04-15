@@ -1,3 +1,9 @@
+---
+title: Git Ground Truth Implementation Plan
+author: Onur Solmaz <info@solmaz.io>
+date: 2026-04-15
+---
+
 # 2026-04-15 Git Ground Truth Implementation Plan
 
 This document describes the full intended implementation for Git-backed ground truth in `ghreplica`.

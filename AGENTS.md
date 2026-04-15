@@ -57,3 +57,11 @@ When choosing between:
 - a slightly harder implementation that preserves GitHub compatibility
 
 prefer the GitHub-compatible implementation for GitHub-native data.
+
+## Documentation Convention
+
+Follow SimpleDoc for repository documentation.
+
+- General, non-dated documents should use capitalized filenames with underscores, for example `TESTING.md` or `GIT_GROUND_TRUTH.md`.
+- Dated documents should live under `docs/` and use ISO date prefixes with lowercase kebab-case filenames, for example `docs/2026-04-15-git-ground-truth-implementation-plan.md`.
+- Dated documents should include YAML frontmatter when practical.

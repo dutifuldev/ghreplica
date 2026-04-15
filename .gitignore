@@ -27,6 +27,7 @@ vendor/
 .env
 deploy/gcp/ghreplica.env
 deploy/gcp/github-app.env
+node_modules/
 
 # OS files
 .DS_Store
