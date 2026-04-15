@@ -16,6 +16,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/github"
 	"github.com/dutifuldev/ghreplica/internal/githubsync"
+	"github.com/dutifuldev/ghreplica/internal/gitindex"
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
 	"github.com/dutifuldev/ghreplica/internal/refresh"
 	"github.com/dutifuldev/ghreplica/internal/webhooks"
@@ -59,13 +60,15 @@ func runServe(cfg config.Config) error {
 		return err
 	}
 
-	githubSync := githubsync.NewService(db, github.NewClient(cfg.GitHubBaseURL, github.AuthConfig{
+	githubClient := github.NewClient(cfg.GitHubBaseURL, github.AuthConfig{
 		Token:          cfg.GitHubToken,
 		AppID:          cfg.GitHubAppID,
 		InstallationID: cfg.GitHubInstallationID,
 		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
 		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
-	}))
+	})
+	gitIndex := gitindex.NewService(db, githubClient, cfg.GitMirrorRoot)
+	githubSync := githubsync.NewService(db, githubClient, gitIndex)
 	webhookIngestor := webhooks.NewService(db, githubSync)
 	worker := refresh.NewWorker(db, githubSync, 2*time.Second)
 
@@ -134,7 +137,7 @@ func runSync(cfg config.Config, args []string) error {
 		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
 		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
 	})
-	service := githubsync.NewService(db, client)
+	service := githubsync.NewService(db, client, gitindex.NewService(db, client, cfg.GitMirrorRoot))
 
 	switch rest[0] {
 	case "repo":

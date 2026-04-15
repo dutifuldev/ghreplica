@@ -17,9 +17,11 @@ services:
     command: ["serve"]
     volumes:
       - /home/bob/ghreplica/secrets:/home/bob/ghreplica/secrets:ro
+      - /home/bob/ghreplica/data:/app/data
     environment:
       APP_ADDR: ":8080"
       DATABASE_URL: "postgres://${DB_IAM_USER_URLENCODED}@cloudsql-proxy:5432/${DB_NAME}?sslmode=disable"
+      GIT_MIRROR_ROOT: "/app/data/git-mirrors"
       GITHUB_TOKEN: "${GITHUB_TOKEN}"
       GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET}"
       GITHUB_APP_ID: "${GITHUB_APP_ID:-}"
@@ -35,8 +37,10 @@ services:
       - cloudsql-proxy
     volumes:
       - /home/bob/ghreplica/secrets:/home/bob/ghreplica/secrets:ro
+      - /home/bob/ghreplica/data:/app/data
     environment:
       DATABASE_URL: "postgres://${DB_IAM_USER_URLENCODED}@cloudsql-proxy:5432/${DB_NAME}?sslmode=disable"
+      GIT_MIRROR_ROOT: "/app/data/git-mirrors"
     command: ["migrate", "up"]
     profiles:
       - ops

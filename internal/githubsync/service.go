@@ -11,6 +11,7 @@ import (
 
 	"github.com/dutifuldev/ghreplica/internal/database"
 	gh "github.com/dutifuldev/ghreplica/internal/github"
+	"github.com/dutifuldev/ghreplica/internal/gitindex"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -19,10 +20,15 @@ import (
 type Service struct {
 	db     *gorm.DB
 	github *gh.Client
+	git    *gitindex.Service
 }
 
-func NewService(db *gorm.DB, githubClient *gh.Client) *Service {
-	return &Service{db: db, github: githubClient}
+func NewService(db *gorm.DB, githubClient *gh.Client, gitIndex ...*gitindex.Service) *Service {
+	var indexer *gitindex.Service
+	if len(gitIndex) > 0 {
+		indexer = gitIndex[0]
+	}
+	return &Service{db: db, github: githubClient, git: indexer}
 }
 
 func (s *Service) UpsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
@@ -127,6 +133,9 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 		if err := s.upsertPullRequest(ctx, canonicalRepo.ID, detail); err != nil {
 			return err
 		}
+		if err := s.SyncPullRequestIndex(ctx, owner, repo, canonicalRepo.ID, detail); err != nil {
+			return err
+		}
 	}
 
 	issueComments, err := s.github.ListIssueComments(ctx, owner, repo)
@@ -226,6 +235,18 @@ func (s *Service) SyncPullRequest(ctx context.Context, owner, repo string, numbe
 	if err := s.upsertPullRequest(ctx, canonicalRepo.ID, pull); err != nil {
 		return err
 	}
+	if s.git != nil {
+		var storedPull database.PullRequest
+		if err := s.db.WithContext(ctx).
+			Preload("Issue").
+			Where("repository_id = ? AND number = ?", canonicalRepo.ID, number).
+			First(&storedPull).Error; err != nil {
+			return err
+		}
+		if err := s.git.IndexPullRequest(ctx, owner, repo, canonicalRepo, storedPull); err != nil {
+			return err
+		}
+	}
 
 	issueComments, err := s.github.ListIssueCommentsForIssue(ctx, owner, repo, number)
 	if err != nil {
@@ -264,6 +285,34 @@ func (s *Service) SyncPullRequest(ctx context.Context, owner, repo string, numbe
 		"comments_completeness": "sparse",
 		"reviews_completeness":  "sparse",
 	})
+}
+
+func (s *Service) SyncPullRequestIndex(ctx context.Context, owner, repo string, repositoryID uint, pull gh.PullRequestResponse) error {
+	if s.git == nil {
+		return nil
+	}
+
+	var repository database.Repository
+	if err := s.db.WithContext(ctx).Where("id = ?", repositoryID).First(&repository).Error; err != nil {
+		return err
+	}
+
+	var storedPull database.PullRequest
+	if err := s.db.WithContext(ctx).
+		Preload("Issue").
+		Where("repository_id = ? AND number = ?", repositoryID, pull.Number).
+		First(&storedPull).Error; err != nil {
+		return err
+	}
+
+	return s.git.IndexPullRequest(ctx, owner, repo, repository, storedPull)
+}
+
+func (s *Service) MarkBaseRefStale(ctx context.Context, repositoryID uint, ref string) error {
+	if s.git == nil {
+		return nil
+	}
+	return s.git.MarkBaseRefStale(ctx, repositoryID, ref)
 }
 
 func (s *Service) existingSyncMode(ctx context.Context, fullName string) (string, error) {

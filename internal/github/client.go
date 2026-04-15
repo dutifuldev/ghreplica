@@ -152,6 +152,10 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+func (c *Client) AuthorizationToken(ctx context.Context) (string, error) {
+	return c.authorizationToken(ctx)
+}
+
 func (c *Client) newRequest(ctx context.Context, path string) (*http.Request, error) {
 	target := path
 	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {

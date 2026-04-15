@@ -11,36 +11,55 @@
 
 ## Current API Namespacing
 
-`ghreplica` is moving toward a versioned split between:
+`ghreplica` now serves a versioned split between:
 
 - `/v1/github/...` for GitHub-compatible mirrored resources
 - `/v1/changes/...` for normalized Git-backed change data
 - `/v1/search/...` for overlap and related-change queries
 
-The currently implemented read endpoints below are still served on the legacy unversioned `/repos/...` surface.
+The original mirrored read endpoints are also still served on the legacy unversioned `/repos/...` surface.
 
-## Current Repository Endpoints
+## GitHub-Compatible Endpoints
+
+- `GET /v1/github/repos/{owner}/{repo}`
+- `GET /v1/github/repos/{owner}/{repo}/issues`
+- `GET /v1/github/repos/{owner}/{repo}/issues/{number}`
+- `GET /v1/github/repos/{owner}/{repo}/issues/{number}/comments`
+- `GET /v1/github/repos/{owner}/{repo}/pulls`
+- `GET /v1/github/repos/{owner}/{repo}/pulls/{number}`
+- `GET /v1/github/repos/{owner}/{repo}/pulls/{number}/reviews`
+- `GET /v1/github/repos/{owner}/{repo}/pulls/{number}/comments`
+
+## Legacy GitHub-Compatible Endpoints
 
 - `GET /repos/{owner}/{repo}`
 - `GET /repos/{owner}/{repo}/_ghreplica`
-
-## Current Issue Endpoints
-
 - `GET /repos/{owner}/{repo}/issues`
 - `GET /repos/{owner}/{repo}/issues/{number}`
 - `GET /repos/{owner}/{repo}/issues/{number}/comments`
-
-## Current Pull Request Endpoints
-
 - `GET /repos/{owner}/{repo}/pulls`
 - `GET /repos/{owner}/{repo}/pulls/{number}`
 - `GET /repos/{owner}/{repo}/pulls/{number}/reviews`
 - `GET /repos/{owner}/{repo}/pulls/{number}/comments`
+
+## Change Endpoints
+
+- `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}`
+- `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}/files`
+- `GET /v1/changes/repos/{owner}/{repo}/commits/{sha}`
+- `GET /v1/changes/repos/{owner}/{repo}/commits/{sha}/files`
+- `GET /v1/changes/repos/{owner}/{repo}/compare/{base}...{head}`
+
+## Search Endpoints
+
+- `GET /v1/search/repos/{owner}/{repo}/pulls/{number}/related`
+- `POST /v1/search/repos/{owner}/{repo}/pulls/by-paths`
+- `POST /v1/search/repos/{owner}/{repo}/pulls/by-ranges`
 
 ## Notes
 
 - compatibility is strongest for the repository, issue, and pull endpoints listed in [Compatibility Strategy](./COMPATIBILITY_STRATEGY.md)
 - comments and reviews are mirrored and served, but do not yet have the same breadth of contract coverage as the core read endpoints
 - `GET /repos/{owner}/{repo}/_ghreplica` is intentionally `ghreplica`-specific and exposes mirror policy, completeness, and local counts
+- the versioned path structure for new work is `/v1/github/...`, `/v1/changes/...`, and `/v1/search/...`
 - unsupported endpoints should be treated as out of scope until explicitly added here
-- the long-term path structure for new work should prefer `/v1/github/...`, `/v1/changes/...`, and `/v1/search/...`
