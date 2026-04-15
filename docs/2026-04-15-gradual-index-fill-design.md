@@ -17,6 +17,27 @@ It is the intended production design for:
 
 This design assumes the Git ground-truth architecture in [GIT_GROUND_TRUTH](./GIT_GROUND_TRUTH.md) and the implementation plan in [2026-04-15-git-ground-truth-implementation-plan](./2026-04-15-git-ground-truth-implementation-plan.md).
 
+## Implementation Direction
+
+The production fix for gradual fill should stay inside `ghreplica`.
+
+This design does not require introducing a separate workflow framework such as Temporal or a Redis-backed task queue.
+
+The system should instead use a small explicit internal worker model with:
+
+- a per-repo coordinator
+- separate fetch and backfill run state
+- explicit repo and PR leases
+- durable cursors
+- guaranteed lease cleanup
+- lease heartbeats for long-running work
+
+This is the right level of abstraction for the current system because the hard part is repo-specific orchestration, not generic background job dispatch.
+
+If the internal worker model is later outgrown, the only serious queue candidate worth evaluating is a PostgreSQL-backed system such as River.
+
+That is a future scaling decision, not the intended fix for the current backfill behavior.
+
 ## Goal
 
 The system should:
@@ -70,6 +91,44 @@ The scheduler should distinguish these work types:
 These job types should be explicit and separately observable.
 
 They should not be collapsed into one generic “refresh repo” job.
+
+## Repo Coordinator
+
+Each repository should be owned by one logical coordinator at a time.
+
+That coordinator is responsible for:
+
+- observing repo dirty state
+- running fetch work
+- advancing the backfill cursor
+- scheduling PR snapshot rebuilds
+- updating repo-level status
+
+The coordinator should behave like a small state machine, not like a loose set of polling helpers.
+
+The important separation is:
+
+- fetch state controls freshness
+- backfill state controls coverage
+
+Those two concerns should not share one generic `in_progress` bit.
+
+At minimum, the coordinator should track:
+
+- `fetch_state`
+  - `idle`
+  - `debouncing`
+  - `leased`
+  - `running`
+  - `failed`
+- `backfill_state`
+  - `idle`
+  - `leased`
+  - `running`
+  - `paused`
+  - `failed`
+
+The public repo status endpoint can still expose a simplified view, but internally these states should be distinct.
 
 ## Priority Model
 
@@ -163,6 +222,16 @@ This stage should avoid calling GitHub APIs except where PR metadata is missing 
 
 Git should be the source for commit, file, and hunk change data.
 
+The fetch path should only be responsible for:
+
+- mirror freshness
+- snapshot invalidation
+- deciding what needs rebuild
+
+It should not try to also own the whole open-PR backfill walk.
+
+That is a separate loop with its own cursor and lease.
+
 ## PR Snapshot Rebuild Flow
 
 For one PR:
@@ -214,6 +283,12 @@ The worker should ensure every open PR for a tracked repo eventually has:
 
 This is the minimum completeness level needed for useful overlap search.
 
+Webhook churn must not starve this loop.
+
+If new webhook traffic arrives while open-PR coverage is in progress, the repo may become dirty again, but the stored open-PR cursor must remain intact.
+
+The next fetch pass should update freshness state and then return control to the coverage loop instead of resetting coverage progress.
+
 ### Recent Closed Or Merged PR Coverage
 
 This should be optional per repo.
@@ -257,6 +332,15 @@ For recent-history backfill, the cursor should also capture:
 
 If a run stops because it hit its time or work budget, the next run should continue from the stored cursor instead of restarting from the beginning.
 
+The cursor must be persisted after every successful batch, not only at the end of a whole repo sweep.
+
+That is required so the system can survive:
+
+- process restarts
+- worker crashes
+- lease expiry
+- fetch churn on very active repos
+
 ## Time And Work Budgets
 
 Backfill must be budgeted by wall time and work units.
@@ -286,6 +370,34 @@ The key design rule is:
 - every repo should yield after consuming its budget
 
 This prevents one very active or very large repo from starving the rest of the system.
+
+## Lease Cleanup And Heartbeats
+
+The worker must assume repo work can die mid-pass.
+
+That means every leased run must have:
+
+- guaranteed cleanup in a `defer`
+- an explicit failed-or-finished terminal write
+- lease heartbeat updates while the run is still active
+
+The lease model should be:
+
+- claim lease
+- mark run `running`
+- heartbeat `lease_until` periodically
+- write progress after each batch
+- on success:
+  - clear the lease
+  - write completion timestamps
+- on failure:
+  - clear the lease
+  - write last error
+  - preserve cursor if partial progress was made
+
+If the worker dies and cannot execute cleanup, another worker should be able to reclaim the repo after lease expiry and continue from the last durable cursor.
+
+This is the main correctness requirement for production backfill.
 
 ## GitHub API Usage Policy
 
@@ -433,6 +545,16 @@ If a worker dies, the lease should expire and another worker should resume.
 
 This is required for a cloud-agnostic worker fleet and for correctness under bursty webhooks.
 
+In practice, fetch and backfill should not reuse the same control bit.
+
+They need:
+
+- separate lease columns
+- separate started/finished timestamps
+- separate last-error reporting where useful
+
+Otherwise one stuck fetch can make the entire repo look permanently busy even when backfill could continue safely after recovery.
+
 ## Suggested Tables
 
 The exact schema can be refined during implementation, but the scheduler needs rows equivalent to:
@@ -463,6 +585,19 @@ Minimum repo state fields should include:
 - `backfill_priority`
 - `fetch_lease_until`
 - `backfill_lease_until`
+
+Recommended additional bookkeeping fields:
+
+- `fetch_state`
+- `backfill_state`
+- `fetch_lease_owner`
+- `backfill_lease_owner`
+- `last_progress_at`
+- `last_progress_kind`
+- `current_pull_request_number`
+- `current_pull_request_head_sha`
+
+These fields are not strictly required for the public API, but they are useful for operator visibility and for debugging stuck runs.
 
 ## Recommended Config Surface
 
@@ -497,6 +632,25 @@ Recommended defaults:
 - `repo_backfill_max_runtime = 10m`
 - `repo_backfill_max_prs = 50`
 - `repo_backfill_max_api_pages = 20`
+
+## Framework Decision
+
+The intended implementation should not adopt a large workflow framework by default.
+
+Reasons:
+
+- the work is strongly repo-scoped
+- the important complexity is state-machine correctness, not generic queue fan-out
+- `ghreplica` already has PostgreSQL-backed state and leases
+- adding a second durable execution layer now would increase operational surface without solving the core stuck-pass behavior
+
+The intended approach is:
+
+- keep the worker internal
+- refactor it into a cleaner repo coordinator with explicit fetch and backfill sub-states
+- keep all durable state in PostgreSQL
+
+If the internal worker later proves too limited, evaluate a PostgreSQL-native queue such as River before considering heavier workflow engines.
 - `backfill_mode = open_only`
 
 ## Observability
