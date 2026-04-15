@@ -26,6 +26,7 @@
 - Add path weighting and noise suppression for low-signal files such as lockfiles, generated files, vendored paths, and broad config churn.
 - Improve related-PR ranking so strong code overlap outranks incidental shared files.
 - Keep validating path-overlap and range-overlap results against real `openclaw/openclaw` PRs as coverage expands.
+- Add full-text and regex search over mirrored PR and issue metadata such as titles, bodies, and discussion text so operators can find related work by content as well as changed code.
 
 ## Observability
 
