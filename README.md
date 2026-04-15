@@ -1,193 +1,85 @@
 # ghreplica
 
-`ghreplica` is a GitHub-shaped mirror for repository data.
+`ghreplica` is a durable GitHub mirror for tooling.
 
-It ingests GitHub webhooks, applies those events into a local canonical model, and serves a GitHub-compatible read API on top of that stored state. The project is built for tooling that needs reliable repository data without each consumer reimplementing its own crawler, cache, and webhook pipeline.
+It keeps GitHub-shaped repository data in local storage, uses Git as ground truth for change indexing, and serves a stable read API and CLI so downstream tools do not need to build their own webhook handlers, crawlers, and caches.
 
-Current ownership note: this project is currently being developed by Onur Solmaz and is expected to move to another organization once it is stable.
-
-Current deployment:
+Current public instance:
 
 - API: `https://ghreplica.dutiful.dev`
-- Read CLI: `ghr`
-- Upstream auth: GitHub App installation tokens
-- Runtime: Go, Echo, GORM, Cloud SQL
+- CLI: `ghr`
 
-## What It Does
+## Why This Exists
 
-- receives GitHub webhook deliveries and persists the raw payloads
-- projects supported events directly into canonical GitHub-shaped tables
-- serves mirrored repository, issue, pull request, and discussion endpoints
-- supports explicit bootstrap and backfill flows when needed
-- supports bounded issue and pull request repair flows
-- keeps a thin read CLI over the mirrored API
-- exposes git-change and overlap search reads through `ghr`
+Most tools that need GitHub data end up rebuilding the same fragile stack. They poll GitHub, keep partial caches of issues and pull requests, handle webhooks inconsistently, and then discover later that they also need search, change overlap, or indexing status. That usually produces systems that are hard to reason about and even harder to trust.
 
-## Current Surface
+`ghreplica` exists to centralize that work into one explicit system. It mirrors GitHub-shaped data into canonical storage, builds Git-backed change indexes on top of a local mirror, and exposes a read surface that other tools can depend on. The goal is not to pretend that the mirror is magically complete at all times. The goal is to make freshness, completeness, and derived features operationally honest.
 
-The API structure is:
+## API Surfaces
 
-- `/v1/github/...` for GitHub-compatible mirrored resources
-- `/v1/changes/...` for normalized Git-backed change data
-- `/v1/search/...` for overlap and related-change queries
-
-Implemented today:
+`ghreplica` has three read surfaces:
 
 - `/v1/github/...`
-  - repository view
-  - issue list
-  - issue view
-  - issue comments
-  - pull request list
-  - pull request view
-  - pull request reviews
-  - pull request review comments
+  - GitHub-compatible mirrored resources
 - `/v1/changes/...`
-  - repo change-index status
-  - pull request change snapshots
-  - pull request change-index status
-  - pull request file lists
-  - commit metadata
-  - commit file lists
-  - indexed compare for known head/base pairs
+  - normalized Git-backed change data
 - `/v1/search/...`
-  - related pull requests by shared paths
-  - related pull requests by overlapping hunks
-  - pull request search by paths
-  - pull request search by ranges
-  - repo-level text-search status
-  - mirrored text search across PRs, issues, comments, reviews, and review comments
-  - structural code search with `ast-grep` against an exact commit, ref, or PR head
-- `/v1/changes/repos/{owner}/{repo}/mirror-status`
-  - repo mirror status
+  - derived search features over mirrored data and the Git mirror
 
-The mirror preserves GitHub-native field names and response shapes wherever the data already exists on GitHub.
+These three surfaces exist for different reasons. `/v1/github/...` is the compatibility surface for GitHub-native resources like repositories, issues, pull requests, reviews, and comments. `/v1/changes/...` is the normalized Git-backed surface for things that GitHub does not present in exactly the form we want for tooling, such as indexed pull request snapshots, commit file lists, compare results, and mirror status. `/v1/search/...` is where the higher-level derived features live, such as overlap search, mirrored text search, and structural code search.
 
-## Text Search
+In practice, the current product already covers a meaningful slice of real workflows: repository, issue, pull request, review, and comment reads; repo mirror status; pull request and commit change snapshots; compare for indexed base and head pairs; related PR search by shared paths or overlapping hunks; text search across PRs, issues, comments, reviews, and review comments; and structural code search with `ast-grep`.
 
-The mirrored text-search surface is:
+## Quick Examples
 
-- `GET /v1/search/repos/{owner}/{repo}/status`
-- `POST /v1/search/repos/{owner}/{repo}/mentions`
+The fastest way to understand the project is to look at one GitHub-shaped read, one change-index read, and one search query.
 
-It supports three modes:
-
-- `fts`
-  - keyword and phrase search
-- `fuzzy`
-  - approximate wording and split-word matches
-- `regex`
-  - explicit pattern search against a narrowed candidate set
-
-The search corpus includes:
-
-- issue titles and bodies
-- pull request titles and bodies
-- issue comments
-- pull request reviews
-- pull request review comments
-
-Example:
+From the CLI:
 
 ```bash
-ghr search status -R openclaw/openclaw
+ghr repo view openclaw/openclaw
+ghr pr view -R openclaw/openclaw 66863 --comments
+ghr changes pr files -R openclaw/openclaw 59883
 ghr search mentions -R openclaw/openclaw --query "acp" --mode fts --scope pull_requests --state all
-ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
-ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
+ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
 ```
 
-Use `ghr search status` first when you need to know whether mirrored text search is complete and current enough to trust an empty result.
+These examples line up with the three API surfaces. `ghr repo view` and `ghr pr view` are GitHub-shaped reads. `ghr changes pr files` asks for the indexed file list for one PR. `ghr search mentions` searches mirrored discussion text for the term `acp`. `ghr search ast-grep` runs structural code search against the PR head and narrows the search to files changed by that PR.
 
-## Structural Code Search
-
-The structural code-search surface is:
-
-- `POST /v1/search/repos/{owner}/{repo}/ast-grep`
-
-It runs `ast-grep` against the local Git mirror, always resolves to one exact commit SHA, and returns structured matches with locations and captures.
-
-Use it when the question is:
-
-- where in this repo does this syntax pattern exist
-- does this PR contain this structural code shape
-- which changed files in this PR match this pattern
-
-Example:
+If you want to hit the API directly, the same pattern looks like this:
 
 ```bash
-ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
-ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)'
-ghr search ast-grep -R dutifuldev/ghreplica --commit 979463a0430ca6bf26d22b53e4e1ecf5766d743b --language go --pattern 'context.WithTimeout($CTX, $DUR)'
-ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'exec.CommandContext($CTX, $BIN, $$$ARGS)' --path internal/gitindex/astgrep.go
+curl -fsS https://ghreplica.dutiful.dev/v1/github/repos/openclaw/openclaw | jq
+curl -fsS https://ghreplica.dutiful.dev/v1/changes/repos/openclaw/openclaw/mirror-status | jq
+curl -fsS https://ghreplica.dutiful.dev/v1/search/repos/openclaw/openclaw/status | jq
+curl -fsS https://ghreplica.dutiful.dev/v1/search/repos/openclaw/openclaw/mentions \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"acp","mode":"fts","scopes":["pull_requests"],"state":"all","limit":10,"page":1}' | jq
 ```
 
-Use:
+The first call asks for a GitHub-compatible repository document. The second asks for `ghreplica`'s own mirror-status view, which is where you can inspect local freshness and completeness signals. The third asks for text-search status, which is useful before trusting an empty text-search result. The last call runs the actual mirrored text search.
 
-- `--pr` for review workflows
-- `--changed-files-only` to narrow PR searches to touched files only
-- `--ref` for branch-level exploration
-- `--commit` when the result must be exactly reproducible
-- `--path` when you already know the files of interest
+## Search
 
-Results include:
+Search in `ghreplica` is intentionally split into three different capabilities because they answer different questions.
 
-- the exact resolved commit SHA
-- the resolved ref when one exists
-- file path and line/column span
-- captured variables from the structural match
+Overlap search is for change similarity. Use `ghr search related-prs`, `ghr search prs-by-paths`, or `ghr search prs-by-ranges` when the question is “what other PRs touched the same code?” That search works over indexed pull request changes, not over discussion text.
 
-Self-hosting note:
+Text search is for mirrored GitHub discussion content. Use `ghr search status` to check whether the text index is present and fresh enough to trust, and use `ghr search mentions` to search titles, bodies, comments, reviews, and review comments. It supports `fts` for ordinary keyword and phrase search, `fuzzy` for approximate wording, and `regex` for explicit pattern matching. This search does not look at code diffs.
 
-- `ast-grep` must be installed in the runtime image
-- the GitHub App private key must be readable by the runtime user
-- the mounted git-mirror directory must be owned by the runtime user
+Structural code search is for syntax-aware questions over repository contents. Use `ghr search ast-grep` when the question is “where does this code shape exist?” or “does this PR contain this structural pattern?” Structural search always resolves to one exact commit SHA so the result is reproducible even when the branch or PR moves later.
 
 ## Sync Model
 
 `ghreplica` is webhook-first.
 
-- supported webhook events are persisted and projected into canonical tables
-- full bootstrap is an explicit operator action, not the default webhook path
-- large repositories can be filled incrementally from received events
-- repo sync behavior is governed by explicit sync policy rather than one global crawl mode
+Webhooks drive freshness. Full backfills are explicit operator actions. Targeted repairs are preferred over whole-repo recrawls. Mirrors can be partial, and the system should be honest about that.
 
-This keeps normal ingestion bounded while still allowing targeted repair and backfill when needed.
-
-## CLI
-
-`ghr` is a thin read client over the hosted mirror.
-
-Examples:
-
-```bash
-ghr repo view openclaw/openclaw
-ghr repo status -R openclaw/openclaw
-ghr issue list -R openclaw/openclaw --state all
-ghr issue view -R openclaw/openclaw 66797 --comments
-ghr pr list -R openclaw/openclaw --state all
-ghr pr view -R openclaw/openclaw 66863 --comments
-ghr changes repo status -R openclaw/openclaw
-ghr changes pr status -R openclaw/openclaw 59883
-ghr changes pr view -R openclaw/openclaw 59883
-ghr changes pr files -R openclaw/openclaw 59883
-ghr changes compare -R openclaw/openclaw main...5a3d3e54d93a03ee6f775d0010d1b1c433b34a23
-ghr search related-prs -R openclaw/openclaw 59883 --mode path_overlap --state all
-ghr search prs-by-paths -R openclaw/openclaw --path src/acp/control-plane/manager.core.ts --state all
-ghr search prs-by-ranges -R openclaw/openclaw --path extensions/telegram/src/fetch.ts --start 24 --end 36 --state all
-ghr search status -R openclaw/openclaw
-ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts --scope pull_requests --scope issues
-ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
-ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
-ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
-```
-
-Default target:
-
-- `https://ghreplica.dutiful.dev`
-
-So for normal use you do not need to pass `--base-url`.
+That means this project is not trying to pretend it has perfect live parity with GitHub at all times. The goal is reliable, inspectable, bounded mirroring. If something is partially indexed, stale, or still being rebuilt, the system should say so rather than silently acting complete.
 
 ## Local Development
+
+The local development loop is deliberately simple. Start the database, run migrations, point the service at a Git mirror root, and run the API:
 
 ```bash
 make db-up
@@ -196,7 +88,7 @@ export GIT_MIRROR_ROOT=.data/git-mirrors
 make serve
 ```
 
-Manual sync:
+Once the server is up, these are the most useful manual operations:
 
 ```bash
 go run ./cmd/ghreplica sync repo dutifuldev/ghreplica
@@ -204,41 +96,36 @@ go run ./cmd/ghreplica sync issue openclaw/openclaw 66797
 go run ./cmd/ghreplica sync pr openclaw/openclaw 66863
 go run ./cmd/ghreplica backfill repo openclaw/openclaw --mode open_only
 go run ./cmd/ghreplica search-index repo openclaw/openclaw
-```
-
-Build the read CLI:
-
-```bash
 go build ./cmd/ghr
 ```
 
-There is also a repo-local skill at [`skills/ghreplica/SKILL.md`](skills/ghreplica/SKILL.md) that explains the project and shows common `ghr` workflows.
+The sync commands are for targeted ingestion and repair. `sync repo` mirrors the repo-level data we support. `sync issue` and `sync pr` are useful when you want one object and its related discussion right away. `backfill repo` is for bounded repo coverage work. `search-index repo` rebuilds the mirrored text-search corpus for a repo.
 
-## Deployment
+If you want to sanity-check a local instance quickly, these endpoints are usually enough:
 
-The current hosted instance runs on GCP with:
+- `GET http://127.0.0.1:8080/healthz`
+- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica`
+- `GET http://127.0.0.1:8080/v1/changes/repos/dutifuldev/ghreplica/mirror-status`
 
-- Caddy for public HTTPS
-- `ghreplica` as the API process
-- Cloud SQL for persisted mirror state
-- GitHub App webhooks pointed at `https://ghreplica.dutiful.dev/webhooks/github`
+## Self-Hosting Notes
+
+The current runtime model has a few requirements that matter in practice.
+
+- `ast-grep` must be installed in the runtime image
+- the GitHub App private key must be readable by the runtime user
+- the mounted git-mirror directory must be owned by the runtime user
+
+These are not theoretical details. We already hit the private-key readability and mirror-directory ownership problems in production. See [GCP Deployment](docs/DEPLOY_GCP.md) for the concrete deployment steps and the exact fixes.
 
 ## Docs
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Compatibility Strategy](docs/COMPATIBILITY_STRATEGY.md)
+The deeper design and operational details live in the docs:
+
 - [CLI](docs/CLI.md)
-- [GitHub API Surface Research](docs/GITHUB_API_SURFACE.md)
-- [GitHub App Event Inventory](docs/GITHUB_APP_EVENTS.md)
-- [Git Ground Truth](docs/GIT_GROUND_TRUTH.md)
-- [2026-04-15 Git Ground Truth Implementation Plan](docs/2026-04-15-git-ground-truth-implementation-plan.md)
-- [2026-04-15 Gradual Index Fill Design](docs/2026-04-15-gradual-index-fill-design.md)
-- [2026-04-15 AST-Grep Structural Search](docs/2026-04-15-ast-grep-structural-search.md)
-- [Data Model For PR Triage](docs/DATA_MODEL.md)
-- [GCP Deployment](docs/DEPLOY_GCP.md)
-- [Local Development](docs/LOCAL_DEVELOPMENT.md)
-- [Ship Readiness Plan](docs/SHIP_READINESS_PLAN.md)
 - [Supported Endpoints](docs/SUPPORTED_ENDPOINTS.md)
-- [Sync Policy And Jobs](docs/SYNC_POLICY_AND_JOBS.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Git Ground Truth](docs/GIT_GROUND_TRUTH.md)
+- [Local Development](docs/LOCAL_DEVELOPMENT.md)
+- [GCP Deployment](docs/DEPLOY_GCP.md)
 - [Testing](docs/TESTING.md)
-- [Testing And Connectivity](docs/TESTING_AND_CONNECTIVITY.md)
+- [Skill](skills/ghreplica/SKILL.md)
