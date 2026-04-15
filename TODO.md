@@ -26,12 +26,11 @@
 - Add path weighting and noise suppression for low-signal files such as lockfiles, generated files, vendored paths, and broad config churn.
 - Improve related-PR ranking so strong code overlap outranks incidental shared files.
 - Keep validating path-overlap and range-overlap results against real `openclaw/openclaw` PRs as coverage expands.
-- Add full-text and regex search over mirrored PR and issue metadata such as titles, bodies, and discussion text so operators can find related work by content as well as changed code.
-- Build a derived `search_documents` index for issues, pull requests, comments, reviews, and review comments instead of scanning canonical tables directly.
-- Add trigram-backed fuzzy search so queries can find similar wording, not just exact terms.
-- Improve text-search ranking so better field matches and shorter direct hits outrank weak fuzzy matches in long documents.
-- Improve excerpt generation and highlighting so long discussion threads show a more useful local snippet.
 - Expose repo-level text-search indexing coverage so operators can tell whether an older mirrored repo has already been rebuilt into `search_documents`.
+- Improve `mentions` ranking so strong title hits and short direct matches outrank weak body matches in long documents.
+- Improve fuzzy search quality so approximate matches are stronger without requiring `pg_trgm` on managed Postgres.
+- Improve excerpt generation and highlighting so long discussion threads show a more useful local snippet.
+- Add explicit operator workflows for repository-wide text-index rebuilds and freshness checks.
 
 ## Observability
 

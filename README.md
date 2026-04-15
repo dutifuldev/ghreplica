@@ -63,6 +63,37 @@ Implemented today:
 
 The mirror preserves GitHub-native field names and response shapes wherever the data already exists on GitHub.
 
+## Text Search
+
+The mirrored text-search surface is:
+
+- `POST /v1/search/repos/{owner}/{repo}/mentions`
+
+It supports three modes:
+
+- `fts`
+  - keyword and phrase search
+- `fuzzy`
+  - approximate wording and split-word matches
+- `regex`
+  - explicit pattern search against a narrowed candidate set
+
+The search corpus includes:
+
+- issue titles and bodies
+- pull request titles and bodies
+- issue comments
+- pull request reviews
+- pull request review comments
+
+Example:
+
+```bash
+ghr search mentions -R openclaw/openclaw --query "acp" --mode fts --scope pull_requests --state all
+ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
+ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
+```
+
 ## Sync Model
 
 `ghreplica` is webhook-first.

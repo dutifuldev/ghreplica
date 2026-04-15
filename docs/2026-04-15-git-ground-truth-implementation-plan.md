@@ -1183,40 +1183,51 @@ The derived table should be something like `search_documents`, with columns alon
   - `issue_comment`
   - `pull_request_review`
   - `pull_request_review_comment`
-- `object_id`
-  - the local canonical row id
+- `document_github_id`
 - `state`
   - open or closed when applicable
 - `author_id`
+- `author_login`
+- `number`
+- `api_url`
+- `html_url`
 - `title_text`
   - only for issues and PRs
 - `body_text`
+- `search_text`
 - `normalized_text`
-- `fts_document`
-  - Postgres `tsvector`
-- `created_at`
-- `updated_at`
+- `object_created_at`
+- `object_updated_at`
 
-This lets the system support:
+The shipped implementation uses:
 
-- full-text search through a GIN index on `fts_document`
-- fuzzy search through trigram indexes on `normalized_text`
-- regex search against a narrowed candidate set
+- full-text search through a GIN index on `to_tsvector('simple', search_text)`
+- fuzzy search through narrowed candidate scans on `normalized_text`, then Go-side trigram scoring
+- regex search against a narrowed candidate set, then regex matching on the reduced result set
 
 Regex should not run across the whole corpus blindly.
 
 The execution flow should be:
 
 1. narrow by repository and optional scope/state filters
-2. for `fts`, use `fts_document`
-3. for `fuzzy`, use trigram similarity on `normalized_text`
-4. for `regex`, first narrow by repository and scope, then run the regex on the smaller candidate set
+2. for `fts`, use the Postgres full-text index over `search_text`
+3. for `fuzzy`, derive candidate fragments from the query, narrow on `normalized_text`, then score the candidate set in process
+4. for `regex`, derive literal fragments from the pattern, narrow the candidate set, then run the regex on the smaller result set
 
 This keeps the implementation aligned with the rest of `ghreplica`:
 
 - canonical GitHub-shaped tables stay unchanged
 - search is a derived index
 - `/v1/search/...` is the dedicated product surface
+
+The practical reason for this shape is production portability.
+
+`ghreplica` currently runs on managed Postgres where `pg_trgm` is not available to the application user.
+
+So the production-safe design is:
+
+- use native Postgres full-text search where it is fast and portable
+- keep fuzzy and regex search explainable and bounded without taking a hard dependency on optional extensions
 
 ## Handling Rewrites
 
