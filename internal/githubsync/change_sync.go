@@ -22,6 +22,7 @@ const (
 type RepoBackfillOptions struct {
 	MaxPRs     int
 	MaxRuntime time.Duration
+	LeaseTTL   time.Duration
 }
 
 type RepoBackfillResult struct {
@@ -40,6 +41,11 @@ type RepoBackfillResult struct {
 type backfillCandidate struct {
 	pull     gh.PullRequestResponse
 	snapshot *database.PullRequestChangeSnapshot
+}
+
+type repoOpenPullScan struct {
+	Result     RepoBackfillResult
+	Candidates []backfillCandidate
 }
 
 type ChangeSyncWorker struct {
@@ -301,56 +307,20 @@ func (s *Service) BackfillOpenPullRequests(ctx context.Context, owner, repo stri
 		return RepoBackfillResult{}, err
 	}
 
-	openPulls, err := s.github.ListPullRequests(ctx, owner, repo, "open")
+	scan, err := s.scanOpenPullRequests(ctx, owner, repo, repository.ID, state)
 	if err != nil {
 		return RepoBackfillResult{}, err
 	}
-	sort.Slice(openPulls, func(i, j int) bool {
-		if openPulls[i].UpdatedAt.Equal(openPulls[j].UpdatedAt) {
-			return openPulls[i].Number > openPulls[j].Number
-		}
-		return openPulls[i].UpdatedAt.After(openPulls[j].UpdatedAt)
-	})
-
-	snapshotMap, err := s.pullRequestSnapshotMap(ctx, repository.ID)
-	if err != nil {
-		return RepoBackfillResult{}, err
-	}
-	result := RepoBackfillResult{OpenPRTotal: len(openPulls)}
-
-	candidates := make([]backfillCandidate, 0, len(openPulls))
-	for _, pull := range openPulls {
-		snapshot := snapshotMap[pull.Number]
-		freshness := desiredFreshness(snapshot, pull)
-		switch freshness {
-		case "current":
-			result.OpenPRCurrent++
-		case "":
-			result.OpenPRMissing++
-			candidates = append(candidates, backfillCandidate{pull: pull})
-		default:
-			result.OpenPRStale++
-			candidates = append(candidates, backfillCandidate{pull: pull, snapshot: snapshot})
-			if snapshot != nil && snapshot.IndexFreshness != freshness {
-				if err := s.db.WithContext(ctx).
-					Model(&database.PullRequestChangeSnapshot{}).
-					Where("id = ?", snapshot.ID).
-					Updates(map[string]any{
-						"index_freshness": freshness,
-						"updated_at":      time.Now().UTC(),
-					}).Error; err != nil {
-					return RepoBackfillResult{}, err
-				}
-			}
-		}
-	}
-
-	candidates = applyCandidateCursor(candidates, state.OpenPRCursorUpdatedAt, state.OpenPRCursorNumber)
+	result := scan.Result
+	candidates := scan.Candidates
 	deadline := time.Now().UTC().Add(options.MaxRuntime)
 	var lastProcessed *backfillCandidate
 	for _, candidate := range candidates {
 		if result.ProcessedPRs >= options.MaxPRs || time.Now().UTC().After(deadline) {
 			break
+		}
+		if err := s.heartbeatBackfillLease(ctx, state.ID, options.LeaseTTL); err != nil {
+			return RepoBackfillResult{}, err
 		}
 		result.ProcessedPRs++
 		if err := s.syncPullRequestChangeOnly(ctx, owner, repo, repository, candidate.pull.Number); err != nil {
@@ -377,23 +347,14 @@ func (s *Service) BackfillOpenPullRequests(ctx context.Context, owner, repo stri
 		result.Completed = len(candidates) == 0
 	}
 
-	postSnapshotMap, err := s.pullRequestSnapshotMap(ctx, repository.ID)
+	postScan, err := s.scanOpenPullRequests(ctx, owner, repo, repository.ID, state)
 	if err != nil {
 		return RepoBackfillResult{}, err
 	}
-	result.OpenPRCurrent = 0
-	result.OpenPRStale = 0
-	result.OpenPRMissing = 0
-	for _, pull := range openPulls {
-		switch desiredFreshness(postSnapshotMap[pull.Number], pull) {
-		case "current":
-			result.OpenPRCurrent++
-		case "":
-			result.OpenPRMissing++
-		default:
-			result.OpenPRStale++
-		}
-	}
+	result.OpenPRTotal = postScan.Result.OpenPRTotal
+	result.OpenPRCurrent = postScan.Result.OpenPRCurrent
+	result.OpenPRStale = postScan.Result.OpenPRStale
+	result.OpenPRMissing = postScan.Result.OpenPRMissing
 	return result, nil
 }
 
@@ -446,14 +407,15 @@ func (w *ChangeSyncWorker) processDirtyRepo(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	state.FetchLeaseUntil = &leaseUntil
-	return true, w.runBackfillPass(ctx, state, true)
+	return true, w.runFetchPass(ctx, state)
 }
 
 func (w *ChangeSyncWorker) processBackfillRepo(ctx context.Context) (bool, error) {
 	now := time.Now().UTC()
 	var state database.RepoChangeSyncState
 	err := w.db.WithContext(ctx).
-		Where("backfill_mode <> ? AND dirty = ? AND (backfill_lease_until IS NULL OR backfill_lease_until <= ?)", changeBackfillModeOff, false, now).
+		Where("backfill_mode <> ? AND (backfill_lease_until IS NULL OR backfill_lease_until <= ?)", changeBackfillModeOff, now).
+		Where("fetch_lease_until IS NULL OR fetch_lease_until <= ?", now).
 		Where("last_backfill_finished_at IS NULL OR last_backfill_finished_at <= ?", now.Add(-w.openPRBackfillInterval)).
 		Order("backfill_priority DESC, last_backfill_finished_at ASC NULLS FIRST, repository_id ASC").
 		First(&state).Error
@@ -482,63 +444,116 @@ func (w *ChangeSyncWorker) processBackfillRepo(ctx context.Context) (bool, error
 	return true, w.runBackfillPass(ctx, state, false)
 }
 
-func (w *ChangeSyncWorker) runBackfillPass(ctx context.Context, state database.RepoChangeSyncState, clearDirtyOnCompletion bool) error {
+func (w *ChangeSyncWorker) runFetchPass(ctx context.Context, state database.RepoChangeSyncState) error {
 	repository, err := repositoryByID(ctx, w.db, state.RepositoryID)
 	if err != nil {
-		return w.finishRepoStateWithError(ctx, state, clearDirtyOnCompletion, err)
+		return w.finishFetchStateWithError(ctx, state, err)
 	}
 	owner, name, err := splitFullName(repository.FullName)
 	if err != nil {
-		return w.finishRepoStateWithError(ctx, state, clearDirtyOnCompletion, err)
+		return w.finishFetchStateWithError(ctx, state, err)
+	}
+
+	scan, err := w.service.scanOpenPullRequests(ctx, owner, name, repository.ID, state)
+	if err != nil {
+		return w.finishFetchStateWithError(ctx, state, err)
+	}
+	return w.completeFetchPass(ctx, state, scan.Result)
+}
+
+func (w *ChangeSyncWorker) runBackfillPass(ctx context.Context, state database.RepoChangeSyncState, _ bool) error {
+	repository, err := repositoryByID(ctx, w.db, state.RepositoryID)
+	if err != nil {
+		return w.finishBackfillStateWithError(ctx, state, err)
+	}
+	owner, name, err := splitFullName(repository.FullName)
+	if err != nil {
+		return w.finishBackfillStateWithError(ctx, state, err)
 	}
 
 	result, err := w.service.BackfillOpenPullRequests(ctx, owner, name, state, RepoBackfillOptions{
 		MaxPRs:     w.maxPRs,
 		MaxRuntime: w.maxRuntime,
+		LeaseTTL:   w.leaseTTL,
 	})
 	if err != nil {
-		return w.finishRepoStateWithError(ctx, state, clearDirtyOnCompletion, err)
+		return w.finishBackfillStateWithError(ctx, state, err)
 	}
 
-	now := time.Now().UTC()
 	updates := map[string]any{
 		"last_error":                "",
-		"last_fetch_finished_at":    now,
-		"last_successful_fetch_at":  now,
-		"last_backfill_finished_at": now,
-		"last_open_pr_scan_at":      now,
 		"open_pr_total":             result.OpenPRTotal,
 		"open_pr_current":           result.OpenPRCurrent,
 		"open_pr_stale":             result.OpenPRStale,
 		"open_pr_cursor_number":     result.NextCursorNum,
 		"open_pr_cursor_updated_at": result.NextCursorTime,
-		"fetch_lease_until":         nil,
-		"backfill_lease_until":      nil,
-		"updated_at":                now,
+		"last_open_pr_scan_at":      time.Now().UTC(),
 	}
-	if clearDirtyOnCompletion {
-		updates["dirty"] = !result.Completed
-		if result.Completed {
-			updates["dirty_since"] = nil
-		}
+	return w.completeBackfillPass(ctx, state, updates)
+}
+
+func (w *ChangeSyncWorker) completeFetchPass(ctx context.Context, state database.RepoChangeSyncState, result RepoBackfillResult) error {
+	now := time.Now().UTC()
+	updates := map[string]any{
+		"last_error":               "",
+		"last_fetch_finished_at":   now,
+		"last_successful_fetch_at": now,
+		"last_open_pr_scan_at":     now,
+		"open_pr_total":            result.OpenPRTotal,
+		"open_pr_current":          result.OpenPRCurrent,
+		"open_pr_stale":            result.OpenPRStale,
+		"fetch_lease_until":        nil,
+		"updated_at":               now,
 	}
+	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).Where("id = ?", state.ID).Updates(updates).Error; err != nil {
+		return err
+	}
+
+	clearDirty := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).Where("id = ?", state.ID)
+	if state.LastRequestedFetchAt != nil {
+		clearDirty = clearDirty.Where("(last_requested_fetch_at IS NULL OR last_requested_fetch_at <= ?)", state.LastRequestedFetchAt.UTC())
+	}
+	if err := clearDirty.Updates(map[string]any{
+		"dirty":       false,
+		"dirty_since": nil,
+		"updated_at":  now,
+	}).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *ChangeSyncWorker) completeBackfillPass(ctx context.Context, state database.RepoChangeSyncState, updates map[string]any) error {
+	now := time.Now().UTC()
+	updates["backfill_lease_until"] = nil
+	updates["last_backfill_finished_at"] = now
+	updates["updated_at"] = now
 	return w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
 		Where("id = ?", state.ID).
 		Updates(updates).Error
 }
 
-func (w *ChangeSyncWorker) finishRepoStateWithError(ctx context.Context, state database.RepoChangeSyncState, clearDirtyOnCompletion bool, runErr error) error {
+func (w *ChangeSyncWorker) finishFetchStateWithError(ctx context.Context, state database.RepoChangeSyncState, runErr error) error {
+	now := time.Now().UTC()
+	updates := map[string]any{
+		"last_error":             runErr.Error(),
+		"last_fetch_finished_at": now,
+		"fetch_lease_until":      nil,
+		"updated_at":             now,
+	}
+	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).Where("id = ?", state.ID).Updates(updates).Error; err != nil {
+		return err
+	}
+	return runErr
+}
+
+func (w *ChangeSyncWorker) finishBackfillStateWithError(ctx context.Context, state database.RepoChangeSyncState, runErr error) error {
 	now := time.Now().UTC()
 	updates := map[string]any{
 		"last_error":                runErr.Error(),
-		"last_fetch_finished_at":    now,
 		"last_backfill_finished_at": now,
-		"fetch_lease_until":         nil,
 		"backfill_lease_until":      nil,
 		"updated_at":                now,
-	}
-	if clearDirtyOnCompletion {
-		updates["dirty"] = true
 	}
 	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).Where("id = ?", state.ID).Updates(updates).Error; err != nil {
 		return err
@@ -621,9 +636,74 @@ func normalizeBackfillMode(mode string) string {
 	}
 }
 
+func (s *Service) scanOpenPullRequests(ctx context.Context, owner, repo string, repositoryID uint, state database.RepoChangeSyncState) (repoOpenPullScan, error) {
+	openPulls, err := s.github.ListPullRequests(ctx, owner, repo, "open")
+	if err != nil {
+		return repoOpenPullScan{}, err
+	}
+	sort.Slice(openPulls, func(i, j int) bool {
+		if openPulls[i].UpdatedAt.Equal(openPulls[j].UpdatedAt) {
+			return openPulls[i].Number > openPulls[j].Number
+		}
+		return openPulls[i].UpdatedAt.After(openPulls[j].UpdatedAt)
+	})
+
+	snapshotMap, err := s.pullRequestSnapshotMap(ctx, repositoryID)
+	if err != nil {
+		return repoOpenPullScan{}, err
+	}
+	result := RepoBackfillResult{OpenPRTotal: len(openPulls)}
+	candidates := make([]backfillCandidate, 0, len(openPulls))
+	now := time.Now().UTC()
+
+	for _, pull := range openPulls {
+		snapshot := snapshotMap[pull.Number]
+		freshness := desiredFreshness(snapshot, pull)
+		switch freshness {
+		case "current":
+			result.OpenPRCurrent++
+		case "":
+			result.OpenPRMissing++
+			candidates = append(candidates, backfillCandidate{pull: pull})
+		default:
+			result.OpenPRStale++
+			candidates = append(candidates, backfillCandidate{pull: pull, snapshot: snapshot})
+			if snapshot != nil && snapshot.IndexFreshness != freshness {
+				if err := s.db.WithContext(ctx).
+					Model(&database.PullRequestChangeSnapshot{}).
+					Where("id = ?", snapshot.ID).
+					Updates(map[string]any{
+						"index_freshness": freshness,
+						"updated_at":      now,
+					}).Error; err != nil {
+					return repoOpenPullScan{}, err
+				}
+			}
+		}
+	}
+
+	return repoOpenPullScan{
+		Result:     result,
+		Candidates: applyCandidateCursor(candidates, state.OpenPRCursorUpdatedAt, state.OpenPRCursorNumber),
+	}, nil
+}
+
 func normalizeBackfillBaseRef(ref string) string {
 	ref = strings.TrimSpace(ref)
 	return strings.TrimPrefix(ref, "refs/heads/")
+}
+
+func (s *Service) heartbeatBackfillLease(ctx context.Context, stateID uint, leaseTTL time.Duration) error {
+	if stateID == 0 || leaseTTL <= 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	return s.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
+		Where("id = ?", stateID).
+		Updates(map[string]any{
+			"backfill_lease_until": now.Add(leaseTTL),
+			"updated_at":           now,
+		}).Error
 }
 
 func applyCandidateCursor(candidates []backfillCandidate, cursorTime *time.Time, cursorNumber *int) []backfillCandidate {
