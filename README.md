@@ -21,6 +21,7 @@ Current deployment:
 - supports explicit bootstrap and backfill flows when needed
 - supports bounded issue and pull request repair flows
 - keeps a thin read CLI over the mirrored API
+- exposes git-change and overlap search reads through `ghr`
 
 ## Current Surface
 
@@ -83,6 +84,12 @@ ghr issue list -R openclaw/openclaw --state all
 ghr issue view -R openclaw/openclaw 66797 --comments
 ghr pr list -R openclaw/openclaw --state all
 ghr pr view -R openclaw/openclaw 66863 --comments
+ghr changes pr view -R openclaw/openclaw 59883
+ghr changes pr files -R openclaw/openclaw 59883
+ghr changes compare -R openclaw/openclaw main...5a3d3e54d93a03ee6f775d0010d1b1c433b34a23
+ghr search related-prs -R openclaw/openclaw 59883 --mode path_overlap --state all
+ghr search prs-by-paths -R openclaw/openclaw --path src/acp/control-plane/manager.core.ts --state all
+ghr search prs-by-ranges -R openclaw/openclaw --path extensions/telegram/src/fetch.ts --start 24 --end 36 --state all
 ```
 
 Default target:
@@ -113,6 +120,8 @@ Build the read CLI:
 ```bash
 go build ./cmd/ghr
 ```
+
+There is also a repo-local skill at [`skills/ghreplica/SKILL.md`](skills/ghreplica/SKILL.md) that explains the project and shows common `ghr` workflows.
 
 ## Deployment
 

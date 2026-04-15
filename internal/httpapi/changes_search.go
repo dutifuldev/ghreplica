@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -112,6 +113,11 @@ func (s *Server) handleCompareChanges(c echo.Context) error {
 	}
 
 	spec := strings.TrimSpace(c.Param("spec"))
+	if unescaped, err := url.PathUnescape(spec); err == nil {
+		spec = strings.TrimSpace(unescaped)
+	} else {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid compare spec"})
+	}
 	parts := strings.SplitN(spec, "...", 2)
 	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid compare spec"})

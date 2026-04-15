@@ -63,6 +63,14 @@ Current command shape:
 - `ghr pr comments`
 - `ghr repo status`
 - `ghr repo view`
+- `ghr changes pr view`
+- `ghr changes pr files`
+- `ghr changes commit view`
+- `ghr changes commit files`
+- `ghr changes compare`
+- `ghr search related-prs`
+- `ghr search prs-by-paths`
+- `ghr search prs-by-ranges`
 
 The first target is read-only parity for the endpoints `ghreplica` already serves.
 
@@ -78,7 +86,83 @@ ghr pr list -R openclaw/openclaw --state all
 ghr pr view -R openclaw/openclaw 66863 --comments
 ghr pr reviews -R openclaw/openclaw 66795
 ghr pr comments -R openclaw/openclaw 66795
+ghr changes pr view -R openclaw/openclaw 59883
+ghr changes pr files -R openclaw/openclaw 59883
+ghr changes commit view -R openclaw/openclaw 5a3d3e54d93a03ee6f775d0010d1b1c433b34a23
+ghr changes commit files -R openclaw/openclaw 5a3d3e54d93a03ee6f775d0010d1b1c433b34a23
+ghr changes compare -R openclaw/openclaw main...5a3d3e54d93a03ee6f775d0010d1b1c433b34a23
+ghr search related-prs -R openclaw/openclaw 59883 --mode path_overlap
+ghr search prs-by-paths -R openclaw/openclaw --path src/acp/control-plane/manager.core.ts --state all
+ghr search prs-by-ranges -R openclaw/openclaw --path extensions/telegram/src/fetch.ts --start 24 --end 36 --state all
 ```
+
+## API Mapping
+
+The CLI should map directly onto the versioned API namespaces.
+
+The boundary is:
+
+- `repo`, `issue`, and `pr` map to `/v1/github/...`
+- `changes` maps to `/v1/changes/...`
+- `search` maps to `/v1/search/...`
+
+That keeps GitHub-shaped reads separate from normalized git-change reads and `ghreplica`-specific search features.
+
+### GitHub-compatible read surface
+
+- `ghr repo view <owner>/<repo>`
+  - `GET /v1/github/repos/{owner}/{repo}`
+- `ghr repo status -R <owner>/<repo>`
+  - `GET /repos/{owner}/{repo}/_ghreplica`
+- `ghr issue list -R <owner>/<repo>`
+  - `GET /v1/github/repos/{owner}/{repo}/issues`
+- `ghr issue view -R <owner>/<repo> <number>`
+  - `GET /v1/github/repos/{owner}/{repo}/issues/{number}`
+- `ghr issue comments -R <owner>/<repo> <number>`
+  - `GET /v1/github/repos/{owner}/{repo}/issues/{number}/comments`
+- `ghr pr list -R <owner>/<repo>`
+  - `GET /v1/github/repos/{owner}/{repo}/pulls`
+- `ghr pr view -R <owner>/<repo> <number>`
+  - `GET /v1/github/repos/{owner}/{repo}/pulls/{number}`
+- `ghr pr reviews -R <owner>/<repo> <number>`
+  - `GET /v1/github/repos/{owner}/{repo}/pulls/{number}/reviews`
+- `ghr pr comments -R <owner>/<repo> <number>`
+  - `GET /v1/github/repos/{owner}/{repo}/pulls/{number}/comments`
+
+### Git change surface
+
+- `ghr changes pr view -R <owner>/<repo> <number>`
+  - `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}`
+- `ghr changes pr files -R <owner>/<repo> <number>`
+  - `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}/files`
+- `ghr changes commit view -R <owner>/<repo> <sha>`
+  - `GET /v1/changes/repos/{owner}/{repo}/commits/{sha}`
+- `ghr changes commit files -R <owner>/<repo> <sha>`
+  - `GET /v1/changes/repos/{owner}/{repo}/commits/{sha}/files`
+- `ghr changes compare -R <owner>/<repo> <base>...<head>`
+  - `GET /v1/changes/repos/{owner}/{repo}/compare/{base}...{head}`
+
+### Search surface
+
+- `ghr search related-prs -R <owner>/<repo> <number> --mode path_overlap`
+  - `GET /v1/search/repos/{owner}/{repo}/pulls/{number}/related?mode=path_overlap`
+- `ghr search related-prs -R <owner>/<repo> <number> --mode range_overlap`
+  - `GET /v1/search/repos/{owner}/{repo}/pulls/{number}/related?mode=range_overlap`
+- `ghr search prs-by-paths -R <owner>/<repo> --path <path>`
+  - `POST /v1/search/repos/{owner}/{repo}/pulls/by-paths`
+- `ghr search prs-by-ranges -R <owner>/<repo> --path <path> --start <n> --end <n>`
+  - `POST /v1/search/repos/{owner}/{repo}/pulls/by-ranges`
+
+The `search` responses should preserve the reasons for the match, not just the PR numbers.
+
+That means surfacing fields like:
+
+- `score`
+- `shared_paths`
+- `overlapping_hunks`
+- `matched_ranges`
+- `indexed_as`
+- `index_freshness`
 
 ## Compatibility Expectations
 
@@ -101,6 +185,10 @@ This is especially important for:
 `repo status` is the exception because it exposes mirror metadata that GitHub does not define.
 
 If `gh` prints GitHub-native data in a certain shape, `ghr` should aim to print the mirrored data the same way.
+
+The `changes` and `search` command groups are the explicit exceptions.
+
+They should still be consistent and scriptable, but they are not trying to mimic `gh`, because GitHub CLI does not define those surfaces.
 
 ## Output Modes
 
@@ -190,6 +278,14 @@ Current read scope matches the server endpoints already supported:
 - pull request view
 - pull request reviews
 - pull request review comments
+- pull request change snapshot
+- pull request changed files
+- commit details
+- commit changed files
+- compare details
+- related PR search
+- PR search by file paths
+- PR search by line ranges
 
 That is enough to make the CLI useful for debugging, triage, and agent workflows.
 

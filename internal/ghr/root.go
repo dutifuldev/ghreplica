@@ -32,6 +32,8 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newRepoCmd(opts))
 	cmd.AddCommand(newIssueCmd(opts))
 	cmd.AddCommand(newPRCmd(opts))
+	cmd.AddCommand(newChangesCmd(opts))
+	cmd.AddCommand(newSearchCmd(opts))
 
 	return cmd
 }

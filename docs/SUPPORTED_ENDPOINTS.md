@@ -56,6 +56,16 @@ The original mirrored read endpoints are also still served on the legacy unversi
 - `POST /v1/search/repos/{owner}/{repo}/pulls/by-paths`
 - `POST /v1/search/repos/{owner}/{repo}/pulls/by-ranges`
 
+## CLI Coverage
+
+The `ghr` CLI now covers all three read surfaces:
+
+- `repo`, `issue`, and `pr` map to `/v1/github/...`
+- `changes` maps to `/v1/changes/...`
+- `search` maps to `/v1/search/...`
+
+See [CLI](./CLI.md) for the command mapping and examples.
+
 ## Notes
 
 - compatibility is strongest for the repository, issue, and pull endpoints listed in [Compatibility Strategy](./COMPATIBILITY_STRATEGY.md)
