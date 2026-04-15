@@ -19,6 +19,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/gitindex"
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
 	"github.com/dutifuldev/ghreplica/internal/refresh"
+	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"github.com/dutifuldev/ghreplica/internal/webhooks"
 	"gorm.io/gorm"
 )
@@ -48,6 +49,8 @@ func run(args []string) error {
 		return runRefresh(cfg, args[1:])
 	case "sync":
 		return runSync(cfg, args[1:])
+	case "search-index":
+		return runSearchIndex(cfg, args[1:])
 	default:
 		return usageError()
 	}
@@ -280,6 +283,33 @@ func runBackfill(cfg config.Config, args []string) error {
 	return err
 }
 
+func runSearchIndex(cfg config.Config, args []string) error {
+	searchFlags := flag.NewFlagSet("search-index", flag.ContinueOnError)
+	if err := searchFlags.Parse(args); err != nil {
+		return err
+	}
+
+	rest := searchFlags.Args()
+	if len(rest) != 2 || rest[0] != "repo" {
+		return errors.New("usage: ghreplica search-index repo <owner>/<repo>")
+	}
+	if err := cfg.ValidateDatabase(); err != nil {
+		return err
+	}
+
+	owner, repo, err := config.ParseFullName(rest[1])
+	if err != nil {
+		return err
+	}
+
+	db, err := database.Open(cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+
+	return searchindex.NewService(db).RebuildRepository(context.Background(), owner, repo)
+}
+
 func newGitIndexService(db *gorm.DB, client *github.Client, cfg config.Config) *gitindex.Service {
 	return gitindex.NewService(db, client, cfg.GitMirrorRoot).WithIndexTimeout(cfg.GitIndexTimeout)
 }
@@ -290,6 +320,7 @@ func usageError() error {
 	fmt.Fprintf(os.Stderr, "  ghreplica migrate up\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica backfill repo <owner>/<repo> [--mode open_only] [--priority N]\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica refresh repo <owner>/<repo>\n")
+	fmt.Fprintf(os.Stderr, "  ghreplica search-index repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica sync repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica sync issue <owner>/<repo> <number>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica sync pr <owner>/<repo> <number>\n")

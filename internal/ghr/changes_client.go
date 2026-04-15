@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/gitindex"
+	"github.com/dutifuldev/ghreplica/internal/searchindex"
 )
 
 type CommitResponse struct {
@@ -76,6 +77,10 @@ type searchByRangesRequest struct {
 	State  string        `json:"state,omitempty"`
 	Limit  int           `json:"limit,omitempty"`
 }
+
+type MentionSearchRequest = searchindex.MentionRequest
+
+type MentionMatch = searchindex.MentionMatch
 
 func (c *Client) GetPullRequestChangeSnapshot(ctx context.Context, repo string, number int) (PullRequestChangeSnapshotResponse, error) {
 	var out PullRequestChangeSnapshotResponse
@@ -156,5 +161,11 @@ func (c *Client) SearchPullRequestsByRanges(ctx context.Context, repo string, ra
 		State:  state,
 		Limit:  limit,
 	}, &out)
+	return out, err
+}
+
+func (c *Client) SearchMentions(ctx context.Context, repo string, request MentionSearchRequest) ([]MentionMatch, error) {
+	var out []MentionMatch
+	err := c.postJSON(ctx, fmt.Sprintf("/v1/search/repos/%s/mentions", repo), request, &out)
 	return out, err
 }

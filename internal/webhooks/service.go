@@ -11,6 +11,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/database"
 	gh "github.com/dutifuldev/ghreplica/internal/github"
 	"github.com/dutifuldev/ghreplica/internal/refresh"
+	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -40,6 +41,7 @@ type repoChangeDirtyMarker interface {
 type Service struct {
 	db        *gorm.DB
 	projector WebhookProjector
+	search    *searchindex.Service
 }
 
 var supportedWebhookEvents = map[string]struct{}{
@@ -54,7 +56,7 @@ var supportedWebhookEvents = map[string]struct{}{
 }
 
 func NewService(db *gorm.DB, projector WebhookProjector) *Service {
-	return &Service{db: db, projector: projector}
+	return &Service{db: db, projector: projector, search: searchindex.NewService(db)}
 }
 
 func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, headers http.Header, payload []byte) error {
@@ -224,6 +226,11 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 				Delete(&database.Issue{}).Error; err != nil {
 				return 0, err
 			}
+			if s.search != nil {
+				if err := s.search.DeleteByGitHubID(ctx, repo.ID, searchindex.DocumentTypeIssue, envelope.Issue.ID); err != nil {
+					return 0, err
+				}
+			}
 			return repo.ID, nil
 		}
 		if _, err := s.projector.UpsertIssue(ctx, repo.ID, envelope.Issue); err != nil {
@@ -251,6 +258,11 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 				Where("github_id = ?", envelope.Comment.ID).
 				Delete(&database.IssueComment{}).Error; err != nil {
 				return 0, err
+			}
+			if s.search != nil {
+				if err := s.search.DeleteByGitHubID(ctx, repo.ID, searchindex.DocumentTypeIssueComment, envelope.Comment.ID); err != nil {
+					return 0, err
+				}
 			}
 			return repo.ID, nil
 		}
@@ -327,6 +339,11 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 				Where("github_id = ?", envelope.Comment.ID).
 				Delete(&database.PullRequestReviewComment{}).Error; err != nil {
 				return 0, err
+			}
+			if s.search != nil {
+				if err := s.search.DeleteByGitHubID(ctx, repo.ID, searchindex.DocumentTypePullRequestReviewComment, envelope.Comment.ID); err != nil {
+					return 0, err
+				}
 			}
 			return repo.ID, nil
 		}

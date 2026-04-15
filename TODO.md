@@ -29,8 +29,9 @@
 - Add full-text and regex search over mirrored PR and issue metadata such as titles, bodies, and discussion text so operators can find related work by content as well as changed code.
 - Build a derived `search_documents` index for issues, pull requests, comments, reviews, and review comments instead of scanning canonical tables directly.
 - Add trigram-backed fuzzy search so queries can find similar wording, not just exact terms.
-- Add a `POST /v1/search/repos/{owner}/{repo}/mentions` endpoint with `fts`, `fuzzy`, and `regex` modes.
-- Add `ghr search mentions` once the API exists.
+- Improve text-search ranking so better field matches and shorter direct hits outrank weak fuzzy matches in long documents.
+- Improve excerpt generation and highlighting so long discussion threads show a more useful local snippet.
+- Expose repo-level text-search indexing coverage so operators can tell whether an older mirrored repo has already been rebuilt into `search_documents`.
 
 ## Observability
 

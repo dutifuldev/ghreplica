@@ -10,6 +10,7 @@ import (
 
 	gh "github.com/dutifuldev/ghreplica/internal/github"
 	"github.com/dutifuldev/ghreplica/internal/gitindex"
+	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"github.com/dutifuldev/ghreplica/internal/testfixtures"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
@@ -274,6 +275,27 @@ func TestSearchCommands(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, stdout, "#7")
 	require.Contains(t, stdout, "overlapping_hunks=2")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "mentions", "--query", "heartbeat watchdog", "--mode", "fts")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "pull_request")
+	require.Contains(t, stdout, "#10")
+	require.Contains(t, stdout, "heartbeat watchdog")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "mentions", "--query", "watch dog", "--mode", "fuzzy", "--scope", "pull_requests", "--json", "resource,matched_field,score")
+	require.NoError(t, err)
+	var mentionMatches []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &mentionMatches))
+	require.Len(t, mentionMatches, 1)
+	require.Equal(t, "pull_request", mentionMatches[0]["resource"].(map[string]any)["type"])
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "mentions", "--query", "watchdog.*variable", "--mode", "regex", "--scope", "pull_request_review_comments")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "pull_request_review_comment")
+	require.Contains(t, stdout, "#10")
 }
 
 func TestSearchByRangesRejectsMismatchedFlags(t *testing.T) {
@@ -481,6 +503,18 @@ func newTestServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/v1/search/repos/acme/widgets/pulls/by-ranges", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, []gitindex.SearchMatch{searchMatchesFixture()[0]})
+	})
+	mux.HandleFunc("/v1/search/repos/acme/widgets/mentions", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		switch body["mode"] {
+		case "regex":
+			writeResponseJSON(t, w, []searchindex.MentionMatch{mentionMatchesFixture()[1]})
+		case "fuzzy":
+			writeResponseJSON(t, w, []searchindex.MentionMatch{mentionMatchesFixture()[0]})
+		default:
+			writeResponseJSON(t, w, mentionMatchesFixture())
+		}
 	})
 
 	return httptest.NewServer(mux)
@@ -808,6 +842,35 @@ func searchMatchesFixture() []gitindex.SearchMatch {
 			Score:             12,
 			SharedPaths:       []string{"src/parser.ts"},
 			Reasons:           []string{"shared_paths"},
+		},
+	}
+}
+
+func mentionMatchesFixture() []searchindex.MentionMatch {
+	return []searchindex.MentionMatch{
+		{
+			Resource: searchindex.MentionResource{
+				Type:    "pull_request",
+				ID:      302,
+				Number:  10,
+				APIURL:  "https://api.github.com/repos/acme/widgets/pulls/10",
+				HTMLURL: "https://github.com/acme/widgets/pull/10",
+			},
+			MatchedField: "title",
+			Excerpt:      "feat(acp): retry heartbeat watchdog",
+			Score:        0.91,
+		},
+		{
+			Resource: searchindex.MentionResource{
+				Type:    "pull_request_review_comment",
+				ID:      601,
+				Number:  10,
+				APIURL:  "https://api.github.com/repos/acme/widgets/pulls/comments/601",
+				HTMLURL: "https://github.com/acme/widgets/pull/10#discussion_r601",
+			},
+			MatchedField: "body",
+			Excerpt:      "Please rename the watchdog variable before merge.",
+			Score:        1,
 		},
 	}
 }

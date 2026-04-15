@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +17,7 @@ func newSearchCmd(opts *RootOptions) *cobra.Command {
 	cmd.AddCommand(newSearchRelatedPRsCmd(opts))
 	cmd.AddCommand(newSearchPRsByPathsCmd(opts))
 	cmd.AddCommand(newSearchPRsByRangesCmd(opts))
+	cmd.AddCommand(newSearchMentionsCmd(opts))
 	return cmd
 }
 
@@ -166,4 +168,55 @@ func normalizeStringSlice(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func newSearchMentionsCmd(opts *RootOptions) *cobra.Command {
+	var jsonFields string
+	var query string
+	var mode string
+	var scopes []string
+	var state string
+	var author string
+	var limit int
+	var page int
+	cmd := &cobra.Command{
+		Use:   "mentions",
+		Short: "Search mirrored PR, issue, and discussion text",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			request := searchindex.MentionRequest{
+				Query:  strings.TrimSpace(query),
+				Mode:   strings.TrimSpace(mode),
+				Scopes: normalizeStringSlice(scopes),
+				State:  strings.TrimSpace(state),
+				Author: strings.TrimSpace(author),
+				Limit:  limit,
+				Page:   page,
+			}
+			client := clientFor(opts)
+			matches, err := client.SearchMentions(context.Background(), repo, request)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(jsonFields) != "" {
+				return writeJSON(cmd.OutOrStdout(), matches, jsonFields)
+			}
+			printMentionMatches(cmd.OutOrStdout(), matches)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Search expression")
+	cmd.Flags().StringVar(&mode, "mode", searchindex.ModeFTS, "Search mode: fts, fuzzy, or regex")
+	cmd.Flags().StringSliceVar(&scopes, "scope", nil, "Search scope; repeat for multiple scopes")
+	cmd.Flags().StringVarP(&state, "state", "s", "all", "Filter by state: open, closed, all")
+	cmd.Flags().StringVar(&author, "author", "", "Filter by author login")
+	cmd.Flags().IntVarP(&limit, "limit", "L", 20, "Maximum number of results to fetch")
+	cmd.Flags().IntVar(&page, "page", 1, "Page number to fetch")
+	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
+	_ = cmd.MarkFlagRequired("query")
+	return cmd
 }

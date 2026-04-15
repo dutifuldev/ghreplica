@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/dutifuldev/ghreplica/internal/gitindex"
+	"github.com/dutifuldev/ghreplica/internal/searchindex"
 )
 
 func printRepoChangeStatus(out io.Writer, status RepoChangeStatusResponse) {
@@ -195,6 +196,26 @@ func printSearchMatches(out io.Writer, matches []gitindex.SearchMatch) {
 			match.IndexedAs,
 			match.IndexFreshness,
 			formatSearchReasons(match),
+		)
+	}
+	_ = tw.Flush()
+}
+
+func printMentionMatches(out io.Writer, matches []searchindex.MentionMatch) {
+	if len(matches) == 0 {
+		fmt.Fprintln(out, "no matching mentions found")
+		return
+	}
+
+	tw := newTabWriter(out)
+	fmt.Fprintln(tw, "TYPE\tRESOURCE\tFIELD\tSCORE\tEXCERPT")
+	for _, match := range matches {
+		fmt.Fprintf(tw, "%s\t#%d\t%s\t%.2f\t%s\n",
+			match.Resource.Type,
+			match.Resource.Number,
+			match.MatchedField,
+			match.Score,
+			truncate(match.Excerpt, 120),
 		)
 	}
 	_ = tw.Flush()

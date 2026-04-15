@@ -18,3 +18,9 @@ func TestRunBackfillAcceptsFlagsBeforeTarget(t *testing.T) {
 	require.Error(t, err)
 	require.EqualError(t, err, "DATABASE_URL is required")
 }
+
+func TestRunSearchIndexAcceptsDocumentedArguments(t *testing.T) {
+	err := runSearchIndex(config.Config{}, []string{"repo", "acme/widgets"})
+	require.Error(t, err)
+	require.EqualError(t, err, "DATABASE_URL is required")
+}

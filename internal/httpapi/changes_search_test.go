@@ -16,6 +16,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/githubsync"
 	"github.com/dutifuldev/ghreplica/internal/gitindex"
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
+	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"github.com/dutifuldev/ghreplica/internal/testfixtures"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -278,6 +279,149 @@ func TestChangeStatusEndpoints(t *testing.T) {
 	require.Equal(t, true, prStatus["indexed"])
 	require.Equal(t, "current", prStatus["index_freshness"])
 	require.EqualValues(t, 2, prStatus["changed_files"])
+}
+
+func TestSearchMentionsEndpoint(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	repo := seedMentionSearchData(t, db)
+	require.NoError(t, searchindex.NewService(db).RebuildRepositoryByID(ctx, repo.ID))
+
+	server := httpapi.NewServer(db, httpapi.Options{})
+
+	body := bytes.NewBufferString(`{"query":"heartbeat watchdog","mode":"fts","limit":10,"page":1}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/search/repos/acme/widgets/mentions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var matches []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &matches))
+	require.NotEmpty(t, matches)
+	require.Equal(t, "pull_request", matches[0]["resource"].(map[string]any)["type"])
+	require.Equal(t, "title", matches[0]["matched_field"])
+
+	body = bytes.NewBufferString(`{"query":"watch dog","mode":"fuzzy","scopes":["pull_requests"],"limit":10,"page":1}`)
+	req = httptest.NewRequest(http.MethodPost, "/v1/search/repos/acme/widgets/mentions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &matches))
+	require.Len(t, matches, 1)
+	require.Equal(t, "pull_request", matches[0]["resource"].(map[string]any)["type"])
+
+	body = bytes.NewBufferString(`{"query":"watchdog.*variable","mode":"regex","scopes":["pull_request_review_comments"],"limit":10,"page":1}`)
+	req = httptest.NewRequest(http.MethodPost, "/v1/search/repos/acme/widgets/mentions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &matches))
+	require.Len(t, matches, 1)
+	require.Equal(t, "pull_request_review_comment", matches[0]["resource"].(map[string]any)["type"])
+
+	body = bytes.NewBufferString(`{"query":"(","mode":"regex"}`)
+	req = httptest.NewRequest(http.MethodPost, "/v1/search/repos/acme/widgets/mentions", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func seedMentionSearchData(t *testing.T, db *gorm.DB) database.Repository {
+	t.Helper()
+
+	now := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+	owner := database.User{GitHubID: 1, Login: "acme", Type: "Organization"}
+	author := database.User{GitHubID: 2, Login: "octocat", Type: "User"}
+	reviewer := database.User{GitHubID: 3, Login: "reviewer", Type: "User"}
+	require.NoError(t, db.Create(&owner).Error)
+	require.NoError(t, db.Create(&author).Error)
+	require.NoError(t, db.Create(&reviewer).Error)
+
+	repo := database.Repository{
+		GitHubID:      101,
+		OwnerID:       &owner.ID,
+		OwnerLogin:    "acme",
+		Name:          "widgets",
+		FullName:      "acme/widgets",
+		DefaultBranch: "main",
+		APIURL:        "https://api.github.com/repos/acme/widgets",
+		HTMLURL:       "https://github.com/acme/widgets",
+	}
+	require.NoError(t, db.Create(&repo).Error)
+
+	issue := database.Issue{
+		RepositoryID:    repo.ID,
+		GitHubID:        201,
+		Number:          1,
+		Title:           "Heartbeat watchdog drops ACP messages",
+		Body:            "The heartbeat watchdog silently drops ACP messages on reconnect.",
+		State:           "open",
+		AuthorID:        &author.ID,
+		HTMLURL:         "https://github.com/acme/widgets/issues/1",
+		APIURL:          "https://api.github.com/repos/acme/widgets/issues/1",
+		GitHubCreatedAt: now,
+		GitHubUpdatedAt: now,
+	}
+	require.NoError(t, db.Create(&issue).Error)
+
+	prIssue := database.Issue{
+		RepositoryID:      repo.ID,
+		GitHubID:          301,
+		Number:            10,
+		Title:             "feat(acp): retry heartbeat watchdog",
+		Body:              "Add heartbeat retry logic for ACP sessions.",
+		State:             "open",
+		AuthorID:          &author.ID,
+		IsPullRequest:     true,
+		PullRequestAPIURL: "https://api.github.com/repos/acme/widgets/pulls/10",
+		HTMLURL:           "https://github.com/acme/widgets/pull/10",
+		APIURL:            "https://api.github.com/repos/acme/widgets/issues/10",
+		GitHubCreatedAt:   now.Add(1 * time.Minute),
+		GitHubUpdatedAt:   now.Add(1 * time.Minute),
+	}
+	require.NoError(t, db.Create(&prIssue).Error)
+
+	pr := database.PullRequest{
+		IssueID:         prIssue.ID,
+		RepositoryID:    repo.ID,
+		GitHubID:        302,
+		Number:          10,
+		State:           "open",
+		HeadRef:         "feat/watchdog",
+		HeadSHA:         "abc123",
+		BaseRef:         "main",
+		BaseSHA:         "def456",
+		HTMLURL:         "https://github.com/acme/widgets/pull/10",
+		APIURL:          "https://api.github.com/repos/acme/widgets/pulls/10",
+		DiffURL:         "https://github.com/acme/widgets/pull/10.diff",
+		PatchURL:        "https://github.com/acme/widgets/pull/10.patch",
+		GitHubCreatedAt: now.Add(1 * time.Minute),
+		GitHubUpdatedAt: now.Add(2 * time.Minute),
+	}
+	require.NoError(t, db.Create(&pr).Error)
+
+	reviewComment := database.PullRequestReviewComment{
+		GitHubID:        601,
+		RepositoryID:    repo.ID,
+		PullRequestID:   pr.IssueID,
+		AuthorID:        &reviewer.ID,
+		Path:            "worker.go",
+		Body:            "Please rename the watchdog variable before merge.",
+		HTMLURL:         "https://github.com/acme/widgets/pull/10#discussion_r601",
+		APIURL:          "https://api.github.com/repos/acme/widgets/pulls/comments/601",
+		PullRequestURL:  "https://api.github.com/repos/acme/widgets/pulls/10",
+		GitHubCreatedAt: now.Add(3 * time.Minute),
+		GitHubUpdatedAt: now.Add(3 * time.Minute),
+	}
+	require.NoError(t, db.Create(&reviewComment).Error)
+	return repo
 }
 
 func seedRepositoryAndPullRequests(t *testing.T, db *gorm.DB, fixture testfixtures.LocalPullRepo) (database.Repository, map[int]database.PullRequest) {
