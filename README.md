@@ -4,6 +4,8 @@
 
 It ingests GitHub webhooks, applies those events into a local canonical model, and serves a GitHub-compatible read API on top of that stored state. The project is built for tooling that needs reliable repository data without each consumer reimplementing its own crawler, cache, and webhook pipeline.
 
+Current ownership note: this project is currently being developed by Onur Solmaz and is expected to move to another organization once it is stable.
+
 Current deployment:
 
 - API: `https://ghreplica.dutiful.dev`
