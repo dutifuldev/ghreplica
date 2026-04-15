@@ -2,6 +2,47 @@ package gitindex
 
 import "time"
 
+type StructuralSearchRequest struct {
+	CommitSHA         string         `json:"commit_sha,omitempty"`
+	Ref               string         `json:"ref,omitempty"`
+	PullRequestNumber int            `json:"pull_request_number,omitempty"`
+	Language          string         `json:"language"`
+	Rule              map[string]any `json:"rule"`
+	Paths             []string       `json:"paths,omitempty"`
+	ChangedFilesOnly  bool           `json:"changed_files_only,omitempty"`
+	Limit             int            `json:"limit,omitempty"`
+}
+
+type StructuralSearchResponse struct {
+	Repository        SearchRepository  `json:"repository"`
+	ResolvedCommitSHA string            `json:"resolved_commit_sha"`
+	ResolvedRef       string            `json:"resolved_ref,omitempty"`
+	Matches           []StructuralMatch `json:"matches"`
+	Truncated         bool              `json:"truncated"`
+}
+
+type SearchRepository struct {
+	Owner    string `json:"owner"`
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+}
+
+type StructuralMatch struct {
+	Path          string                 `json:"path"`
+	StartLine     int                    `json:"start_line"`
+	StartColumn   int                    `json:"start_column"`
+	EndLine       int                    `json:"end_line"`
+	EndColumn     int                    `json:"end_column"`
+	Text          string                 `json:"text"`
+	MetaVariables StructuralMetaVariable `json:"meta_variables,omitempty"`
+}
+
+type StructuralMetaVariable struct {
+	Single      map[string]string   `json:"single,omitempty"`
+	Multi       map[string][]string `json:"multi,omitempty"`
+	Transformed map[string]string   `json:"transformed,omitempty"`
+}
+
 type FileChange struct {
 	Path         string `json:"path"`
 	PreviousPath string `json:"previous_path,omitempty"`

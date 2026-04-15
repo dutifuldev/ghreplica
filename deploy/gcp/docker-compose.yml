@@ -33,6 +33,8 @@ services:
       REPO_BACKFILL_MAX_RUNTIME: "${REPO_BACKFILL_MAX_RUNTIME:-}"
       REPO_BACKFILL_MAX_PRS: "${REPO_BACKFILL_MAX_PRS:-}"
       GIT_INDEX_TIMEOUT: "${GIT_INDEX_TIMEOUT:-}"
+      AST_GREP_TIMEOUT: "${AST_GREP_TIMEOUT:-}"
+      AST_GREP_BIN: "${AST_GREP_BIN:-}"
     restart: unless-stopped
 
   ghreplica-migrate:

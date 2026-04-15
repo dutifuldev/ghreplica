@@ -312,6 +312,22 @@ func TestSearchCommands(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, stdout, "pull_request_review_comment")
 	require.Contains(t, stdout, "#10")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "ast-grep", "--pr", "2", "--language", "typescript", "--pattern", "ctx.reply($MSG)")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets ast-grep search")
+	require.Contains(t, stdout, "Resolved commit:")
+	require.Contains(t, stdout, "src/parser.ts")
+	require.Contains(t, stdout, "MSG=payload")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "ast-grep", "--ref", "main", "--language", "typescript", "--pattern", "ctx.reply($MSG)", "--json", "resolved_commit_sha,matches")
+	require.NoError(t, err)
+	var structural map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &structural))
+	require.Equal(t, "abc123", structural["resolved_commit_sha"])
+	require.Len(t, structural["matches"].([]any), 2)
 }
 
 func TestSearchByRangesRejectsMismatchedFlags(t *testing.T) {
@@ -534,6 +550,15 @@ func newTestServer(t *testing.T) *httptest.Server {
 		default:
 			writeResponseJSON(t, w, mentionMatchesFixture())
 		}
+	})
+	mux.HandleFunc("/v1/search/repos/acme/widgets/ast-grep", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		resp := structuralSearchFixture()
+		if ref, _ := body["ref"].(string); ref == "main" {
+			resp.ResolvedRef = "refs/heads/main"
+		}
+		writeResponseJSON(t, w, resp)
 	})
 
 	return httptest.NewServer(mux)
@@ -909,5 +934,38 @@ func searchStatusFixture() searchindex.RepoStatus {
 		LastSourceUpdateAt: &sourceUpdatedAt,
 		Freshness:          searchindex.TextIndexFreshnessCurrent,
 		Coverage:           searchindex.TextIndexCoverageComplete,
+	}
+}
+
+func structuralSearchFixture() StructuralSearchResponse {
+	return StructuralSearchResponse{
+		Repository: gitindex.SearchRepository{
+			Owner:    "acme",
+			Name:     "widgets",
+			FullName: "acme/widgets",
+		},
+		ResolvedCommitSHA: "abc123",
+		ResolvedRef:       "refs/pull/2/head",
+		Matches: []gitindex.StructuralMatch{
+			{
+				Path:        "src/parser.ts",
+				StartLine:   12,
+				StartColumn: 5,
+				EndLine:     12,
+				EndColumn:   23,
+				Text:        "ctx.reply(payload)",
+				MetaVariables: gitindex.StructuralMetaVariable{
+					Single: map[string]string{"MSG": "payload"},
+				},
+			},
+			{
+				Path:        "test/parser_test.ts",
+				StartLine:   8,
+				StartColumn: 3,
+				EndLine:     8,
+				EndColumn:   21,
+				Text:        "ctx.reply(expected)",
+			},
+		},
 	}
 }

@@ -31,6 +31,7 @@
 - Improve fuzzy search quality so approximate matches are stronger without requiring `pg_trgm` on managed Postgres.
 - Improve excerpt generation and highlighting so long discussion threads show a more useful local snippet.
 - Add explicit operator workflows for repository-wide text-index rebuilds and freshness checks.
+- Add result caching and stronger execution limits for `ast-grep` structural search so repeated repo and PR queries stay fast under load.
 
 ## Observability
 

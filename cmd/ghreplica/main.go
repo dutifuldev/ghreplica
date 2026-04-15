@@ -93,6 +93,7 @@ func runServe(cfg config.Config) error {
 		GitHubWebhookSecret: cfg.GitHubWebhookSecret,
 		WebhookIngestor:     webhookIngestor,
 		ChangeStatus:        githubSync,
+		StructuralSearch:    gitIndex,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -311,7 +312,10 @@ func runSearchIndex(cfg config.Config, args []string) error {
 }
 
 func newGitIndexService(db *gorm.DB, client *github.Client, cfg config.Config) *gitindex.Service {
-	return gitindex.NewService(db, client, cfg.GitMirrorRoot).WithIndexTimeout(cfg.GitIndexTimeout)
+	return gitindex.NewService(db, client, cfg.GitMirrorRoot).
+		WithIndexTimeout(cfg.GitIndexTimeout).
+		WithASTGrepBinary(cfg.ASTGrepBin).
+		WithASTGrepTimeout(cfg.ASTGrepTimeout)
 }
 
 func usageError() error {

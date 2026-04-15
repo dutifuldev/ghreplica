@@ -25,7 +25,8 @@ const (
 	indexedAsOversized = "oversized"
 	indexedAsFailed    = "failed"
 
-	defaultIndexTimeout = 5 * time.Minute
+	defaultIndexTimeout   = 5 * time.Minute
+	defaultASTGrepTimeout = time.Minute
 
 	freshnessCurrent          = "current"
 	freshnessStaleHeadChanged = "stale_head_changed"
@@ -35,12 +36,14 @@ const (
 )
 
 type Service struct {
-	db           *gorm.DB
-	github       *gh.Client
-	mirrorRoot   string
-	gitBin       string
-	authHeader   string
-	indexTimeout time.Duration
+	db             *gorm.DB
+	github         *gh.Client
+	mirrorRoot     string
+	gitBin         string
+	authHeader     string
+	indexTimeout   time.Duration
+	astGrepBin     string
+	astGrepTimeout time.Duration
 }
 
 func NewService(db *gorm.DB, githubClient *gh.Client, mirrorRoot string) *Service {
@@ -48,17 +51,33 @@ func NewService(db *gorm.DB, githubClient *gh.Client, mirrorRoot string) *Servic
 		mirrorRoot = ".data/git-mirrors"
 	}
 	return &Service{
-		db:           db,
-		github:       githubClient,
-		mirrorRoot:   mirrorRoot,
-		gitBin:       "git",
-		indexTimeout: defaultIndexTimeout,
+		db:             db,
+		github:         githubClient,
+		mirrorRoot:     mirrorRoot,
+		gitBin:         "git",
+		indexTimeout:   defaultIndexTimeout,
+		astGrepBin:     "ast-grep",
+		astGrepTimeout: defaultASTGrepTimeout,
 	}
 }
 
 func (s *Service) WithIndexTimeout(timeout time.Duration) *Service {
 	if timeout > 0 {
 		s.indexTimeout = timeout
+	}
+	return s
+}
+
+func (s *Service) WithASTGrepTimeout(timeout time.Duration) *Service {
+	if timeout > 0 {
+		s.astGrepTimeout = timeout
+	}
+	return s
+}
+
+func (s *Service) WithASTGrepBinary(bin string) *Service {
+	if strings.TrimSpace(bin) != "" {
+		s.astGrepBin = strings.TrimSpace(bin)
 	}
 	return s
 }

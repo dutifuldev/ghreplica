@@ -59,6 +59,7 @@ The original mirrored read endpoints are also still served on the legacy unversi
 - `POST /v1/search/repos/{owner}/{repo}/pulls/by-ranges`
 - `GET /v1/search/repos/{owner}/{repo}/status`
 - `POST /v1/search/repos/{owner}/{repo}/mentions`
+- `POST /v1/search/repos/{owner}/{repo}/ast-grep`
 
 Text-search request features:
 
@@ -103,6 +104,36 @@ Text-search response features:
 - `excerpt`
 - `score`
 
+Structural-search request features:
+
+- exactly one target:
+  - `commit_sha`
+  - `ref`
+  - `pull_request_number`
+- `language`
+- `rule`
+- `paths`
+- `changed_files_only`
+- `limit`
+
+Structural-search response features:
+
+- `repository`
+  - `owner`
+  - `name`
+  - `full_name`
+- `resolved_commit_sha`
+- `resolved_ref`
+- `matches`
+  - `path`
+  - `start_line`
+  - `start_column`
+  - `end_line`
+  - `end_column`
+  - `text`
+  - `meta_variables`
+- `truncated`
+
 ## CLI Coverage
 
 The `ghr` CLI now covers all three read surfaces:
@@ -121,3 +152,4 @@ See [CLI](./CLI.md) for the command mapping and examples.
 - the versioned path structure for new work is `/v1/github/...`, `/v1/changes/...`, and `/v1/search/...`
 - unsupported endpoints should be treated as out of scope until explicitly added here
 - text-search endpoints stay under `/v1/search/...`, not `/v1/github/...`
+- structural `ast-grep` search also stays under `/v1/search/...` because it is a derived Git-mirror feature, not a GitHub-native resource

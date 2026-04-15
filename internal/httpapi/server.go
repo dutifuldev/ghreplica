@@ -21,12 +21,13 @@ import (
 )
 
 type Server struct {
-	db              *gorm.DB
-	echo            *echo.Echo
-	webhookSecret   string
-	webhookIngestor webhookIngestor
-	changeStatus    changeStatusProvider
-	search          *searchindex.Service
+	db               *gorm.DB
+	echo             *echo.Echo
+	webhookSecret    string
+	webhookIngestor  webhookIngestor
+	changeStatus     changeStatusProvider
+	search           *searchindex.Service
+	structuralSearch structuralSearchProvider
 }
 
 type webhookIngestor interface {
@@ -37,11 +38,16 @@ type Options struct {
 	GitHubWebhookSecret string
 	WebhookIngestor     webhookIngestor
 	ChangeStatus        changeStatusProvider
+	StructuralSearch    structuralSearchProvider
 }
 
 type changeStatusProvider interface {
 	GetRepoChangeStatus(ctx context.Context, owner, repo string) (gitindex.RepoStatus, error)
 	GetPullRequestChangeStatus(ctx context.Context, owner, repo string, number int) (gitindex.PullRequestStatus, error)
+}
+
+type structuralSearchProvider interface {
+	SearchStructural(ctx context.Context, owner, repo string, request gitindex.StructuralSearchRequest) (gitindex.StructuralSearchResponse, error)
 }
 
 func NewServer(db *gorm.DB, options Options) *Server {
@@ -58,12 +64,13 @@ func NewServer(db *gorm.DB, options Options) *Server {
 	}))
 
 	server := &Server{
-		db:              db,
-		echo:            e,
-		webhookSecret:   strings.TrimSpace(options.GitHubWebhookSecret),
-		webhookIngestor: options.WebhookIngestor,
-		changeStatus:    options.ChangeStatus,
-		search:          searchindex.NewService(db),
+		db:               db,
+		echo:             e,
+		webhookSecret:    strings.TrimSpace(options.GitHubWebhookSecret),
+		webhookIngestor:  options.WebhookIngestor,
+		changeStatus:     options.ChangeStatus,
+		search:           searchindex.NewService(db),
+		structuralSearch: options.StructuralSearch,
 	}
 	server.registerRoutes()
 	return server
@@ -128,6 +135,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/v1/search/repos/:owner/:repo/pulls/by-ranges", s.handleSearchPullRequestsByRanges)
 	s.echo.GET("/v1/search/repos/:owner/:repo/status", s.handleGetRepoSearchStatus)
 	s.echo.POST("/v1/search/repos/:owner/:repo/mentions", s.handleSearchMentions)
+	s.echo.POST("/v1/search/repos/:owner/:repo/ast-grep", s.handleSearchASTGrep)
 }
 
 func (s *Server) handleGitHubWebhook(c echo.Context) error {
