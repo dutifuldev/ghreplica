@@ -15,6 +15,18 @@ Current public instance:
 - API: `https://ghreplica.dutiful.dev`
 - CLI: `ghr`
 
+## Agent Skill
+
+This repo also ships a local skill for Codex-style agents at [skills/ghreplica/SKILL.md](skills/ghreplica/SKILL.md).
+
+If you want an agent to immediately understand `ghreplica`, its API surfaces, and the `ghr` CLI, give the agent this exact instruction:
+
+```text
+Install the `ghreplica` skill from `/home/bob/repos/ghreplica/skills/ghreplica/SKILL.md`, then use it for work involving the ghreplica API, the `ghr` CLI, mirrored GitHub reads, git-change inspection, overlap search, mirrored text search, or structural code search.
+```
+
+That is enough for an agent that already knows how to install repo-local skills.
+
 ## Why This Exists
 
 Most tools that need GitHub data end up rebuilding the same fragile stack. They poll GitHub, keep partial caches of issues and pull requests, handle webhooks inconsistently, and then discover later that they also need search, change overlap, or indexing status. That usually produces systems that are hard to reason about and even harder to trust.
