@@ -9,6 +9,7 @@ import (
 type Config struct {
 	AppAddr                 string
 	DatabaseURL             string
+	GitMirrorRoot           string
 	GitHubBaseURL           string
 	GitHubToken             string
 	GitHubAppID             string
@@ -22,6 +23,7 @@ func Load() Config {
 	return Config{
 		AppAddr:                 getenvDefault("APP_ADDR", "127.0.0.1:8080"),
 		DatabaseURL:             strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		GitMirrorRoot:           getenvDefault("GIT_MIRROR_ROOT", "/app/data/git-mirrors"),
 		GitHubBaseURL:           getenvDefault("GITHUB_BASE_URL", "https://api.github.com"),
 		GitHubToken:             strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
 		GitHubAppID:             strings.TrimSpace(os.Getenv("GITHUB_APP_ID")),

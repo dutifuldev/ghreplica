@@ -24,23 +24,38 @@ Current deployment:
 
 ## Current Surface
 
-The intended long-term API structure is:
+The versioned API structure is:
 
 - `/v1/github/...` for GitHub-compatible mirrored resources
 - `/v1/changes/...` for normalized Git-backed change data
 - `/v1/search/...` for overlap and related-change queries
 
-The currently implemented read API still lives on the legacy `/repos/...` surface while that transition is designed.
+The legacy unversioned `/repos/...` read surface still exists for the original mirrored GitHub-style endpoints.
 
-- repository view
-- issue list
-- issue view
-- issue comments
-- pull request list
-- pull request view
-- pull request reviews
-- pull request review comments
-- repo mirror status
+Implemented today:
+
+- `/repos/...` and `/v1/github/...`
+  - repository view
+  - issue list
+  - issue view
+  - issue comments
+  - pull request list
+  - pull request view
+  - pull request reviews
+  - pull request review comments
+- `/v1/changes/...`
+  - pull request change snapshots
+  - pull request file lists
+  - commit metadata
+  - commit file lists
+  - indexed compare for known head/base pairs
+- `/v1/search/...`
+  - related pull requests by shared paths
+  - related pull requests by overlapping hunks
+  - pull request search by paths
+  - pull request search by ranges
+- `/repos/{owner}/{repo}/_ghreplica`
+  - repo mirror status
 
 The mirror preserves GitHub-native field names and response shapes wherever the data already exists on GitHub.
 

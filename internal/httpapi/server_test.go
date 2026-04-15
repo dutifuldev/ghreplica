@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 func TestReadinessIgnoresHistoricalFailedJobsAndSupersededJobs(t *testing.T) {
 	ctx := context.Background()
 
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
+	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(db))
 
@@ -64,7 +65,7 @@ func TestReadinessIgnoresHistoricalFailedJobsAndSupersededJobs(t *testing.T) {
 func TestMirrorStatusEndpoint(t *testing.T) {
 	ctx := context.Background()
 
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
+	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(db))
 
@@ -196,7 +197,7 @@ func TestMirrorStatusEndpoint(t *testing.T) {
 func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 	ctx := context.Background()
 
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
+	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(db))
 
@@ -254,4 +255,9 @@ func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &issueComments))
 	require.Len(t, issueComments, 1)
 	require.Equal(t, "kpiyush88", issueComments[0]["user"].(map[string]any)["login"])
+}
+
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	return "sqlite://" + filepath.Join(t.TempDir(), "ghreplica-httpapi-test.db")
 }

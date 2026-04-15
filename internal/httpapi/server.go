@@ -96,6 +96,22 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/repos/:owner/:repo/pulls/:number", s.handleGetPullRequest)
 	s.echo.GET("/repos/:owner/:repo/pulls/:number/reviews", s.handleListPullRequestReviews)
 	s.echo.GET("/repos/:owner/:repo/pulls/:number/comments", s.handleListPullRequestReviewComments)
+	s.echo.GET("/v1/github/repos/:owner/:repo", s.handleGetRepository)
+	s.echo.GET("/v1/github/repos/:owner/:repo/issues", s.handleListIssues)
+	s.echo.GET("/v1/github/repos/:owner/:repo/issues/:number", s.handleGetIssue)
+	s.echo.GET("/v1/github/repos/:owner/:repo/issues/:number/comments", s.handleListIssueComments)
+	s.echo.GET("/v1/github/repos/:owner/:repo/pulls", s.handleListPullRequests)
+	s.echo.GET("/v1/github/repos/:owner/:repo/pulls/:number", s.handleGetPullRequest)
+	s.echo.GET("/v1/github/repos/:owner/:repo/pulls/:number/reviews", s.handleListPullRequestReviews)
+	s.echo.GET("/v1/github/repos/:owner/:repo/pulls/:number/comments", s.handleListPullRequestReviewComments)
+	s.echo.GET("/v1/changes/repos/:owner/:repo/pulls/:number", s.handleGetPullRequestChangeSnapshot)
+	s.echo.GET("/v1/changes/repos/:owner/:repo/pulls/:number/files", s.handleListPullRequestChangeFiles)
+	s.echo.GET("/v1/changes/repos/:owner/:repo/commits/:sha", s.handleGetCommit)
+	s.echo.GET("/v1/changes/repos/:owner/:repo/commits/:sha/files", s.handleListCommitFiles)
+	s.echo.GET("/v1/changes/repos/:owner/:repo/compare/:spec", s.handleCompareChanges)
+	s.echo.GET("/v1/search/repos/:owner/:repo/pulls/:number/related", s.handleSearchRelatedPullRequests)
+	s.echo.POST("/v1/search/repos/:owner/:repo/pulls/by-paths", s.handleSearchPullRequestsByPaths)
+	s.echo.POST("/v1/search/repos/:owner/:repo/pulls/by-ranges", s.handleSearchPullRequestsByRanges)
 }
 
 func (s *Server) handleGitHubWebhook(c echo.Context) error {

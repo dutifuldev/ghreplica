@@ -25,6 +25,14 @@ type WebhookProjector interface {
 	UpsertPullRequestReviewComment(ctx context.Context, repositoryID uint, pullNumber int, comment gh.PullRequestReviewCommentResponse) error
 }
 
+type pullRequestIndexer interface {
+	SyncPullRequestIndex(ctx context.Context, owner, repo string, repositoryID uint, pull gh.PullRequestResponse) error
+}
+
+type baseRefStaler interface {
+	MarkBaseRefStale(ctx context.Context, repositoryID uint, ref string) error
+}
+
 type Service struct {
 	db        *gorm.DB
 	projector WebhookProjector
@@ -154,6 +162,21 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 
 	switch event {
 	case "ping", "push":
+		if event == "push" {
+			if staler, ok := s.projector.(baseRefStaler); ok {
+				var envelope struct {
+					Repository gh.RepositoryResponse `json:"repository"`
+					Ref        string                `json:"ref"`
+				}
+				if err := json.Unmarshal(payload, &envelope); err == nil {
+					repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
+					if err == nil {
+						_ = staler.MarkBaseRefStale(ctx, repo.ID, envelope.Ref)
+						return repo.ID, nil
+					}
+				}
+			}
+		}
 		return repositoryIDByFullName(ctx, s.db, fullName)
 	case "repository":
 		var envelope struct {
@@ -233,6 +256,15 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 		}
 		if err := s.projector.UpsertPullRequest(ctx, repo.ID, envelope.PullRequest); err != nil {
 			return 0, err
+		}
+		if indexer, ok := s.projector.(pullRequestIndexer); ok {
+			owner, name, err := splitFullName(envelope.Repository.FullName)
+			if err != nil {
+				return 0, err
+			}
+			if err := indexer.SyncPullRequestIndex(ctx, owner, name, repo.ID, envelope.PullRequest); err != nil {
+				return 0, err
+			}
 		}
 		return repo.ID, nil
 	case "pull_request_review":
