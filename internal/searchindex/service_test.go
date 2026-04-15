@@ -103,6 +103,52 @@ func TestSearchMentionsRejectsInvalidRequests(t *testing.T) {
 	require.True(t, searchindex.IsInvalidRequest(err))
 }
 
+func TestGetRepoStatusLifecycle(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	repo := seedSearchFixtures(t, db)
+	service := searchindex.NewService(db)
+
+	status, err := service.GetRepoStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.Equal(t, searchindex.TextIndexStatusMissing, status.TextIndexStatus)
+	require.EqualValues(t, 0, status.DocumentCount)
+	require.Equal(t, searchindex.TextIndexFreshnessUnknown, status.Freshness)
+	require.Equal(t, searchindex.TextIndexCoverageEmpty, status.Coverage)
+
+	require.NoError(t, service.RebuildRepositoryByID(ctx, repo.ID))
+
+	status, err = service.GetRepoStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.Equal(t, searchindex.TextIndexStatusReady, status.TextIndexStatus)
+	require.EqualValues(t, 7, status.DocumentCount)
+	require.Equal(t, searchindex.TextIndexFreshnessCurrent, status.Freshness)
+	require.Equal(t, searchindex.TextIndexCoverageComplete, status.Coverage)
+	require.NotNil(t, status.LastIndexedAt)
+	require.NotNil(t, status.LastSourceUpdateAt)
+	require.Empty(t, status.LastError)
+
+	var issue database.Issue
+	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 1).First(&issue).Error)
+	issue.Body = "The heartbeat watchdog now drops ACP messages after reconnect and retry."
+	issue.GitHubUpdatedAt = issue.GitHubUpdatedAt.Add(30 * time.Minute)
+	require.NoError(t, db.WithContext(ctx).Save(&issue).Error)
+	require.NoError(t, service.UpsertIssue(ctx, issue))
+
+	statusAfterUpsert, err := service.GetRepoStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.Equal(t, searchindex.TextIndexStatusReady, statusAfterUpsert.TextIndexStatus)
+	require.Equal(t, searchindex.TextIndexFreshnessCurrent, statusAfterUpsert.Freshness)
+	require.Equal(t, searchindex.TextIndexCoverageComplete, statusAfterUpsert.Coverage)
+	require.NotNil(t, statusAfterUpsert.LastIndexedAt)
+	require.NotNil(t, statusAfterUpsert.LastSourceUpdateAt)
+	require.True(t, statusAfterUpsert.LastSourceUpdateAt.Equal(issue.GitHubUpdatedAt.UTC()) || statusAfterUpsert.LastSourceUpdateAt.After(issue.GitHubUpdatedAt.UTC()))
+	require.True(t, statusAfterUpsert.LastIndexedAt.Equal(*status.LastIndexedAt) || statusAfterUpsert.LastIndexedAt.After(*status.LastIndexedAt))
+}
+
 func seedSearchFixtures(t *testing.T, db *gorm.DB) database.Repository {
 	t.Helper()
 	now := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)

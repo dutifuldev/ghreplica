@@ -73,6 +73,7 @@ Current command shape:
 - `ghr search related-prs`
 - `ghr search prs-by-paths`
 - `ghr search prs-by-ranges`
+- `ghr search status`
 - `ghr search mentions`
 
 The first target is read-only parity for the endpoints `ghreplica` already serves.
@@ -99,6 +100,7 @@ ghr changes compare -R openclaw/openclaw main...5a3d3e54d93a03ee6f775d0010d1b1c4
 ghr search related-prs -R openclaw/openclaw 59883 --mode path_overlap
 ghr search prs-by-paths -R openclaw/openclaw --path src/acp/control-plane/manager.core.ts --state all
 ghr search prs-by-ranges -R openclaw/openclaw --path extensions/telegram/src/fetch.ts --start 24 --end 36 --state all
+ghr search status -R openclaw/openclaw
 ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts --scope pull_requests --scope issues
 ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
 ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
@@ -164,6 +166,8 @@ That keeps GitHub-shaped reads separate from normalized git-change reads and `gh
   - `POST /v1/search/repos/{owner}/{repo}/pulls/by-paths`
 - `ghr search prs-by-ranges -R <owner>/<repo> --path <path> --start <n> --end <n>`
   - `POST /v1/search/repos/{owner}/{repo}/pulls/by-ranges`
+- `ghr search status -R <owner>/<repo>`
+  - `GET /v1/search/repos/{owner}/{repo}/status`
 - `ghr search mentions -R <owner>/<repo> --query <expr>`
   - `POST /v1/search/repos/{owner}/{repo}/mentions`
 
@@ -175,8 +179,17 @@ The `search` group has two distinct jobs:
   - `related-prs`
   - `prs-by-paths`
   - `prs-by-ranges`
+- text-search indexing status
+  - `status`
 - text search over mirrored GitHub discussion data
   - `mentions`
+
+Use `ghr search status` when the question is:
+
+- is the text index present
+- is it current or stale
+- is an empty `mentions` result trustworthy
+- does this repo need a text-index rebuild
 
 Use `ghr search mentions` when the question is:
 
@@ -261,6 +274,7 @@ Default human-readable output should make it easy to scan:
 Examples:
 
 ```bash
+ghr search status -R openclaw/openclaw
 ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts --scope pull_requests --scope issues
 ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
 ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
@@ -359,6 +373,14 @@ So normal production use usually does not need `--base-url`.
 
 `ghr search mentions` searches mirrored text that has already been indexed into `search_documents`.
 
+Use `ghr search status` first when you need to know whether that text index is:
+
+- `missing`
+- `building`
+- `ready`
+- `stale`
+- `failed`
+
 That means:
 
 - it does not call GitHub’s live search API
@@ -370,10 +392,12 @@ The overlap commands depend on `/v1/changes/...` coverage instead.
 That means:
 
 - `mentions` depends on text-index coverage
+- `status` reports text-index freshness and coverage directly
 - `related-prs`, `prs-by-paths`, and `prs-by-ranges` depend on git-change index coverage
 
 If search results look incomplete:
 
+- check `ghr search status -R <owner>/<repo>`
 - check `ghr changes repo status -R <owner>/<repo>`
 - check `ghr changes pr status -R <owner>/<repo> <number>`
 - materialize a specific PR with `ghreplica sync pr <owner>/<repo> <number>`

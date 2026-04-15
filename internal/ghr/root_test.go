@@ -256,7 +256,23 @@ func TestSearchCommands(t *testing.T) {
 	server := newTestServer(t)
 	cmd := NewRootCmd()
 
-	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "related-prs", "2", "--mode", "path_overlap", "--state", "all")
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "status")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets text search status")
+	require.Contains(t, stdout, "Text index status:")
+	require.Contains(t, stdout, "ready")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "status", "--json", "repository,text_index_status,coverage")
+	require.NoError(t, err)
+	var searchStatus map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &searchStatus))
+	require.Equal(t, "ready", searchStatus["text_index_status"])
+	require.Equal(t, "complete", searchStatus["coverage"])
+	require.Equal(t, "acme/widgets", searchStatus["repository"].(map[string]any)["full_name"])
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "related-prs", "2", "--mode", "path_overlap", "--state", "all")
 	require.NoError(t, err)
 	require.Contains(t, stdout, "#7")
 	require.Contains(t, stdout, "draft")
@@ -503,6 +519,9 @@ func newTestServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/v1/search/repos/acme/widgets/pulls/by-ranges", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, []gitindex.SearchMatch{searchMatchesFixture()[0]})
+	})
+	mux.HandleFunc("/v1/search/repos/acme/widgets/status", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, searchStatusFixture())
 	})
 	mux.HandleFunc("/v1/search/repos/acme/widgets/mentions", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -872,5 +891,23 @@ func mentionMatchesFixture() []searchindex.MentionMatch {
 			Excerpt:      "Please rename the watchdog variable before merge.",
 			Score:        1,
 		},
+	}
+}
+
+func searchStatusFixture() searchindex.RepoStatus {
+	indexedAt := time.Date(2026, 4, 15, 16, 5, 0, 0, time.UTC)
+	sourceUpdatedAt := time.Date(2026, 4, 15, 16, 4, 0, 0, time.UTC)
+	return searchindex.RepoStatus{
+		Repository: searchindex.RepoStatusResource{
+			Owner:    "acme",
+			Name:     "widgets",
+			FullName: "acme/widgets",
+		},
+		TextIndexStatus:    searchindex.TextIndexStatusReady,
+		DocumentCount:      3,
+		LastIndexedAt:      &indexedAt,
+		LastSourceUpdateAt: &sourceUpdatedAt,
+		Freshness:          searchindex.TextIndexFreshnessCurrent,
+		Coverage:           searchindex.TextIndexCoverageComplete,
 	}
 }

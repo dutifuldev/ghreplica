@@ -126,6 +126,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/v1/search/repos/:owner/:repo/pulls/:number/related", s.handleSearchRelatedPullRequests)
 	s.echo.POST("/v1/search/repos/:owner/:repo/pulls/by-paths", s.handleSearchPullRequestsByPaths)
 	s.echo.POST("/v1/search/repos/:owner/:repo/pulls/by-ranges", s.handleSearchPullRequestsByRanges)
+	s.echo.GET("/v1/search/repos/:owner/:repo/status", s.handleGetRepoSearchStatus)
 	s.echo.POST("/v1/search/repos/:owner/:repo/mentions", s.handleSearchMentions)
 }
 

@@ -221,6 +221,20 @@ func printMentionMatches(out io.Writer, matches []searchindex.MentionMatch) {
 	_ = tw.Flush()
 }
 
+func printRepoSearchStatus(out io.Writer, status RepoSearchStatusResponse) {
+	fmt.Fprintf(out, "%s text search status\n", status.Repository.FullName)
+	fmt.Fprintln(out)
+	tw := newTabWriter(out)
+	fmt.Fprintf(tw, "Text index status:\t%s\n", coalesce(status.TextIndexStatus, "-"))
+	fmt.Fprintf(tw, "Document count:\t%d\n", status.DocumentCount)
+	fmt.Fprintf(tw, "Freshness:\t%s\n", coalesce(status.Freshness, "-"))
+	fmt.Fprintf(tw, "Coverage:\t%s\n", coalesce(status.Coverage, "-"))
+	fmt.Fprintf(tw, "Last indexed:\t%s\n", humanTimePtr(status.LastIndexedAt))
+	fmt.Fprintf(tw, "Last source update:\t%s\n", humanTimePtr(status.LastSourceUpdateAt))
+	fmt.Fprintf(tw, "Last error:\t%s\n", coalesce(status.LastError, "-"))
+	_ = tw.Flush()
+}
+
 func formatSearchReasons(match gitindex.SearchMatch) string {
 	parts := make([]string, 0, 4)
 	if len(match.SharedPaths) > 0 {

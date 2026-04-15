@@ -43,11 +43,17 @@ func (s *Service) RebuildRepository(ctx context.Context, owner, repo string) err
 }
 
 func (s *Service) RebuildRepositoryByID(ctx context.Context, repositoryID uint) error {
+	startedAt := time.Now().UTC()
+	if err := s.markRebuildStarted(ctx, repositoryID, startedAt); err != nil {
+		return err
+	}
+
 	var issues []database.Issue
 	if err := s.db.WithContext(ctx).
 		Preload("Author").
 		Where("repository_id = ? AND is_pull_request = ?", repositoryID, false).
 		Find(&issues).Error; err != nil {
+		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
 		return err
 	}
 
@@ -57,6 +63,7 @@ func (s *Service) RebuildRepositoryByID(ctx context.Context, repositoryID uint) 
 		Preload("Issue.Author").
 		Where("repository_id = ?", repositoryID).
 		Find(&pulls).Error; err != nil {
+		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
 		return err
 	}
 
@@ -66,6 +73,7 @@ func (s *Service) RebuildRepositoryByID(ctx context.Context, repositoryID uint) 
 		Preload("Issue").
 		Where("repository_id = ?", repositoryID).
 		Find(&issueComments).Error; err != nil {
+		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
 		return err
 	}
 
@@ -76,6 +84,7 @@ func (s *Service) RebuildRepositoryByID(ctx context.Context, repositoryID uint) 
 		Preload("PullRequest.Issue").
 		Where("repository_id = ?", repositoryID).
 		Find(&reviews).Error; err != nil {
+		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
 		return err
 	}
 
@@ -86,37 +95,54 @@ func (s *Service) RebuildRepositoryByID(ctx context.Context, repositoryID uint) 
 		Preload("PullRequest.Issue").
 		Where("repository_id = ?", repositoryID).
 		Find(&reviewComments).Error; err != nil {
+		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
 		return err
 	}
 
 	docs := make([]database.SearchDocument, 0, len(issues)+len(pulls)+len(issueComments)+len(reviews)+len(reviewComments))
+	var sourceUpdatedAt time.Time
 	for _, issue := range issues {
 		if doc, ok := buildIssueDocument(issue); ok {
 			docs = append(docs, doc)
+			if doc.ObjectUpdatedAt.After(sourceUpdatedAt) {
+				sourceUpdatedAt = doc.ObjectUpdatedAt
+			}
 		}
 	}
 	for _, pull := range pulls {
 		if doc, ok := buildPullRequestDocument(pull); ok {
 			docs = append(docs, doc)
+			if doc.ObjectUpdatedAt.After(sourceUpdatedAt) {
+				sourceUpdatedAt = doc.ObjectUpdatedAt
+			}
 		}
 	}
 	for _, comment := range issueComments {
 		if doc, ok := buildIssueCommentDocument(comment); ok {
 			docs = append(docs, doc)
+			if doc.ObjectUpdatedAt.After(sourceUpdatedAt) {
+				sourceUpdatedAt = doc.ObjectUpdatedAt
+			}
 		}
 	}
 	for _, review := range reviews {
 		if doc, ok := buildPullRequestReviewDocument(review); ok {
 			docs = append(docs, doc)
+			if doc.ObjectUpdatedAt.After(sourceUpdatedAt) {
+				sourceUpdatedAt = doc.ObjectUpdatedAt
+			}
 		}
 	}
 	for _, comment := range reviewComments {
 		if doc, ok := buildPullRequestReviewCommentDocument(comment); ok {
 			docs = append(docs, doc)
+			if doc.ObjectUpdatedAt.After(sourceUpdatedAt) {
+				sourceUpdatedAt = doc.ObjectUpdatedAt
+			}
 		}
 	}
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("repository_id = ?", repositoryID).Delete(&database.SearchDocument{}).Error; err != nil {
 			return err
 		}
@@ -124,7 +150,15 @@ func (s *Service) RebuildRepositoryByID(ctx context.Context, repositoryID uint) 
 			return nil
 		}
 		return tx.CreateInBatches(docs, 200).Error
-	})
+	}); err != nil {
+		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
+		return err
+	}
+
+	if err := s.markRebuildSucceeded(ctx, repositoryID, time.Now().UTC(), sourceUpdatedAt); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Service) UpsertIssue(ctx context.Context, issue database.Issue) error {
@@ -171,9 +205,16 @@ func (s *Service) UpsertPullRequestReviewComment(ctx context.Context, comment da
 }
 
 func (s *Service) DeleteByGitHubID(ctx context.Context, repositoryID uint, documentType string, githubID int64) error {
-	return s.db.WithContext(ctx).
+	result := s.db.WithContext(ctx).
 		Where("repository_id = ? AND document_type = ? AND document_github_id = ?", repositoryID, documentType, githubID).
-		Delete(&database.SearchDocument{}).Error
+		Delete(&database.SearchDocument{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil
+	}
+	return s.touchDeletedDocument(ctx, repositoryID)
 }
 
 func (s *Service) SearchMentions(ctx context.Context, repositoryID uint, request MentionRequest) ([]MentionMatch, error) {
@@ -305,7 +346,7 @@ func (s *Service) baseQuery(ctx context.Context, repositoryID uint, request Ment
 }
 
 func (s *Service) upsertDocument(ctx context.Context, doc database.SearchDocument) error {
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{Name: "repository_id"},
 			{Name: "document_type"},
@@ -326,7 +367,10 @@ func (s *Service) upsertDocument(ctx context.Context, doc database.SearchDocumen
 			"object_updated_at",
 			"updated_at",
 		}),
-	}).Create(&doc).Error
+	}).Create(&doc).Error; err != nil {
+		return err
+	}
+	return s.touchIndexedDocument(ctx, doc.RepositoryID, doc.ObjectUpdatedAt)
 }
 
 func normalizeMentionRequest(request MentionRequest) (MentionRequest, []string, error) {
