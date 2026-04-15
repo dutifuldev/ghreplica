@@ -235,6 +235,37 @@ func printRepoSearchStatus(out io.Writer, status RepoSearchStatusResponse) {
 	_ = tw.Flush()
 }
 
+func printStructuralSearch(out io.Writer, result StructuralSearchResponse) {
+	fmt.Fprintf(out, "%s ast-grep search\n", result.Repository.FullName)
+	fmt.Fprintln(out)
+	tw := newTabWriter(out)
+	fmt.Fprintf(tw, "Resolved commit:\t%s\n", result.ResolvedCommitSHA)
+	fmt.Fprintf(tw, "Resolved ref:\t%s\n", coalesce(result.ResolvedRef, "-"))
+	fmt.Fprintf(tw, "Matches:\t%d\n", len(result.Matches))
+	fmt.Fprintf(tw, "Truncated:\t%t\n", result.Truncated)
+	_ = tw.Flush()
+	if len(result.Matches) == 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "no structural matches found")
+		return
+	}
+	fmt.Fprintln(out)
+	tw = newTabWriter(out)
+	fmt.Fprintln(tw, "PATH\tLOCATION\tCAPTURES\tTEXT")
+	for _, match := range result.Matches {
+		fmt.Fprintf(tw, "%s\t%d:%d-%d:%d\t%s\t%s\n",
+			match.Path,
+			match.StartLine,
+			match.StartColumn,
+			match.EndLine,
+			match.EndColumn,
+			formatStructuralCaptures(match.MetaVariables),
+			truncate(strings.TrimSpace(match.Text), 120),
+		)
+	}
+	_ = tw.Flush()
+}
+
 func formatSearchReasons(match gitindex.SearchMatch) string {
 	parts := make([]string, 0, 4)
 	if len(match.SharedPaths) > 0 {
@@ -266,6 +297,44 @@ func formatSearchReasons(match gitindex.SearchMatch) string {
 
 func formatPullRef(repo string, number int) string {
 	return fmt.Sprintf("%s#%d", repo, number)
+}
+
+func formatStructuralCaptures(meta gitindex.StructuralMetaVariable) string {
+	parts := make([]string, 0, len(meta.Single)+len(meta.Transformed))
+	if len(meta.Single) > 0 {
+		keys := make([]string, 0, len(meta.Single))
+		for key := range meta.Single {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			parts = append(parts, key+"="+meta.Single[key])
+		}
+	}
+	if len(meta.Multi) > 0 {
+		keys := make([]string, 0, len(meta.Multi))
+		for key := range meta.Multi {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			parts = append(parts, key+"=["+strings.Join(meta.Multi[key], ",")+"]")
+		}
+	}
+	if len(meta.Transformed) > 0 {
+		keys := make([]string, 0, len(meta.Transformed))
+		for key := range meta.Transformed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			parts = append(parts, key+"="+meta.Transformed[key])
+		}
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func shortSHA(sha string) string {

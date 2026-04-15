@@ -59,6 +59,7 @@ Implemented today:
   - pull request search by ranges
   - repo-level text-search status
   - mirrored text search across PRs, issues, comments, reviews, and review comments
+  - structural code search with `ast-grep` against an exact commit, ref, or PR head
 - `/repos/{owner}/{repo}/_ghreplica`
   - repo mirror status
 
@@ -99,6 +100,27 @@ ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --sc
 
 Use `ghr search status` first when you need to know whether mirrored text search is complete and current enough to trust an empty result.
 
+## Structural Code Search
+
+The structural code-search surface is:
+
+- `POST /v1/search/repos/{owner}/{repo}/ast-grep`
+
+It runs `ast-grep` against the local Git mirror, always resolves to one exact commit SHA, and returns structured matches with locations and captures.
+
+Use it when the question is:
+
+- where in this repo does this syntax pattern exist
+- does this PR contain this structural code shape
+- which changed files in this PR match this pattern
+
+Example:
+
+```bash
+ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
+ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)'
+```
+
 ## Sync Model
 
 `ghreplica` is webhook-first.
@@ -135,6 +157,7 @@ ghr search status -R openclaw/openclaw
 ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts --scope pull_requests --scope issues
 ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
 ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
+ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
 ```
 
 Default target:
@@ -189,6 +212,7 @@ The current hosted instance runs on GCP with:
 - [Git Ground Truth](docs/GIT_GROUND_TRUTH.md)
 - [2026-04-15 Git Ground Truth Implementation Plan](docs/2026-04-15-git-ground-truth-implementation-plan.md)
 - [2026-04-15 Gradual Index Fill Design](docs/2026-04-15-gradual-index-fill-design.md)
+- [2026-04-15 AST-Grep Structural Search](docs/2026-04-15-ast-grep-structural-search.md)
 - [Data Model For PR Triage](docs/DATA_MODEL.md)
 - [GCP Deployment](docs/DEPLOY_GCP.md)
 - [Local Development](docs/LOCAL_DEVELOPMENT.md)

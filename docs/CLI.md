@@ -75,6 +75,7 @@ Current command shape:
 - `ghr search prs-by-ranges`
 - `ghr search status`
 - `ghr search mentions`
+- `ghr search ast-grep`
 
 The first target is read-only parity for the endpoints `ghreplica` already serves.
 
@@ -104,6 +105,7 @@ ghr search status -R openclaw/openclaw
 ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts --scope pull_requests --scope issues
 ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
 ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
+ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
 ```
 
 ## API Mapping
@@ -170,6 +172,8 @@ That keeps GitHub-shaped reads separate from normalized git-change reads and `gh
   - `GET /v1/search/repos/{owner}/{repo}/status`
 - `ghr search mentions -R <owner>/<repo> --query <expr>`
   - `POST /v1/search/repos/{owner}/{repo}/mentions`
+- `ghr search ast-grep -R <owner>/<repo> --pr <number> --language <lang> --pattern <pattern>`
+  - `POST /v1/search/repos/{owner}/{repo}/ast-grep`
 
 ### Search workflow
 
@@ -183,6 +187,8 @@ The `search` group has two distinct jobs:
   - `status`
 - text search over mirrored GitHub discussion data
   - `mentions`
+- structural code search over the local Git mirror
+  - `ast-grep`
 
 Use `ghr search status` when the question is:
 
@@ -196,6 +202,12 @@ Use `ghr search mentions` when the question is:
 - where was this phrase mentioned
 - which PRs talked about this topic
 - did anyone mention something close to this wording
+
+Use `ghr search ast-grep` when the question is:
+
+- where in this repo does this syntax pattern exist
+- does this PR contain this structural shape
+- which changed files in this PR match this pattern
 
 Use the overlap commands when the question is:
 
@@ -280,7 +292,30 @@ ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scop
 ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
 ghr search mentions -R openclaw/openclaw --query "greptile" --mode fts --scope pull_request_reviews --scope pull_request_review_comments
 ghr search mentions -R openclaw/openclaw --query "acp" --mode fts --scope pull_requests --state all --json resource,matched_field,score
+ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
+ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)' --json resolved_commit_sha,matches
 ```
+
+Flags for `ghr search ast-grep`:
+
+- exactly one target:
+  - `--commit`
+  - `--ref`
+  - `--pr`
+- `--language`
+- `--pattern`
+- `--path`
+- `--changed-files-only`
+- `--limit`
+- `--json`
+
+Recommended usage:
+
+- pin to `--commit` when you need fully reproducible automation
+- use `--pr` for review workflows
+- add `--changed-files-only` when you only care about code changed by that PR
+- add one or more `--path` filters when you already know the files of interest
+- keep `--limit` bounded on large repos
 
 ## Compatibility Expectations
 

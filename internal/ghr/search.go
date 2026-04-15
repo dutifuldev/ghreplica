@@ -19,6 +19,7 @@ func newSearchCmd(opts *RootOptions) *cobra.Command {
 	cmd.AddCommand(newSearchPRsByPathsCmd(opts))
 	cmd.AddCommand(newSearchPRsByRangesCmd(opts))
 	cmd.AddCommand(newSearchMentionsCmd(opts))
+	cmd.AddCommand(newSearchASTGrepCmd(opts))
 	return cmd
 }
 
@@ -247,4 +248,88 @@ func newSearchMentionsCmd(opts *RootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
 	_ = cmd.MarkFlagRequired("query")
 	return cmd
+}
+
+func newSearchASTGrepCmd(opts *RootOptions) *cobra.Command {
+	var jsonFields string
+	var commitSHA string
+	var ref string
+	var pullRequestNumber int
+	var language string
+	var pattern string
+	var paths []string
+	var changedFilesOnly bool
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "ast-grep",
+		Short: "Run structural code search against a specific commit, ref, or PR head",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			request, err := buildASTGrepSearchRequest(commitSHA, ref, pullRequestNumber, language, pattern, paths, changedFilesOnly, limit)
+			if err != nil {
+				return err
+			}
+			client := clientFor(opts)
+			result, err := client.SearchASTGrep(context.Background(), repo, request)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(jsonFields) != "" {
+				return writeJSON(cmd.OutOrStdout(), result, jsonFields)
+			}
+			printStructuralSearch(cmd.OutOrStdout(), result)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&commitSHA, "commit", "", "Search a specific commit SHA")
+	cmd.Flags().StringVar(&ref, "ref", "", "Search a specific branch or ref")
+	cmd.Flags().IntVar(&pullRequestNumber, "pr", 0, "Search the current head of a pull request")
+	cmd.Flags().StringVar(&language, "language", "", "Rule language, for example typescript or go")
+	cmd.Flags().StringVar(&pattern, "pattern", "", "AST-grep pattern to search for")
+	cmd.Flags().StringSliceVarP(&paths, "path", "p", nil, "Restrict search to one or more file paths")
+	cmd.Flags().BoolVar(&changedFilesOnly, "changed-files-only", false, "Restrict a pull-request search to files changed by that PR")
+	cmd.Flags().IntVarP(&limit, "limit", "L", 100, "Maximum number of matches to return")
+	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
+	_ = cmd.MarkFlagRequired("language")
+	_ = cmd.MarkFlagRequired("pattern")
+	return cmd
+}
+
+func buildASTGrepSearchRequest(commitSHA, ref string, pullRequestNumber int, language, pattern string, paths []string, changedFilesOnly bool, limit int) (StructuralSearchRequest, error) {
+	targets := 0
+	if strings.TrimSpace(commitSHA) != "" {
+		targets++
+	}
+	if strings.TrimSpace(ref) != "" {
+		targets++
+	}
+	if pullRequestNumber > 0 {
+		targets++
+	}
+	if targets != 1 {
+		return StructuralSearchRequest{}, errors.New("exactly one of --commit, --ref, or --pr is required")
+	}
+	if changedFilesOnly && pullRequestNumber <= 0 {
+		return StructuralSearchRequest{}, errors.New("--changed-files-only requires --pr")
+	}
+	if strings.TrimSpace(language) == "" {
+		return StructuralSearchRequest{}, errors.New("--language is required")
+	}
+	if strings.TrimSpace(pattern) == "" {
+		return StructuralSearchRequest{}, errors.New("--pattern is required")
+	}
+	return StructuralSearchRequest{
+		CommitSHA:         strings.TrimSpace(commitSHA),
+		Ref:               strings.TrimSpace(ref),
+		PullRequestNumber: pullRequestNumber,
+		Language:          strings.TrimSpace(language),
+		Rule:              map[string]any{"pattern": strings.TrimSpace(pattern)},
+		Paths:             normalizeStringSlice(paths),
+		ChangedFilesOnly:  changedFilesOnly,
+		Limit:             limit,
+	}, nil
 }

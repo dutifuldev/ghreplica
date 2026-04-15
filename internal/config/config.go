@@ -13,6 +13,8 @@ type Config struct {
 	DatabaseURL             string
 	GitMirrorRoot           string
 	GitIndexTimeout         time.Duration
+	ASTGrepTimeout          time.Duration
+	ASTGrepBin              string
 	GitHubBaseURL           string
 	GitHubToken             string
 	GitHubAppID             string
@@ -35,6 +37,8 @@ func Load() Config {
 		DatabaseURL:             strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		GitMirrorRoot:           getenvDefault("GIT_MIRROR_ROOT", ".data/git-mirrors"),
 		GitIndexTimeout:         durationDefault("GIT_INDEX_TIMEOUT", 5*time.Minute),
+		ASTGrepTimeout:          durationDefault("AST_GREP_TIMEOUT", time.Minute),
+		ASTGrepBin:              getenvDefault("AST_GREP_BIN", "ast-grep"),
 		GitHubBaseURL:           getenvDefault("GITHUB_BASE_URL", "https://api.github.com"),
 		GitHubToken:             strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
 		GitHubAppID:             strings.TrimSpace(os.Getenv("GITHUB_APP_ID")),

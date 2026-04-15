@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -333,6 +334,64 @@ func TestSearchMentionsEndpoint(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestSearchASTGrepEndpoint(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	repo, pulls := seedRepositoryAndPullRequests(t, db, fixture)
+	indexer := gitindex.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}), filepath.Join(t.TempDir(), "mirrors")).
+		WithASTGrepBinary(fakeASTGrepBinary(t))
+
+	require.NoError(t, indexer.IndexPullRequest(ctx, "acme", "widgets", repo, pulls[101]))
+
+	server := httpapi.NewServer(db, httpapi.Options{StructuralSearch: indexer})
+
+	body := bytes.NewBufferString(`{"pull_request_number":101,"language":"go","rule":{"pattern":"parseOne()"},"changed_files_only":true,"limit":10}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/search/repos/acme/widgets/ast-grep", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+	require.Equal(t, "acme/widgets", result["repository"].(map[string]any)["full_name"])
+	require.Equal(t, pulls[101].HeadSHA, result["resolved_commit_sha"])
+	require.Equal(t, "refs/pull/101/head", result["resolved_ref"])
+	matches := result["matches"].([]any)
+	require.Len(t, matches, 1)
+	require.Equal(t, "app/service.go", matches[0].(map[string]any)["path"])
+
+	body = bytes.NewBufferString(`{"ref":"feature-unrelated","language":"go","rule":{"pattern":"updated docs"},"paths":["docs/readme.md"],"limit":10}`)
+	req = httptest.NewRequest(http.MethodPost, "/v1/search/repos/acme/widgets/ast-grep", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+	require.Equal(t, "refs/heads/feature-unrelated", result["resolved_ref"])
+	matches = result["matches"].([]any)
+	require.Len(t, matches, 1)
+	require.Equal(t, "docs/readme.md", matches[0].(map[string]any)["path"])
+
+	body = bytes.NewBufferString(`{"ref":"main","language":"go","rule":{"pattern":"anything"},"changed_files_only":true}`)
+	req = httptest.NewRequest(http.MethodPost, "/v1/search/repos/acme/widgets/ast-grep", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	body = bytes.NewBufferString(`{"commit_sha":"deadbeef","language":"go","rule":{"pattern":"anything"}}`)
+	req = httptest.NewRequest(http.MethodPost, "/v1/search/repos/acme/widgets/ast-grep", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 func TestSearchStatusEndpoint(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
@@ -507,4 +566,30 @@ func seedRepositoryAndPullRequests(t *testing.T, db *gorm.DB, fixture testfixtur
 	}
 
 	return repo, pulls
+}
+
+func fakeASTGrepBinary(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "ast-grep")
+	script := `#!/usr/bin/env bash
+set -euo pipefail
+matches=()
+if [[ -f app/service.go ]] && grep -q 'parseOne' app/service.go; then
+  matches+=('{"text":"parseOne()","range":{"start":{"line":4,"column":1},"end":{"line":4,"column":11}},"file":"app/service.go","metaVariables":{"single":{},"multi":{},"transformed":{}}}')
+fi
+if [[ -f docs/readme.md ]] && grep -q 'updated docs' docs/readme.md; then
+  matches+=('{"text":"updated docs","range":{"start":{"line":1,"column":0},"end":{"line":1,"column":12}},"file":"docs/readme.md","metaVariables":{"single":{},"multi":{},"transformed":{}}}')
+fi
+printf '['
+for i in "${!matches[@]}"; do
+  if [[ "$i" -gt 0 ]]; then
+    printf ','
+  fi
+  printf '%s' "${matches[$i]}"
+done
+printf ']'
+`
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
+	return path
 }

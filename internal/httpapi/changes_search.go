@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -92,6 +93,17 @@ type searchMentionsRequest struct {
 	Page   int      `json:"page"`
 }
 
+type searchASTGrepRequest struct {
+	CommitSHA         string          `json:"commit_sha"`
+	Ref               string          `json:"ref"`
+	PullRequestNumber int             `json:"pull_request_number"`
+	Language          string          `json:"language"`
+	Rule              json.RawMessage `json:"rule"`
+	Paths             []string        `json:"paths"`
+	ChangedFilesOnly  bool            `json:"changed_files_only"`
+	Limit             int             `json:"limit"`
+}
+
 func (s *Server) handleGetRepoChangeStatus(c echo.Context) error {
 	if s.changeStatus == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "Change status is not configured"})
@@ -104,6 +116,53 @@ func (s *Server) handleGetRepoChangeStatus(c echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusOK, status)
+}
+
+func (s *Server) handleSearchASTGrep(c echo.Context) error {
+	if s.structuralSearch == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "Structural search is not configured"})
+	}
+	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+		return err
+	}
+	_ = repo
+
+	var payload searchASTGrepRequest
+	if err := c.Bind(&payload); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+	}
+	var rule map[string]any
+	if len(payload.Rule) > 0 {
+		if err := json.Unmarshal(payload.Rule, &rule); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid rule payload"})
+		}
+	}
+
+	response, err := s.structuralSearch.SearchStructural(c.Request().Context(), c.Param("owner"), c.Param("repo"), gitindex.StructuralSearchRequest{
+		CommitSHA:         strings.TrimSpace(payload.CommitSHA),
+		Ref:               strings.TrimSpace(payload.Ref),
+		PullRequestNumber: payload.PullRequestNumber,
+		Language:          strings.TrimSpace(payload.Language),
+		Rule:              rule,
+		Paths:             payload.Paths,
+		ChangedFilesOnly:  payload.ChangedFilesOnly,
+		Limit:             payload.Limit,
+	})
+	if err != nil {
+		switch {
+		case gitindex.IsInvalidStructuralSearchRequest(err):
+			return c.JSON(http.StatusBadRequest, map[string]string{"message": err.Error()})
+		case gitindex.IsStructuralSearchTargetNotFound(err), errors.Is(err, gorm.ErrRecordNotFound):
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		default:
+			return err
+		}
+	}
+	return c.JSON(http.StatusOK, response)
 }
 
 func (s *Server) handleGetPullRequestChangeStatus(c echo.Context) error {
