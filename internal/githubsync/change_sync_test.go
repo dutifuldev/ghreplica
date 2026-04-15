@@ -178,6 +178,173 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 	require.Equal(t, 1, server.ListPullCount())
 }
 
+func TestChangeSyncWorkerRunOnceReclaimsStaleFetchLease(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "open_only", 5)
+	require.NoError(t, err)
+
+	staleNow := time.Now().UTC()
+	staleHeartbeat := staleNow.Add(-2 * time.Second)
+	staleUntil := staleNow.Add(time.Hour)
+	require.NoError(t, db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
+		Where("id = ?", state.ID).
+		Updates(map[string]any{
+			"fetch_lease_owner_id":     "dead-worker",
+			"fetch_lease_started_at":   staleHeartbeat,
+			"fetch_lease_heartbeat_at": staleHeartbeat,
+			"fetch_lease_until":        staleUntil,
+		}).Error)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Nanosecond,
+		time.Nanosecond,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, 1, server.ListPullCount())
+
+	var refreshed database.RepoChangeSyncState
+	require.NoError(t, db.WithContext(ctx).Where("id = ?", state.ID).First(&refreshed).Error)
+	require.Empty(t, refreshed.FetchLeaseOwnerID)
+	require.Nil(t, refreshed.FetchLeaseHeartbeatAt)
+	require.Nil(t, refreshed.FetchLeaseUntil)
+	require.NotNil(t, refreshed.LastFetchFinishedAt)
+}
+
+func TestChangeSyncWorkerRunOnceDoesNotStealFreshFetchLease(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "open_only", 5)
+	require.NoError(t, err)
+
+	freshNow := time.Now().UTC()
+	freshUntil := freshNow.Add(time.Minute)
+	require.NoError(t, db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
+		Where("id = ?", state.ID).
+		Updates(map[string]any{
+			"fetch_lease_owner_id":     "other-worker",
+			"fetch_lease_started_at":   freshNow,
+			"fetch_lease_heartbeat_at": freshNow,
+			"fetch_lease_until":        freshUntil,
+		}).Error)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Nanosecond,
+		time.Nanosecond,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.False(t, processed)
+	require.Equal(t, 0, server.ListPullCount())
+}
+
+func TestChangeSyncWorkerStartRecoversStaleLeasesOnStartup(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	repo := database.Repository{
+		GitHubID:      101,
+		OwnerLogin:    "acme",
+		Name:          "widgets",
+		FullName:      "acme/widgets",
+		HTMLURL:       "https://github.com/acme/widgets",
+		APIURL:        "https://api.github.test/repos/acme/widgets",
+		DefaultBranch: "main",
+		Visibility:    "public",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(&repo).Error)
+
+	staleNow := time.Now().UTC()
+	staleHeartbeat := staleNow.Add(-2 * time.Second)
+	staleUntil := staleNow.Add(time.Hour)
+	state := database.RepoChangeSyncState{
+		RepositoryID:             repo.ID,
+		BackfillMode:             "off",
+		FetchLeaseOwnerID:        "old-worker",
+		FetchLeaseStartedAt:      &staleHeartbeat,
+		FetchLeaseHeartbeatAt:    &staleHeartbeat,
+		FetchLeaseUntil:          &staleUntil,
+		BackfillLeaseOwnerID:     "old-worker",
+		BackfillLeaseStartedAt:   &staleHeartbeat,
+		BackfillLeaseHeartbeatAt: &staleHeartbeat,
+		BackfillLeaseUntil:       &staleUntil,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(&state).Error)
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.test", github.AuthConfig{}), nil)
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Hour,
+		time.Nanosecond,
+		time.Nanosecond,
+		time.Nanosecond,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- worker.Start(runCtx)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+
+	var refreshed database.RepoChangeSyncState
+	require.NoError(t, db.WithContext(ctx).Where("id = ?", state.ID).First(&refreshed).Error)
+	require.Empty(t, refreshed.FetchLeaseOwnerID)
+	require.Nil(t, refreshed.FetchLeaseHeartbeatAt)
+	require.Nil(t, refreshed.FetchLeaseUntil)
+	require.Empty(t, refreshed.BackfillLeaseOwnerID)
+	require.Nil(t, refreshed.BackfillLeaseHeartbeatAt)
+	require.Nil(t, refreshed.BackfillLeaseUntil)
+}
+
 type backfillGitHubServer struct {
 	*httptest.Server
 	mu            sync.Mutex
