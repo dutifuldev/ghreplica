@@ -1,5 +1,3 @@
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
 CREATE TABLE IF NOT EXISTS search_documents (
     id BIGSERIAL PRIMARY KEY,
     repository_id BIGINT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
@@ -37,7 +35,3 @@ CREATE INDEX IF NOT EXISTS idx_search_documents_repo_number
 CREATE INDEX IF NOT EXISTS idx_search_documents_fts
     ON search_documents
     USING GIN (to_tsvector('simple', search_text));
-
-CREATE INDEX IF NOT EXISTS idx_search_documents_normalized_trgm
-    ON search_documents
-    USING GIN (normalized_text gin_trgm_ops);

@@ -181,6 +181,9 @@ func (s *Service) SearchMentions(ctx context.Context, repositoryID uint, request
 	if err != nil {
 		return nil, err
 	}
+	if request.Mode == ModeFuzzy {
+		return s.searchFallback(ctx, repositoryID, request, documentTypes)
+	}
 	if s.db.Dialector.Name() == "postgres" {
 		return s.searchPostgres(ctx, repositoryID, request, documentTypes)
 	}
@@ -194,15 +197,6 @@ func (s *Service) searchPostgres(ctx context.Context, repositoryID uint, request
 		query = query.
 			Select("search_documents.*, ts_rank_cd(to_tsvector('simple', search_text), websearch_to_tsquery('simple', ?)) AS score", request.Query).
 			Where("to_tsvector('simple', search_text) @@ websearch_to_tsquery('simple', ?)", request.Query).
-			Order("score DESC").
-			Order("object_updated_at DESC")
-	case ModeFuzzy:
-		normalized := normalizeSearchText(request.Query)
-		threshold := fuzzyThreshold(normalized)
-		scoreExpr := "GREATEST(word_similarity(?, normalized_text), similarity(?, normalized_text))"
-		query = query.
-			Select("search_documents.*, "+scoreExpr+" AS score", normalized, normalized).
-			Where(scoreExpr+" >= ?", normalized, normalized, threshold).
 			Order("score DESC").
 			Order("object_updated_at DESC")
 	case ModeRegex:
