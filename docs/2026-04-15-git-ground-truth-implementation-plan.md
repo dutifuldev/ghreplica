@@ -100,6 +100,12 @@ If a branch is force-pushed or rebased:
 - rebuild the affected PR-level derived rows
 - mark prior PR-level derived rows as stale or replaced
 
+If the base branch moves:
+
+- recompute the PR's current `merge_base_sha`
+- invalidate the PR's current rolled-up change snapshot
+- rebuild the PR-level derived rows even if the PR head SHA did not change
+
 ## Ingestion Model
 
 The worker should not fetch commit metadata one commit at a time through the GitHub API.
@@ -142,6 +148,14 @@ GitHub's documented repository limits allow a much higher Git read rate than one
 - fetch on change
 - repair periodically
 - avoid blind constant polling
+
+The trigger rules must also cover base-branch drift.
+
+That means:
+
+- when a tracked base ref moves, affected open PR snapshots must be marked stale
+- the worker must schedule rebuilds for PRs that target that base ref
+- a PR index cannot be treated as current just because the PR head SHA stayed the same
 
 ## Commit-Level Index
 
@@ -206,6 +220,365 @@ The main features to compute are:
 - commit ancestry and branch proximity where useful
 
 Similarity should be derived from these raw change indexes. It should not be the primary stored truth.
+
+Noise control must be part of the ranking model.
+
+Some paths will otherwise dominate candidate generation while adding little value, for example:
+
+- lockfiles
+- generated code
+- vendored directories
+- snapshot files
+- repository-wide formatting churn
+
+The search layer should therefore support path weighting or path suppression rules at index or ranking time.
+
+## Query Strategy
+
+The production query strategy should be:
+
+1. path-first candidate generation
+2. range-overlap refinement
+3. optional fingerprint reranking
+
+That means:
+
+- every indexed PR contributes its changed paths to an inverted index
+- normal-sized PRs also contribute parsed hunks and line ranges
+- query execution first finds PRs that share paths
+- then narrows those candidates to overlapping hunk ranges on the same paths
+- then optionally reranks the top candidates with compact code fingerprints
+
+This is the correct shape because:
+
+- reads stay fast
+- no query has to compare every PR to every other PR
+- exact overlap signals stay explainable
+- deeper code similarity remains optional and bounded
+
+The serving order should be:
+
+- exact same path overlap first
+- overlapping hunk ranges on those paths second
+- directory overlap and recency as ranking features
+- fingerprint similarity only as a reranker, not the primary retrieval mechanism
+
+Embeddings should not be the core retrieval path.
+
+If semantic or code-shape similarity is added, it should sit behind the exact overlap index and only rerank a small top candidate set.
+
+### Concrete Retrieval Shape
+
+The retrieval layer should be built around these persisted rows:
+
+- `pull_request_change_files`
+  - one row per current PR file change
+  - keyed by `repository_id`, `pull_request_number`, `head_sha`, `path`
+- `pull_request_change_hunks`
+  - one row per current PR hunk
+  - keyed by `repository_id`, `pull_request_number`, `head_sha`, `path`, `hunk_index`
+- optional `pull_request_change_fingerprints`
+  - one row per PR or per changed path
+  - stores compact signatures for reranking only
+
+The critical columns for fast search are:
+
+- `path`
+- `previous_path`
+- `status`
+- `old_line_range`
+- `new_line_range`
+- `head_sha`
+- `base_sha`
+- `merge_base_sha`
+- `state`
+- `draft`
+- `indexed_as`
+- `index_freshness`
+- `base_ref`
+
+The critical indexes are:
+
+- btree on `(repository_id, path)`
+- btree on `(repository_id, pull_request_number)`
+- btree on `(repository_id, state, draft)`
+- GiST on `(repository_id, path, old_line_range)`
+- GiST on `(repository_id, path, new_line_range)`
+
+If Postgres composite GiST performance is not good enough in practice, the fallback is:
+
+- btree on `(repository_id, path)`
+- GiST on `old_line_range`
+- GiST on `new_line_range`
+
+and the planner filters by `repository_id` and `path` first.
+
+### Concrete Query Flow
+
+For `GET /v1/search/repos/{owner}/{repo}/pulls/{number}/related`:
+
+1. load the source PR's current `head_sha`, `base_sha`, `merge_base_sha`, `state`, and `indexed_as`
+2. load the source PR's changed paths from `pull_request_change_files`
+3. generate candidates with a grouped path-overlap query against other open PRs in the same repository
+4. cap that candidate set aggressively, for example top `500` by exact path overlap count
+5. if the source PR and candidate PRs are `full` indexed, run a second query on `pull_request_change_hunks`
+6. use range overlap operators on same-path hunk rows to compute exact overlap counts
+7. rerank the top slice, for example top `50`, with optional fingerprints
+
+The first candidate query should look conceptually like:
+
+- join source PR file rows to candidate PR file rows on `(repository_id, path)`
+- exclude the same PR number
+- require candidate PRs to be open unless the caller asks otherwise
+- optionally suppress globally noisy paths before grouping
+- group by candidate PR number
+- compute:
+  - `shared_path_count`
+  - `shared_additions`
+  - `shared_deletions`
+  - `rename_overlap_count`
+
+The range refinement query should:
+
+- join source and candidate hunk rows on `(repository_id, path)`
+- compute overlap with `old_line_range && old_line_range` and `new_line_range && new_line_range`
+- count overlapping hunks
+- sum overlapping span length where useful
+
+The ranking function should stay simple and explainable:
+
+- high weight for exact same path overlap
+- higher weight for overlapping hunk ranges on the same path
+- medium weight for rename continuity
+- lower weight for directory-only overlap
+- low or zero weight for configured noisy paths
+- small boost for open PRs on the same base branch
+- small decay for older PRs
+
+The result payload should explain itself with fields like:
+
+- `score`
+- `shared_paths`
+- `overlapping_paths`
+- `overlapping_hunks`
+- `matched_ranges`
+- `reasons`
+
+### Fingerprint Algorithm
+
+If we add code-shape similarity, it should use compact deterministic fingerprints, not embeddings.
+
+The preferred algorithm is:
+
+- normalize changed lines from the patch
+- strip whitespace-only noise
+- optionally strip comments where cheap and language-agnostic heuristics are safe
+- compute `simhash64` or MinHash signatures
+
+Store those signatures as:
+
+- `scope`: `pr` or `path`
+- `algorithm`: `simhash64` or `minhash`
+- `signature`
+
+Use them only after path-based retrieval has already produced a small candidate set.
+
+### Path Noise Policy
+
+The design must assume some files are high-frequency but low-signal.
+
+The index should therefore support either:
+
+- a static path suppression list
+- path-class weighting rules
+- or a learned popularity score that downweights extremely common paths
+
+Examples of default low-signal classes:
+
+- `package-lock.json`
+- `pnpm-lock.yaml`
+- `yarn.lock`
+- generated SDK files
+- vendored dependency trees
+- snapshot directories
+
+The important rule is:
+
+- keep these paths in the raw truth tables
+- do not let them dominate candidate generation or ranking
+
+## Indexing Budgets And Degradation
+
+The indexer must be adaptive.
+
+Every PR should always receive:
+
+- path-level indexing
+- aggregate diff statistics
+- current indexing status metadata
+
+Normal-sized PRs should also receive:
+
+- hunk-level indexing
+- line-range indexing
+- optional compact patch fingerprints
+
+Oversized PRs should not force full fine-grained indexing.
+
+Instead, the system should stop at a coarser representation and mark the PR accordingly.
+
+The index state should be explicit, for example:
+
+- `full`
+- `paths_only`
+- `oversized`
+- `failed`
+
+Hard budgets should be enforced before fine-grained indexing proceeds.
+
+The concrete thresholds can be tuned, but the shape should be:
+
+- maximum changed files
+- maximum total changed lines
+- maximum raw patch bytes
+- maximum parsed hunk count
+- maximum single-file patch bytes
+- maximum single-file changed lines
+
+A practical starting point is:
+
+- up to `5,000` files changed for full indexing
+- up to `200,000` total changed lines for full indexing
+- up to `20 MB` raw patch text for full indexing
+- up to `50,000` hunks for full indexing
+- up to `1 MB` patch text for any one file before hunk parsing is skipped for that file
+- up to `20,000` changed lines in any one file before hunk parsing is skipped for that file
+
+The worker should also classify files before parsing.
+
+The first-class file kinds are:
+
+- text file
+- binary file
+- symlink change
+- submodule change
+- mode-only change
+
+Only normal text files should go through full hunk parsing.
+
+Binary files, symlink updates, submodule pointer changes, and mode-only changes should still get path-level rows and aggregate stats, but they should not go through line-range parsing.
+
+If any of those limits are exceeded:
+
+- do not build the fine-grained hunk index
+- store path-level rows and aggregate stats only
+- mark the PR as `paths_only` or `oversized`
+- keep the API honest about the indexing level
+
+### Preflight Budgeting
+
+The worker should enforce budgets before expensive parsing begins.
+
+The preflight flow should be:
+
+1. fetch the repo mirror
+2. compute the PR diff against `merge_base_sha...head_sha`
+3. read file-level statistics first, without full patch parsing
+4. total:
+  - changed file count
+  - additions
+  - deletions
+  - estimated patch bytes
+5. decide the indexing level before materializing hunk rows
+
+For preflight collection, prefer cheap Git commands first:
+
+- `git diff --name-status --find-renames <merge-base>...<head>`
+- `git diff --numstat --find-renames <merge-base>...<head>`
+
+Only if the PR stays under budget should the worker parse full patch text with:
+
+- `git diff --find-renames --unified=0 <merge-base>...<head>`
+
+That keeps the expensive parse behind a cheap guardrail.
+
+Rename detection must also be fixed by policy.
+
+The worker should:
+
+- always use the same rename detection mode
+- always use the same similarity threshold
+- record whether a rename was inferred by Git or was not available
+
+That avoids index drift across deployments.
+
+### Partial Indexing Rules
+
+Partial indexing should be explicit and per PR.
+
+Examples:
+
+- `full`
+  - file rows, hunk rows, range rows, optional fingerprints
+- `paths_only`
+  - file rows only
+- `mixed`
+  - all files indexed at path level, but only some files got hunk rows because oversized files were skipped
+- `oversized`
+  - path rows only plus aggregate stats
+- `failed`
+  - indexing attempt did not complete
+
+For `mixed` indexing, the file rows should carry per-file status such as:
+
+- `full`
+- `path_only`
+- `skipped_patch_too_large`
+- `skipped_line_count_too_large`
+- `binary`
+- `submodule`
+- `symlink`
+- `mode_only`
+
+That lets the API explain what is exact and what is coarse.
+
+This is required for production reliability.
+
+If a PR touches an absurd amount of code, such as hundreds of thousands of changed lines or more, the system must remain queryable and operational instead of attempting an expensive full parse.
+
+### Freshness And Invalidity
+
+Indexing level is not enough. The worker must also track freshness.
+
+The per-PR snapshot should carry a freshness state such as:
+
+- `current`
+- `stale_head_changed`
+- `stale_base_moved`
+- `stale_merge_base_changed`
+- `rebuilding`
+- `failed`
+
+A PR snapshot is only current if all of these still match:
+
+- repository
+- PR number
+- head SHA
+- base SHA
+- merge-base SHA
+
+If any of them change, the current snapshot must be superseded.
+
+### Worker Concurrency And Safety
+
+The worker design must assume concurrent events.
+
+There must be a repo-scoped lock or lease so that:
+
+- only one fetch/index job mutates a given bare mirror at a time
+- only one snapshot rebuild for the same PR/head/base tuple runs at a time
+
+Without that, concurrent webhook bursts will create avoidable races and wasted recomputation.
 
 ## Postgres Tables To Add
 
