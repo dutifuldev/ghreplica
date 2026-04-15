@@ -1086,6 +1086,7 @@ Examples:
 - `/v1/search/repos/{owner}/{repo}/pulls/{number}/related?mode=range_overlap`
 - `/v1/search/repos/{owner}/{repo}/pulls/by-paths`
 - `/v1/search/repos/{owner}/{repo}/pulls/by-ranges`
+- `/v1/search/repos/{owner}/{repo}/mentions`
 
 This separation keeps the API clean:
 
@@ -1099,6 +1100,123 @@ Search responses should be explainable. They should include not only the related
 - overlapping line ranges
 - score
 - match mode
+
+### 4. Text Search Surface
+
+Text search should also live under `/v1/search/...`.
+
+This is not a GitHub-compatible API surface. It is a `ghreplica` query feature built on top of mirrored GitHub data.
+
+The core endpoint should be:
+
+- `POST /v1/search/repos/{owner}/{repo}/mentions`
+
+That endpoint should support three query modes:
+
+- `fts`
+  - standard full-text search over mirrored titles, bodies, and discussion text
+- `fuzzy`
+  - similarity search for near matches, alternate wording, and approximate phrases
+- `regex`
+  - exact pattern hunting over a narrowed candidate set
+
+The request body should be shaped around:
+
+- `query`
+- `mode`
+- `scopes`
+  - `pull_requests`
+  - `issues`
+  - `issue_comments`
+  - `pull_request_reviews`
+  - `pull_request_review_comments`
+- `state`
+  - for issue and PR-backed objects where state filtering matters
+- `author`
+  - optional author login filter
+- `limit`
+- `page`
+
+The response should be explainable and object-oriented. It should return:
+
+- a `resource` object
+  - `type`
+  - `id`
+  - `number`
+  - `api_url`
+  - `html_url`
+- the matched text field
+  - for example `title`, `body`, or `comment.body`
+- a short excerpt or highlight span
+- a score
+
+The goal is to answer:
+
+- where was this phrase mentioned
+- where was something similar mentioned
+- which PRs, issues, or comments talked about this topic
+
+This feature should not depend on GitHub's live search APIs.
+
+`ghreplica` should search its own mirrored data.
+
+### 5. Text Search Index Model
+
+Text search should be implemented as a derived search index, not by scanning canonical tables on every request.
+
+The clean model is one normalized search document row per searchable text unit.
+
+That means documents for:
+
+- issue title and body
+- pull request title and body
+- issue comment body
+- pull request review body
+- pull request review comment body
+
+The derived table should be something like `search_documents`, with columns along these lines:
+
+- `repository_id`
+- `document_type`
+  - `issue`
+  - `pull_request`
+  - `issue_comment`
+  - `pull_request_review`
+  - `pull_request_review_comment`
+- `object_id`
+  - the local canonical row id
+- `state`
+  - open or closed when applicable
+- `author_id`
+- `title_text`
+  - only for issues and PRs
+- `body_text`
+- `normalized_text`
+- `fts_document`
+  - Postgres `tsvector`
+- `created_at`
+- `updated_at`
+
+This lets the system support:
+
+- full-text search through a GIN index on `fts_document`
+- fuzzy search through trigram indexes on `normalized_text`
+- regex search against a narrowed candidate set
+
+Regex should not run across the whole corpus blindly.
+
+The execution flow should be:
+
+1. narrow by repository and optional scope/state filters
+2. for `fts`, use `fts_document`
+3. for `fuzzy`, use trigram similarity on `normalized_text`
+4. for `regex`, first narrow by repository and scope, then run the regex on the smaller candidate set
+
+This keeps the implementation aligned with the rest of `ghreplica`:
+
+- canonical GitHub-shaped tables stay unchanged
+- search is a derived index
+- `/v1/search/...` is the dedicated product surface
 
 ## Handling Rewrites
 

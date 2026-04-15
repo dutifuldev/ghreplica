@@ -160,6 +160,25 @@ That keeps GitHub-shaped reads separate from normalized git-change reads and `gh
   - `POST /v1/search/repos/{owner}/{repo}/pulls/by-paths`
 - `ghr search prs-by-ranges -R <owner>/<repo> --path <path> --start <n> --end <n>`
   - `POST /v1/search/repos/{owner}/{repo}/pulls/by-ranges`
+- `ghr search mentions -R <owner>/<repo> --query <expr>`
+  - `POST /v1/search/repos/{owner}/{repo}/mentions`
+
+Planned flags for `ghr search mentions`:
+
+- `--mode`
+  - `fts`
+  - `fuzzy`
+  - `regex`
+- `--scope`
+  - `pull_requests`
+  - `issues`
+  - `issue_comments`
+  - `pull_request_reviews`
+  - `pull_request_review_comments`
+- `--state`
+- `--author`
+- `--limit`
+- `--page`
 
 The `search` responses should preserve the reasons for the match, not just the PR numbers.
 
@@ -181,6 +200,20 @@ The `changes ... status` commands should surface indexing truth directly, includ
 - `base_sha`
 - `merge_base_sha`
 - coverage counts that explain whether range-overlap search is trustworthy for that PR or repo
+
+For `ghr search mentions`, the response should preserve why a text match happened, not just the object number.
+
+That means surfacing fields like:
+
+- `resource`
+  - `type`
+  - `id`
+  - `number`
+  - `api_url`
+  - `html_url`
+- `matched_field`
+- `excerpt`
+- `score`
 
 ## Compatibility Expectations
 

@@ -58,6 +58,40 @@ The original mirrored read endpoints are also still served on the legacy unversi
 - `POST /v1/search/repos/{owner}/{repo}/pulls/by-paths`
 - `POST /v1/search/repos/{owner}/{repo}/pulls/by-ranges`
 
+## Planned Search Endpoints
+
+- `POST /v1/search/repos/{owner}/{repo}/mentions`
+
+Planned text-search request features:
+
+- `query`
+- `mode`
+  - `fts`
+  - `fuzzy`
+  - `regex`
+- `scopes`
+  - `pull_requests`
+  - `issues`
+  - `issue_comments`
+  - `pull_request_reviews`
+  - `pull_request_review_comments`
+- `state`
+- `author`
+- `limit`
+- `page`
+
+Planned text-search response features:
+
+- `resource`
+  - `type`
+  - `id`
+  - `number`
+  - `api_url`
+  - `html_url`
+- `matched_field`
+- `excerpt`
+- `score`
+
 ## CLI Coverage
 
 The `ghr` CLI now covers all three read surfaces:
@@ -75,3 +109,4 @@ See [CLI](./CLI.md) for the command mapping and examples.
 - `GET /repos/{owner}/{repo}/_ghreplica` is intentionally `ghreplica`-specific and exposes mirror policy, completeness, and local counts
 - the versioned path structure for new work is `/v1/github/...`, `/v1/changes/...`, and `/v1/search/...`
 - unsupported endpoints should be treated as out of scope until explicitly added here
+- planned text-search endpoints should stay under `/v1/search/...`, not `/v1/github/...`
