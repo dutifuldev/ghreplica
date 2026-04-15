@@ -183,3 +183,19 @@ type RepoChangeSyncState struct {
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 }
+
+type RepoOpenPullInventory struct {
+	ID                uint      `gorm:"primaryKey"`
+	RepositoryID      uint      `gorm:"uniqueIndex:idx_repo_open_pull_inventory_repo_pr,priority:1;index:idx_repo_open_pull_inventory_repo_freshness_updated,priority:1"`
+	PullRequestNumber int       `gorm:"uniqueIndex:idx_repo_open_pull_inventory_repo_pr,priority:2;index:idx_repo_open_pull_inventory_repo_freshness_updated,priority:3"`
+	GitHubUpdatedAt   time.Time `gorm:"column:github_updated_at"`
+	HeadSHA           string
+	BaseSHA           string
+	BaseRef           string
+	State             string
+	Draft             bool
+	FreshnessState    string `gorm:"index:idx_repo_open_pull_inventory_repo_freshness_updated,priority:2"`
+	LastSeenAt        time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
