@@ -197,6 +197,34 @@ func TestUpsertRepositoryTracksRenameByGitHubID(t *testing.T) {
 	require.Equal(t, "acme/widgets-renamed", repos[0].FullName)
 }
 
+func TestUpsertsMaintainSearchDocuments(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+
+	repo, err := service.UpsertRepository(ctx, repoFixture())
+	require.NoError(t, err)
+
+	_, err = service.UpsertIssue(ctx, repo.ID, issuesFixture()[1])
+	require.NoError(t, err)
+	require.NoError(t, service.UpsertPullRequest(ctx, repo.ID, pullsFixture()[0]))
+	require.NoError(t, service.UpsertIssueComment(ctx, repo.ID, issueCommentsFixture()[0]))
+	require.NoError(t, service.UpsertPullRequestReview(ctx, repo.ID, 2, pullReviewsFixture()[0]))
+	require.NoError(t, service.UpsertPullRequestReviewComment(ctx, repo.ID, 2, pullReviewCommentsFixture()[0]))
+
+	var docs []database.SearchDocument
+	require.NoError(t, db.WithContext(ctx).Where("repository_id = ?", repo.ID).Order("document_type ASC").Find(&docs).Error)
+	require.Len(t, docs, 5)
+	require.Equal(t, "issue", docs[0].DocumentType)
+	require.Equal(t, "issue_comment", docs[1].DocumentType)
+	require.Equal(t, "pull_request", docs[2].DocumentType)
+	require.Equal(t, "pull_request_review", docs[3].DocumentType)
+	require.Equal(t, "pull_request_review_comment", docs[4].DocumentType)
+}
+
 func TestTargetedSyncIssueAndPullRequest(t *testing.T) {
 	ctx := context.Background()
 

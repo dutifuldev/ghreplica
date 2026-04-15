@@ -13,6 +13,7 @@ import (
 
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/gitindex"
+	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
@@ -79,6 +80,16 @@ type searchByRangesRequest struct {
 	Ranges []searchRange `json:"ranges"`
 	State  string        `json:"state"`
 	Limit  int           `json:"limit"`
+}
+
+type searchMentionsRequest struct {
+	Query  string   `json:"query"`
+	Mode   string   `json:"mode"`
+	Scopes []string `json:"scopes"`
+	State  string   `json:"state"`
+	Author string   `json:"author"`
+	Limit  int      `json:"limit"`
+	Page   int      `json:"page"`
 }
 
 func (s *Server) handleGetRepoChangeStatus(c echo.Context) error {
@@ -330,6 +341,41 @@ func (s *Server) handleListCommitFiles(c echo.Context) error {
 		})
 	}
 	return c.JSON(http.StatusOK, response)
+}
+
+func (s *Server) handleSearchMentions(c echo.Context) error {
+	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+		return err
+	}
+	if s.search == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "Search is not configured"})
+	}
+
+	var request searchMentionsRequest
+	if err := c.Bind(&request); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+	}
+
+	matches, err := s.search.SearchMentions(c.Request().Context(), repo.ID, searchindex.MentionRequest{
+		Query:  request.Query,
+		Mode:   request.Mode,
+		Scopes: request.Scopes,
+		State:  request.State,
+		Author: request.Author,
+		Limit:  request.Limit,
+		Page:   request.Page,
+	})
+	if err != nil {
+		if searchindex.IsInvalidRequest(err) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"message": err.Error()})
+		}
+		return err
+	}
+	return c.JSON(http.StatusOK, matches)
 }
 
 func (s *Server) handleSearchRelatedPullRequests(c echo.Context) error {

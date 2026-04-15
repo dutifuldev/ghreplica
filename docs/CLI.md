@@ -163,7 +163,7 @@ That keeps GitHub-shaped reads separate from normalized git-change reads and `gh
 - `ghr search mentions -R <owner>/<repo> --query <expr>`
   - `POST /v1/search/repos/{owner}/{repo}/mentions`
 
-Planned flags for `ghr search mentions`:
+Flags for `ghr search mentions`:
 
 - `--mode`
   - `fts`
@@ -214,6 +214,15 @@ That means surfacing fields like:
 - `matched_field`
 - `excerpt`
 - `score`
+
+Examples:
+
+```bash
+ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts --scope pull_requests --scope issues
+ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
+ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
+ghr search mentions -R openclaw/openclaw --query "greptile" --mode fts --scope pull_request_reviews --scope pull_request_review_comments
+```
 
 ## Compatibility Expectations
 

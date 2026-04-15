@@ -12,6 +12,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/database"
 	gh "github.com/dutifuldev/ghreplica/internal/github"
 	"github.com/dutifuldev/ghreplica/internal/gitindex"
+	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -21,6 +22,7 @@ type Service struct {
 	db     *gorm.DB
 	github *gh.Client
 	git    *gitindex.Service
+	search *searchindex.Service
 }
 
 func NewService(db *gorm.DB, githubClient *gh.Client, gitIndex ...*gitindex.Service) *Service {
@@ -28,7 +30,7 @@ func NewService(db *gorm.DB, githubClient *gh.Client, gitIndex ...*gitindex.Serv
 	if len(gitIndex) > 0 {
 		indexer = gitIndex[0]
 	}
-	return &Service{db: db, github: githubClient, git: indexer}
+	return &Service{db: db, github: githubClient, git: indexer, search: searchindex.NewService(db)}
 }
 
 func (s *Service) UpsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
@@ -536,7 +538,15 @@ func (s *Service) upsertIssue(ctx context.Context, repositoryID uint, issue gh.I
 
 	var stored database.Issue
 	err = s.db.WithContext(ctx).Preload("Author").Where("repository_id = ? AND number = ?", repositoryID, issue.Number).First(&stored).Error
-	return stored, err
+	if err != nil {
+		return stored, err
+	}
+	if s.search != nil {
+		if err := s.search.UpsertIssue(ctx, stored); err != nil {
+			return database.Issue{}, err
+		}
+	}
+	return stored, nil
 }
 
 func (s *Service) upsertPullRequest(ctx context.Context, repositoryID uint, pull gh.PullRequestResponse) error {
@@ -604,10 +614,27 @@ func (s *Service) upsertPullRequest(ctx context.Context, repositoryID uint, pull
 		model.MergedAt = &mergedAt
 	}
 
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "issue_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "github_id", "node_id", "number", "state", "draft", "head_repo_id", "head_ref", "head_sha", "base_repo_id", "base_ref", "base_sha", "mergeable", "mergeable_state", "merged", "merged_at", "merged_by_id", "merge_commit_sha", "additions", "deletions", "changed_files", "commits_count", "html_url", "api_url", "diff_url", "patch_url", "github_created_at", "github_updated_at", "raw_json"}),
-	}).Create(&model).Error
+	}).Create(&model).Error; err != nil {
+		return err
+	}
+
+	if s.search != nil {
+		var stored database.PullRequest
+		if err := s.db.WithContext(ctx).
+			Preload("Issue").
+			Preload("Issue.Author").
+			Where("repository_id = ? AND number = ?", repositoryID, pull.Number).
+			First(&stored).Error; err != nil {
+			return err
+		}
+		if err := s.search.UpsertPullRequest(ctx, stored); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) upsertIssueComment(ctx context.Context, repositoryID uint, comment gh.IssueCommentResponse) error {
@@ -649,10 +676,27 @@ func (s *Service) upsertIssueComment(ctx context.Context, repositoryID uint, com
 		RawJSON:         datatypes.JSON(raw),
 	}
 
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "github_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "issue_id", "author_id", "body", "html_url", "api_url", "github_created_at", "github_updated_at", "raw_json"}),
-	}).Create(&model).Error
+	}).Create(&model).Error; err != nil {
+		return err
+	}
+
+	if s.search != nil {
+		var stored database.IssueComment
+		if err := s.db.WithContext(ctx).
+			Preload("Author").
+			Preload("Issue").
+			Where("github_id = ?", comment.ID).
+			First(&stored).Error; err != nil {
+			return err
+		}
+		if err := s.search.UpsertIssueComment(ctx, stored); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) upsertPullRequestReview(ctx context.Context, repositoryID uint, pullNumber int, review gh.PullRequestReviewResponse) error {
@@ -692,10 +736,28 @@ func (s *Service) upsertPullRequestReview(ctx context.Context, repositoryID uint
 		RawJSON:         datatypes.JSON(raw),
 	}
 
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "github_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "pull_request_id", "author_id", "state", "body", "commit_id", "submitted_at", "html_url", "api_url", "github_created_at", "github_updated_at", "raw_json"}),
-	}).Create(&model).Error
+	}).Create(&model).Error; err != nil {
+		return err
+	}
+
+	if s.search != nil {
+		var stored database.PullRequestReview
+		if err := s.db.WithContext(ctx).
+			Preload("Author").
+			Preload("PullRequest").
+			Preload("PullRequest.Issue").
+			Where("github_id = ?", review.ID).
+			First(&stored).Error; err != nil {
+			return err
+		}
+		if err := s.search.UpsertPullRequestReview(ctx, stored); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) upsertPullRequestReviewComment(ctx context.Context, repositoryID uint, pullNumber int, comment gh.PullRequestReviewCommentResponse) error {
@@ -750,10 +812,28 @@ func (s *Service) upsertPullRequestReviewComment(ctx context.Context, repository
 		RawJSON:           datatypes.JSON(raw),
 	}
 
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "github_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "pull_request_id", "review_id", "in_reply_to_github_id", "author_id", "path", "diff_hunk", "position", "original_position", "line", "original_line", "side", "body", "html_url", "api_url", "pull_request_url", "github_created_at", "github_updated_at", "raw_json"}),
-	}).Create(&model).Error
+	}).Create(&model).Error; err != nil {
+		return err
+	}
+
+	if s.search != nil {
+		var stored database.PullRequestReviewComment
+		if err := s.db.WithContext(ctx).
+			Preload("Author").
+			Preload("PullRequest").
+			Preload("PullRequest.Issue").
+			Where("github_id = ?", comment.ID).
+			First(&stored).Error; err != nil {
+			return err
+		}
+		if err := s.search.UpsertPullRequestReviewComment(ctx, stored); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) ensureIssueForPullRequest(ctx context.Context, repositoryID uint, pull gh.PullRequestResponse) (database.Issue, error) {

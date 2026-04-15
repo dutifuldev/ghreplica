@@ -57,6 +57,7 @@ Implemented today:
   - related pull requests by overlapping hunks
   - pull request search by paths
   - pull request search by ranges
+  - mirrored text search across PRs, issues, comments, reviews, and review comments
 - `/repos/{owner}/{repo}/_ghreplica`
   - repo mirror status
 
@@ -94,6 +95,9 @@ ghr changes compare -R openclaw/openclaw main...5a3d3e54d93a03ee6f775d0010d1b1c4
 ghr search related-prs -R openclaw/openclaw 59883 --mode path_overlap --state all
 ghr search prs-by-paths -R openclaw/openclaw --path src/acp/control-plane/manager.core.ts --state all
 ghr search prs-by-ranges -R openclaw/openclaw --path extensions/telegram/src/fetch.ts --start 24 --end 36 --state all
+ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts --scope pull_requests --scope issues
+ghr search mentions -R openclaw/openclaw --query "watch dog" --mode fuzzy --scope pull_requests
+ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --scope pull_requests --state all
 ```
 
 Default target:
@@ -118,6 +122,7 @@ go run ./cmd/ghreplica sync repo dutifuldev/ghreplica
 go run ./cmd/ghreplica sync issue openclaw/openclaw 66797
 go run ./cmd/ghreplica sync pr openclaw/openclaw 66863
 go run ./cmd/ghreplica backfill repo openclaw/openclaw --mode open_only
+go run ./cmd/ghreplica search-index repo openclaw/openclaw
 ```
 
 Build the read CLI:

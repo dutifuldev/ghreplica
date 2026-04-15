@@ -14,6 +14,7 @@ import (
 
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/gitindex"
+	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"gorm.io/gorm"
@@ -25,6 +26,7 @@ type Server struct {
 	webhookSecret   string
 	webhookIngestor webhookIngestor
 	changeStatus    changeStatusProvider
+	search          *searchindex.Service
 }
 
 type webhookIngestor interface {
@@ -61,6 +63,7 @@ func NewServer(db *gorm.DB, options Options) *Server {
 		webhookSecret:   strings.TrimSpace(options.GitHubWebhookSecret),
 		webhookIngestor: options.WebhookIngestor,
 		changeStatus:    options.ChangeStatus,
+		search:          searchindex.NewService(db),
 	}
 	server.registerRoutes()
 	return server
@@ -123,6 +126,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/v1/search/repos/:owner/:repo/pulls/:number/related", s.handleSearchRelatedPullRequests)
 	s.echo.POST("/v1/search/repos/:owner/:repo/pulls/by-paths", s.handleSearchPullRequestsByPaths)
 	s.echo.POST("/v1/search/repos/:owner/:repo/pulls/by-ranges", s.handleSearchPullRequestsByRanges)
+	s.echo.POST("/v1/search/repos/:owner/:repo/mentions", s.handleSearchMentions)
 }
 
 func (s *Server) handleGitHubWebhook(c echo.Context) error {
