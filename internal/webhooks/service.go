@@ -33,6 +33,10 @@ type baseRefStaler interface {
 	MarkBaseRefStale(ctx context.Context, repositoryID uint, ref string) error
 }
 
+type repoChangeDirtyMarker interface {
+	MarkRepositoryChangeDirty(ctx context.Context, repositoryID uint, seenAt time.Time) error
+}
+
 type Service struct {
 	db        *gorm.DB
 	projector WebhookProjector
@@ -172,12 +176,21 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 					repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
 					if err == nil {
 						_ = staler.MarkBaseRefStale(ctx, repo.ID, envelope.Ref)
+						if marker, ok := s.projector.(repoChangeDirtyMarker); ok {
+							_ = marker.MarkRepositoryChangeDirty(ctx, repo.ID, time.Now().UTC())
+						}
 						return repo.ID, nil
 					}
 				}
 			}
 		}
-		return repositoryIDByFullName(ctx, s.db, fullName)
+		repositoryID, err := repositoryIDByFullName(ctx, s.db, fullName)
+		if err == nil && repositoryID != 0 {
+			if marker, ok := s.projector.(repoChangeDirtyMarker); ok {
+				_ = marker.MarkRepositoryChangeDirty(ctx, repositoryID, time.Now().UTC())
+			}
+		}
+		return repositoryID, err
 	case "repository":
 		var envelope struct {
 			Repository gh.RepositoryResponse `json:"repository"`
@@ -188,6 +201,9 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 		repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
 		if err != nil {
 			return 0, err
+		}
+		if marker, ok := s.projector.(repoChangeDirtyMarker); ok {
+			_ = marker.MarkRepositoryChangeDirty(ctx, repo.ID, time.Now().UTC())
 		}
 		return repo.ID, nil
 	case "issues":
@@ -265,6 +281,9 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 			if err := indexer.SyncPullRequestIndex(ctx, owner, name, repo.ID, envelope.PullRequest); err != nil {
 				return 0, err
 			}
+		}
+		if marker, ok := s.projector.(repoChangeDirtyMarker); ok {
+			_ = marker.MarkRepositoryChangeDirty(ctx, repo.ID, time.Now().UTC())
 		}
 		return repo.ID, nil
 	case "pull_request_review":

@@ -44,7 +44,9 @@ The original mirrored read endpoints are also still served on the legacy unversi
 
 ## Change Endpoints
 
+- `GET /v1/changes/repos/{owner}/{repo}/status`
 - `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}`
+- `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}/status`
 - `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}/files`
 - `GET /v1/changes/repos/{owner}/{repo}/commits/{sha}`
 - `GET /v1/changes/repos/{owner}/{repo}/commits/{sha}/files`

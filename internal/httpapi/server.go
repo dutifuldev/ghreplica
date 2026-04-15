@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
+	"github.com/dutifuldev/ghreplica/internal/gitindex"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"gorm.io/gorm"
@@ -23,6 +24,7 @@ type Server struct {
 	echo            *echo.Echo
 	webhookSecret   string
 	webhookIngestor webhookIngestor
+	changeStatus    changeStatusProvider
 }
 
 type webhookIngestor interface {
@@ -32,6 +34,12 @@ type webhookIngestor interface {
 type Options struct {
 	GitHubWebhookSecret string
 	WebhookIngestor     webhookIngestor
+	ChangeStatus        changeStatusProvider
+}
+
+type changeStatusProvider interface {
+	GetRepoChangeStatus(ctx context.Context, owner, repo string) (gitindex.RepoStatus, error)
+	GetPullRequestChangeStatus(ctx context.Context, owner, repo string, number int) (gitindex.PullRequestStatus, error)
 }
 
 func NewServer(db *gorm.DB, options Options) *Server {
@@ -52,6 +60,7 @@ func NewServer(db *gorm.DB, options Options) *Server {
 		echo:            e,
 		webhookSecret:   strings.TrimSpace(options.GitHubWebhookSecret),
 		webhookIngestor: options.WebhookIngestor,
+		changeStatus:    options.ChangeStatus,
 	}
 	server.registerRoutes()
 	return server
@@ -106,6 +115,8 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/v1/github/repos/:owner/:repo/pulls/:number/comments", s.handleListPullRequestReviewComments)
 	s.echo.GET("/v1/changes/repos/:owner/:repo/pulls/:number", s.handleGetPullRequestChangeSnapshot)
 	s.echo.GET("/v1/changes/repos/:owner/:repo/pulls/:number/files", s.handleListPullRequestChangeFiles)
+	s.echo.GET("/v1/changes/repos/:owner/:repo/pulls/:number/status", s.handleGetPullRequestChangeStatus)
+	s.echo.GET("/v1/changes/repos/:owner/:repo/status", s.handleGetRepoChangeStatus)
 	s.echo.GET("/v1/changes/repos/:owner/:repo/commits/:sha", s.handleGetCommit)
 	s.echo.GET("/v1/changes/repos/:owner/:repo/commits/:sha/files", s.handleListCommitFiles)
 	s.echo.GET("/v1/changes/repos/:owner/:repo/compare/:spec", s.handleCompareChanges)

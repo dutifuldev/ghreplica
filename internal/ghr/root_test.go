@@ -202,6 +202,24 @@ func TestChangesPRAndCompareCommands(t *testing.T) {
 	require.Contains(t, stdout, "#2")
 }
 
+func TestChangesStatusCommands(t *testing.T) {
+	server := newTestServer(t)
+	cmd := NewRootCmd()
+
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "repo", "status")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets change status")
+	require.Contains(t, stdout, "Backfill mode:")
+	require.Contains(t, stdout, "open_only")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "pr", "status", "2")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets#2 change status")
+	require.Contains(t, stdout, "Indexed:")
+	require.Contains(t, stdout, "current")
+}
+
 func TestChangesComparePreservesSlashRefs(t *testing.T) {
 	server := newTestServer(t)
 	cmd := NewRootCmd()
@@ -400,6 +418,38 @@ func newTestServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/v1/changes/repos/acme/widgets/pulls/2", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, pullRequestChangeSnapshotFixture())
+	})
+	mux.HandleFunc("/v1/changes/repos/acme/widgets/status", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, gitindex.RepoStatus{
+			RepositoryID:       101,
+			FullName:           "acme/widgets",
+			Dirty:              true,
+			BackfillMode:       "open_only",
+			BackfillPriority:   5,
+			OpenPRTotal:        3,
+			OpenPRCurrent:      1,
+			OpenPRStale:        1,
+			OpenPRMissing:      1,
+			FetchInProgress:    false,
+			BackfillInProgress: true,
+		})
+	})
+	mux.HandleFunc("/v1/changes/repos/acme/widgets/pulls/2/status", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, gitindex.PullRequestStatus{
+			RepositoryID:      101,
+			PullRequestNumber: 2,
+			State:             "open",
+			Indexed:           true,
+			HeadSHA:           "abc123",
+			BaseSHA:           "main456",
+			MergeBaseSHA:      "main456",
+			BaseRef:           "main",
+			IndexedAs:         "full",
+			IndexFreshness:    "current",
+			ChangedFiles:      2,
+			IndexedFileCount:  2,
+			HunkCount:         4,
+		})
 	})
 	mux.HandleFunc("/v1/changes/repos/acme/widgets/pulls/2/files", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, fileChangesFixture())

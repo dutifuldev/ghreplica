@@ -44,6 +44,10 @@ type PullRequestChangeSnapshotResponse struct {
 	LastIndexedAt     *time.Time `json:"last_indexed_at,omitempty"`
 }
 
+type RepoChangeStatusResponse = gitindex.RepoStatus
+
+type PullRequestChangeStatusResponse = gitindex.PullRequestStatus
+
 type CompareResponse struct {
 	Base     string `json:"base"`
 	Head     string `json:"head"`
@@ -76,6 +80,18 @@ type searchByRangesRequest struct {
 func (c *Client) GetPullRequestChangeSnapshot(ctx context.Context, repo string, number int) (PullRequestChangeSnapshotResponse, error) {
 	var out PullRequestChangeSnapshotResponse
 	err := c.getJSON(ctx, fmt.Sprintf("/v1/changes/repos/%s/pulls/%d", repo, number), &out)
+	return out, err
+}
+
+func (c *Client) GetRepoChangeStatus(ctx context.Context, repo string) (RepoChangeStatusResponse, error) {
+	var out RepoChangeStatusResponse
+	err := c.getJSON(ctx, fmt.Sprintf("/v1/changes/repos/%s/status", repo), &out)
+	return out, err
+}
+
+func (c *Client) GetPullRequestChangeStatus(ctx context.Context, repo string, number int) (PullRequestChangeStatusResponse, error) {
+	var out PullRequestChangeStatusResponse
+	err := c.getJSON(ctx, fmt.Sprintf("/v1/changes/repos/%s/pulls/%d/status", repo, number), &out)
 	return out, err
 }
 
