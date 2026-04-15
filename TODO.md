@@ -33,8 +33,16 @@
 - Add explicit operator workflows for repository-wide text-index rebuilds and freshness checks.
 - Add result caching and stronger execution limits for `ast-grep` structural search so repeated repo and PR queries stay fast under load.
 
+## Structural Search Hardening
+
+- Add startup preflight checks so the app fails clearly when `ast-grep` is missing, the GitHub App private key is unreadable, or the mirror root is not usable by the runtime user.
+- Skip unnecessary GitHub auth and ref-refresh work for structural searches when the requested commit or ref is already available in the local mirror.
+- Extend `ast-grep` caching to key on repository, resolved commit SHA, rule hash, language, path filters, `changed_files_only`, and `ast-grep` version.
+- Add clearer self-hosting and deployment guidance for structural search runtime dependencies, especially mirror ownership and GitHub App key readability.
+
 ## Observability
 
 - Expose the current inventory generation, cursor position, and currently processing PR in repo-level status or operator diagnostics.
 - Track per-PR rebuild duration, timeout counts, and last successful cursor advance so long-running backfills are understandable without DB spelunking.
 - Distinguish whether the worker is discovering candidates, refreshing canonical metadata, or rebuilding git snapshots when reporting in-progress work.
+- Track structural-search duration, target type, match count, timeout count, and cache hit or miss so `ast-grep` queries are easier to tune and debug.
