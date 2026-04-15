@@ -202,6 +202,17 @@ func TestChangesPRAndCompareCommands(t *testing.T) {
 	require.Contains(t, stdout, "#2")
 }
 
+func TestChangesComparePreservesSlashRefs(t *testing.T) {
+	server := newTestServer(t)
+	cmd := NewRootCmd()
+
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "compare", "release/2026.04...abc123")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets compare release/2026.04...abc123")
+	require.Contains(t, stdout, "Snapshot PR:")
+	require.Contains(t, stdout, "#9")
+}
+
 func TestChangesCommitCommands(t *testing.T) {
 	server := newTestServer(t)
 	cmd := NewRootCmd()
@@ -227,6 +238,7 @@ func TestSearchCommands(t *testing.T) {
 	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "related-prs", "2", "--mode", "path_overlap", "--state", "all")
 	require.NoError(t, err)
 	require.Contains(t, stdout, "#7")
+	require.Contains(t, stdout, "draft")
 	require.Contains(t, stdout, "paths=src/parser.ts")
 
 	cmd = NewRootCmd()
@@ -400,6 +412,14 @@ func newTestServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/v1/changes/repos/acme/widgets/compare/main...abc123", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, compareFixture())
+	})
+	mux.HandleFunc("/v1/changes/repos/acme/widgets/compare/release%2F2026.04...abc123", func(w http.ResponseWriter, r *http.Request) {
+		resp := compareFixture()
+		resp.Base = "release/2026.04"
+		resp.Resolved.Base = "rel123"
+		resp.Snapshot.PullRequestNumber = 9
+		resp.Snapshot.BaseRef = "release/2026.04"
+		writeResponseJSON(t, w, resp)
 	})
 	mux.HandleFunc("/v1/search/repos/acme/widgets/pulls/2/related", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, searchMatchesFixture())
@@ -712,7 +732,7 @@ func searchMatchesFixture() []gitindex.SearchMatch {
 		{
 			PullRequestNumber: 7,
 			State:             "open",
-			Draft:             false,
+			Draft:             true,
 			HeadSHA:           "fedcba",
 			BaseRef:           "main",
 			IndexedAs:         "full",

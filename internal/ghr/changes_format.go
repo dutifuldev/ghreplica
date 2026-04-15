@@ -122,9 +122,13 @@ func printSearchMatches(out io.Writer, matches []gitindex.SearchMatch) {
 	tw := newTabWriter(out)
 	fmt.Fprintln(tw, "PR\tSTATE\tSCORE\tINDEXED\tFRESHNESS\tWHY")
 	for _, match := range matches {
+		state := match.State
+		if match.Draft {
+			state = "draft"
+		}
 		fmt.Fprintf(tw, "#%d\t%s\t%.0f\t%s\t%s\t%s\n",
 			match.PullRequestNumber,
-			match.State,
+			state,
 			match.Score,
 			match.IndexedAs,
 			match.IndexFreshness,
