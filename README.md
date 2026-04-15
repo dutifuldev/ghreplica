@@ -119,7 +119,24 @@ Example:
 ```bash
 ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
 ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)'
+ghr search ast-grep -R dutifuldev/ghreplica --commit 979463a0430ca6bf26d22b53e4e1ecf5766d743b --language go --pattern 'context.WithTimeout($CTX, $DUR)'
+ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'exec.CommandContext($CTX, $BIN, $$$ARGS)' --path internal/gitindex/astgrep.go
 ```
+
+Use:
+
+- `--pr` for review workflows
+- `--changed-files-only` to narrow PR searches to touched files only
+- `--ref` for branch-level exploration
+- `--commit` when the result must be exactly reproducible
+- `--path` when you already know the files of interest
+
+Results include:
+
+- the exact resolved commit SHA
+- the resolved ref when one exists
+- file path and line/column span
+- captured variables from the structural match
 
 ## Sync Model
 

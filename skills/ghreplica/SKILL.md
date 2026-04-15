@@ -109,6 +109,7 @@ Examples:
 ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
 ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)'
 ghr search ast-grep -R dutifuldev/ghreplica --commit 5a2a2aa2ed2db8ed3097697f10dc9a6ced9164a0 --language go --pattern 'errors.Is($ERR, $TARGET)'
+ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'exec.CommandContext($CTX, $BIN, $$$ARGS)' --path internal/gitindex/astgrep.go
 ```
 
 Useful flags:
@@ -130,6 +131,26 @@ Recommended usage:
 - add `--changed-files-only` when you only want the PR’s touched files
 - use `--ref` for branch-level exploration
 - use `--commit` when the result must be fully reproducible
+- add `--path` when you already know the files you care about
+- use `--json resolved_commit_sha,matches` for scripts
+
+How to explain results:
+
+- every response is tied to one exact resolved commit SHA
+- human output shows `PATH`, `LOCATION`, `CAPTURES`, and `TEXT`
+- `CAPTURES` comes from ast-grep meta variables, for example `MSG=payload`
+- an empty result means no structural matches for that exact tree, not “search failed”
+
+Common failure cases:
+
+- no target was provided
+  - exactly one of `--commit`, `--ref`, or `--pr` is required
+- more than one target was provided
+  - the command fails for the same reason
+- `--changed-files-only` was used without `--pr`
+  - the command fails because only PR-head searches know what the changed files are
+- the requested commit or ref is not present in the local mirror yet
+  - the API returns `404`
 
 ## Text search with `ghr search mentions`
 

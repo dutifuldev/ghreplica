@@ -339,6 +339,25 @@ func TestSearchByRangesRejectsMismatchedFlags(t *testing.T) {
 	require.Contains(t, err.Error(), "--path, --start, and --end must be provided the same number of times")
 }
 
+func TestASTGrepCommandValidation(t *testing.T) {
+	server := newTestServer(t)
+
+	cmd := NewRootCmd()
+	_, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "ast-grep", "--language", "go", "--pattern", "os.MkdirTemp($DIR, $PATTERN)")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exactly one of --commit, --ref, or --pr is required")
+
+	cmd = NewRootCmd()
+	_, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "ast-grep", "--ref", "main", "--commit", "abc123", "--language", "go", "--pattern", "os.MkdirTemp($DIR, $PATTERN)")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exactly one of --commit, --ref, or --pr is required")
+
+	cmd = NewRootCmd()
+	_, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "search", "ast-grep", "--ref", "main", "--language", "go", "--pattern", "os.MkdirTemp($DIR, $PATTERN)", "--changed-files-only")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "--changed-files-only requires --pr")
+}
+
 func TestIssueAndPRCommandsRejectPositionalRepoArgs(t *testing.T) {
 	server := newTestServer(t)
 

@@ -294,6 +294,8 @@ ghr search mentions -R openclaw/openclaw --query "greptile" --mode fts --scope p
 ghr search mentions -R openclaw/openclaw --query "acp" --mode fts --scope pull_requests --state all --json resource,matched_field,score
 ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
 ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)' --json resolved_commit_sha,matches
+ghr search ast-grep -R dutifuldev/ghreplica --commit 979463a0430ca6bf26d22b53e4e1ecf5766d743b --language go --pattern 'context.WithTimeout($CTX, $DUR)'
+ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'exec.CommandContext($CTX, $BIN, $$$ARGS)' --path internal/gitindex/astgrep.go
 ```
 
 Flags for `ghr search ast-grep`:
@@ -309,6 +311,20 @@ Flags for `ghr search ast-grep`:
 - `--limit`
 - `--json`
 
+Result fields:
+
+- `resolved_commit_sha`
+- `resolved_ref`
+- `truncated`
+- `matches`
+  - `path`
+  - `start_line`
+  - `start_column`
+  - `end_line`
+  - `end_column`
+  - `text`
+  - `meta_variables`
+
 Recommended usage:
 
 - pin to `--commit` when you need fully reproducible automation
@@ -316,6 +332,19 @@ Recommended usage:
 - add `--changed-files-only` when you only care about code changed by that PR
 - add one or more `--path` filters when you already know the files of interest
 - keep `--limit` bounded on large repos
+- expect captured variables to appear in the `CAPTURES` column in human output
+- prefer `--json resolved_commit_sha,matches` in scripts
+
+Common failure cases:
+
+- omit all of `--commit`, `--ref`, and `--pr`
+  - the command fails because exactly one target is required
+- pass more than one of `--commit`, `--ref`, and `--pr`
+  - the command fails for the same reason
+- use `--changed-files-only` without `--pr`
+  - the command fails because changed-file narrowing only applies to a PR head
+- target a commit or ref that is not present in the mirror
+  - the API returns `404`
 
 ## Compatibility Expectations
 
