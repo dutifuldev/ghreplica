@@ -4,15 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 )
 
 func (s *Service) mirrorPath(owner, repo string) string {
 	return filepath.Join(s.mirrorRoot, owner, repo+".git")
+}
+
+func (s *Service) lockPath(owner, repo string) string {
+	return filepath.Join(s.mirrorRoot, "_locks", owner, repo+".lock")
 }
 
 func (s *Service) ensureMirror(ctx context.Context, owner, repo, remoteURL string) (string, error) {
@@ -34,6 +41,37 @@ func (s *Service) ensureMirror(ctx context.Context, owner, repo, remoteURL strin
 		return "", err
 	}
 	return path, nil
+}
+
+func (s *Service) withRepoLock(ctx context.Context, owner, repo string, fn func() error) error {
+	lockPath := s.lockPath(owner, repo)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return err
+	}
+
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer lockFile.Close()
+
+	for {
+		err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
+	return fn()
 }
 
 func (s *Service) runGit(ctx context.Context, repoPath string, args ...string) ([]byte, error) {

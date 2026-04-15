@@ -60,74 +60,73 @@ func (s *Service) IndexPullRequest(ctx context.Context, owner, repo string, repo
 		return errors.New("pull request is required")
 	}
 
-	if err := s.refreshAuthHeader(ctx); err != nil {
-		return err
-	}
-
-	remoteURL := repositoryGitURL(repository.HTMLURL)
-	mirrorPath, err := s.ensureMirror(ctx, owner, repo, remoteURL)
-	if err != nil {
-		return err
-	}
-	if err := s.fetchPullRequest(ctx, mirrorPath, pull.Number); err != nil {
-		return err
-	}
-	if err := s.syncRefs(ctx, repository.ID, mirrorPath); err != nil {
-		return err
-	}
-
-	mergeBase, err := s.mergeBase(ctx, mirrorPath, pull.BaseSHA, pull.HeadSHA)
-	if err != nil {
-		return err
-	}
-
-	snapshotRows, hunkRows, snapshot, commitRows, err := s.buildPullRequestIndex(ctx, mirrorPath, repository.ID, pull, mergeBase)
-	if err != nil {
-		return s.markSnapshotFailed(ctx, repository.ID, pull, mergeBase, err)
-	}
-
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := upsertSnapshot(tx, snapshot); err != nil {
+	return s.withRepoLock(ctx, owner, repo, func() error {
+		if err := s.refreshAuthHeader(ctx); err != nil {
 			return err
 		}
 
-		var stored database.PullRequestChangeSnapshot
-		if err := tx.Where("repository_id = ? AND pull_request_number = ?", repository.ID, pull.Number).First(&stored).Error; err != nil {
+		remoteURL := repositoryGitURL(repository.HTMLURL)
+		mirrorPath, err := s.ensureMirror(ctx, owner, repo, remoteURL)
+		if err != nil {
+			return err
+		}
+		if err := s.syncRefs(ctx, repository.ID, mirrorPath, pull.BaseRef, pull.Number); err != nil {
 			return err
 		}
 
-		if err := tx.Where("snapshot_id = ?", stored.ID).Delete(&database.PullRequestChangeHunk{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("snapshot_id = ?", stored.ID).Delete(&database.PullRequestChangeFile{}).Error; err != nil {
+		mergeBase, err := s.mergeBase(ctx, mirrorPath, pull.BaseSHA, pull.HeadSHA)
+		if err != nil {
 			return err
 		}
 
-		for i := range snapshotRows {
-			snapshotRows[i].SnapshotID = stored.ID
-		}
-		for i := range hunkRows {
-			hunkRows[i].SnapshotID = stored.ID
+		snapshotRows, hunkRows, snapshot, commitRows, err := s.buildPullRequestIndex(ctx, mirrorPath, repository.ID, pull, mergeBase)
+		if err != nil {
+			return s.markSnapshotFailed(ctx, repository.ID, pull, mergeBase, err)
 		}
 
-		if len(snapshotRows) > 0 {
-			if err := tx.Create(&snapshotRows).Error; err != nil {
+		return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := upsertSnapshot(tx, snapshot); err != nil {
 				return err
 			}
-		}
-		if len(hunkRows) > 0 {
-			if err := tx.Create(&hunkRows).Error; err != nil {
+
+			var stored database.PullRequestChangeSnapshot
+			if err := tx.Where("repository_id = ? AND pull_request_number = ?", repository.ID, pull.Number).First(&stored).Error; err != nil {
 				return err
 			}
-		}
 
-		for _, commit := range commitRows {
-			if err := upsertCommitBundle(tx, commit); err != nil {
+			if err := tx.Where("snapshot_id = ?", stored.ID).Delete(&database.PullRequestChangeHunk{}).Error; err != nil {
 				return err
 			}
-		}
+			if err := tx.Where("snapshot_id = ?", stored.ID).Delete(&database.PullRequestChangeFile{}).Error; err != nil {
+				return err
+			}
 
-		return nil
+			for i := range snapshotRows {
+				snapshotRows[i].SnapshotID = stored.ID
+			}
+			for i := range hunkRows {
+				hunkRows[i].SnapshotID = stored.ID
+			}
+
+			if len(snapshotRows) > 0 {
+				if err := tx.Create(&snapshotRows).Error; err != nil {
+					return err
+				}
+			}
+			if len(hunkRows) > 0 {
+				if err := tx.Create(&hunkRows).Error; err != nil {
+					return err
+				}
+			}
+
+			for _, commit := range commitRows {
+				if err := upsertCommitBundle(tx, commit); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		})
 	})
 }
 
@@ -157,18 +156,27 @@ func (s *Service) refreshAuthHeader(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) fetchPullRequest(ctx context.Context, mirrorPath string, number int) error {
-	if _, err := s.runGit(ctx, mirrorPath, "fetch", "--prune", "--no-tags", "origin",
-		"+refs/heads/*:refs/remotes/origin/*",
-		fmt.Sprintf("+refs/pull/%d/head:refs/pull/%d/head", number, number),
-	); err != nil {
+func (s *Service) syncRefs(ctx context.Context, repositoryID uint, mirrorPath, baseRef string, pullNumber int) error {
+	baseRef = normalizeBaseRef(baseRef)
+	args := []string{"fetch", "--prune", "--no-tags", "origin"}
+	refPatterns := make([]string, 0, 2)
+	if baseRef != "" {
+		args = append(args, fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", baseRef, baseRef))
+		refPatterns = append(refPatterns, "refs/remotes/origin/"+baseRef)
+	}
+	if pullNumber > 0 {
+		args = append(args, fmt.Sprintf("+refs/pull/%d/head:refs/pull/%d/head", pullNumber, pullNumber))
+		refPatterns = append(refPatterns, fmt.Sprintf("refs/pull/%d", pullNumber))
+	}
+	if len(refPatterns) == 0 {
+		return nil
+	}
+	if _, err := s.runGit(ctx, mirrorPath, args...); err != nil {
 		return err
 	}
-	return nil
-}
 
-func (s *Service) syncRefs(ctx context.Context, repositoryID uint, mirrorPath string) error {
-	out, err := s.runGit(ctx, mirrorPath, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)%00%(*objectname)%00", "refs/remotes/origin", "refs/pull")
+	forEachArgs := append([]string{"for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)%00%(*objectname)%00"}, refPatterns...)
+	out, err := s.runGit(ctx, mirrorPath, forEachArgs...)
 	if err != nil {
 		return err
 	}
