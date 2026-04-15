@@ -232,6 +232,23 @@ It should not try to also own the whole open-PR backfill walk.
 
 That is a separate loop with its own cursor and lease.
 
+The fetch pass should also refresh the durable open-PR inventory for the repo.
+
+That inventory should contain the fetched open PR set from the most recent successful fetch pass, including:
+
+- `pull_request_number`
+- `github_updated_at`
+- `head_sha`
+- `base_sha`
+- `base_ref`
+- `state`
+- `draft`
+- `last_seen_at`
+
+The open-PR inventory is the set the coverage loop should walk.
+
+The backfill loop should not re-list every open PR from GitHub before and after every batch.
+
 ## PR Snapshot Rebuild Flow
 
 For one PR:
@@ -267,6 +284,19 @@ The rebuild should be idempotent for the tuple:
 - `merge_base_sha`
 
 If that tuple is unchanged, the rebuild should replace or upsert the same logical snapshot, not create duplicate current state.
+
+The rebuild flow should also keep the per-PR unit of work as small as possible.
+
+That means:
+
+- do not refetch more GitHub metadata than the rebuild actually needs
+- do not rebuild discussion data unless that sync path is explicitly part of the current job
+- do not rescan unrelated refs or unrelated PRs while rebuilding one PR
+- prefer one PR tuple per transaction and one bounded git index pass per PR
+
+The practical goal is predictable PR-level work.
+
+One slow or pathological PR should not make the rest of the repo appear idle or block the whole batch longer than its configured deadline.
 
 ## Backfill Coverage Strategy
 
@@ -340,6 +370,66 @@ That is required so the system can survive:
 - worker crashes
 - lease expiry
 - fetch churn on very active repos
+
+The cursor should point into the stored open-PR inventory, not into a freshly fetched in-memory list that disappears after the batch.
+
+That means the next batch can resume from durable repo-local state without first paying the cost of another full open-PR scan.
+
+For open PR coverage, the practical cursor should therefore be keyed by:
+
+- the current inventory generation or fetch watermark
+- the last visited `github_updated_at`
+- the last visited `pull_request_number`
+
+If a newer fetch pass refreshes the inventory while backfill is running, the next batch should continue against the newest inventory generation without losing already completed work.
+
+## Efficiency Direction
+
+The current backfill design must prefer reusing durable repo-local state over repeatedly recomputing the candidate set.
+
+The worker should therefore follow these rules:
+
+- fetch open-PR metadata once per fetch pass
+- persist the fetched open-PR inventory
+- walk the stored inventory in later backfill batches
+- update per-PR freshness and repo counters transactionally as each PR finishes
+- avoid a second full open-PR scan at the end of every batch
+
+The expensive operations should be:
+
+- the fetch pass that refreshes the open-PR inventory
+- the per-PR index rebuild itself
+
+The worker should not also pay the cost of:
+
+- listing all open PRs twice per batch
+- recomputing repo summary counts from scratch after every small batch
+- treating repo status as a batch-end report only
+
+The practical result should be:
+
+- one GitHub open-PR listing per repo fetch pass
+- many backfill batches reusing that stored inventory
+- cheap status reads from repo state
+- cheap cursor resume after interruption
+
+The backfill worker should also distinguish between:
+
+- work needed to discover candidate PRs
+- work needed to refresh canonical PR metadata
+- work needed to rebuild the git-change snapshot
+
+Those should not be collapsed into one monolithic per-PR routine if cheaper subpaths are possible.
+
+Examples:
+
+- if the stored open-PR inventory already has the needed tuple fields, the worker should not need another full PR listing to rediscover candidates
+- if a PR is known current in canonical GitHub-shaped tables, the worker should not always need to refetch more metadata before rebuilding the change index
+- if a PR is path-only and still within budget, the worker should be able to promote it to fuller indexing without paying unrelated repo-level costs again
+
+The point is not to invent many tiny jobs for their own sake.
+
+The point is to avoid repeating expensive discovery and metadata work when only the final git-index step is actually needed.
 
 ## Time And Work Budgets
 
@@ -501,6 +591,38 @@ PR-level status should answer:
 
 These status reads must be cheap and must not trigger work on read.
 
+Repo-level status counters must remain internally consistent while a backfill batch is running.
+
+That means:
+
+- `open_pr_total`
+- `open_pr_current`
+- `open_pr_stale`
+- `open_pr_missing`
+
+should not only be refreshed at batch boundaries.
+
+Instead, the system should update them incrementally in the same transaction that:
+
+- writes the PR snapshot
+- changes that PR's freshness classification in the open-PR inventory
+- advances the durable cursor when applicable
+
+This keeps the status endpoint truthful during long-running batches and avoids the current failure mode where real snapshot writes happen while the public counters appear frozen.
+
+The clean model is:
+
+- the open-PR inventory is the source set
+- each row in that set has a current freshness classification
+- repo status counters are maintained as counts over that set
+
+In practice the implementation can either:
+
+- maintain the counts transactionally as delta updates, or
+- recompute them from the inventory in a cheap bounded query after each successful PR update
+
+But it should not wait for the end of a whole batch to publish new counts.
+
 ## Failure Handling
 
 The scheduler must assume failures are normal.
@@ -561,6 +683,8 @@ The exact schema can be refined during implementation, but the scheduler needs r
 
 - `repo_change_sync_state`
   - repo-level dirty state, fetch timing, leases, and backfill cursors
+- `repo_open_pull_inventory`
+  - durable fetched open-PR set for one repo and one fetch generation
 - `pull_request_change_snapshots`
   - current PR snapshot, indexing level, and freshness
 - `pull_request_change_snapshot_runs`
@@ -596,6 +720,21 @@ Recommended additional bookkeeping fields:
 - `last_progress_kind`
 - `current_pull_request_number`
 - `current_pull_request_head_sha`
+
+The open-PR inventory rows should minimally include:
+
+- `repository_id`
+- `pull_request_number`
+- `github_updated_at`
+- `head_sha`
+- `base_sha`
+- `base_ref`
+- `draft`
+- `inventory_generation`
+- `freshness_state`
+- `last_seen_at`
+
+This table exists so the fetch pass can pay the GitHub listing cost once and the backfill worker can reuse the result across many batches.
 
 These fields are not strictly required for the public API, but they are useful for operator visibility and for debugging stuck runs.
 
@@ -688,6 +827,21 @@ Also log:
   - `rate_limited`
   - `lease_lost`
   - `error`
+
+The observability surface should also make one running backfill batch legible to operators.
+
+At minimum, it should expose:
+
+- the current inventory generation
+- the current cursor position
+- the current PR number being processed
+- the current PR head SHA when available
+- per-PR duration
+- per-PR timeout count
+- last successful cursor advance
+- whether the worker is currently discovering candidates, refreshing metadata, or rebuilding the git snapshot
+
+Without those fields, operators are forced to infer progress from table writes and lease timestamps, which is not good enough for a long-running production backfill system.
 
 ## Concrete Desired Behavior
 
