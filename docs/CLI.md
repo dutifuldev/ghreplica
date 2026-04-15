@@ -125,7 +125,7 @@ That keeps GitHub-shaped reads separate from normalized git-change reads and `gh
 - `ghr repo view <owner>/<repo>`
   - `GET /v1/github/repos/{owner}/{repo}`
 - `ghr repo status -R <owner>/<repo>`
-  - `GET /repos/{owner}/{repo}/_ghreplica`
+  - `GET /v1/changes/repos/{owner}/{repo}/mirror-status`
 - `ghr issue list -R <owner>/<repo>`
   - `GET /v1/github/repos/{owner}/{repo}/issues`
 - `ghr issue view -R <owner>/<repo> <number>`

@@ -45,22 +45,25 @@ func TestGitHubCompatibilitySubset(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, pulls)
 
-	paths := []string{
-		"/repos/" + repoFullName,
-		"/repos/" + repoFullName + "/issues?state=all&page=1&per_page=30",
-		"/repos/" + repoFullName + "/issues/" + jsonNumber(issues[0].Number),
-		"/repos/" + repoFullName + "/pulls?state=all&page=1&per_page=30",
-		"/repos/" + repoFullName + "/pulls/" + jsonNumber(pulls[0].Number),
+	paths := []struct {
+		github string
+		local  string
+	}{
+		{github: "/repos/" + repoFullName, local: "/v1/github/repos/" + repoFullName},
+		{github: "/repos/" + repoFullName + "/issues?state=all&page=1&per_page=30", local: "/v1/github/repos/" + repoFullName + "/issues?state=all&page=1&per_page=30"},
+		{github: "/repos/" + repoFullName + "/issues/" + jsonNumber(issues[0].Number), local: "/v1/github/repos/" + repoFullName + "/issues/" + jsonNumber(issues[0].Number)},
+		{github: "/repos/" + repoFullName + "/pulls?state=all&page=1&per_page=30", local: "/v1/github/repos/" + repoFullName + "/pulls?state=all&page=1&per_page=30"},
+		{github: "/repos/" + repoFullName + "/pulls/" + jsonNumber(pulls[0].Number), local: "/v1/github/repos/" + repoFullName + "/pulls/" + jsonNumber(pulls[0].Number)},
 	}
 
 	for _, path := range paths {
-		githubStatus, githubHeader, githubBody := fetchJSON(t, http.DefaultClient, "https://api.github.com"+path, token)
-		localStatus, localHeader, localBody := fetchJSON(t, http.DefaultClient, server.URL+path, "")
-		shape := contractShape(path, localBody)
+		githubStatus, githubHeader, githubBody := fetchJSON(t, http.DefaultClient, "https://api.github.com"+path.github, token)
+		localStatus, localHeader, localBody := fetchJSON(t, http.DefaultClient, server.URL+path.local, "")
+		shape := contractShape(path.github, localBody)
 
-		require.Equal(t, githubStatus, localStatus, path)
-		require.Equal(t, projectJSON(normalizeJSON(githubBody), shape), projectJSON(normalizeJSON(localBody), shape), path)
-		require.Equal(t, normalizeLinkHeader(githubHeader.Get("Link")), normalizeLinkHeader(localHeader.Get("Link")), path)
+		require.Equal(t, githubStatus, localStatus, path.github)
+		require.Equal(t, projectJSON(normalizeJSON(githubBody), shape), projectJSON(normalizeJSON(localBody), shape), path.github)
+		require.Equal(t, normalizeLinkHeader(githubHeader.Get("Link")), normalizeLinkHeader(localHeader.Get("Link")), path.github)
 	}
 }
 

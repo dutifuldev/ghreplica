@@ -11,9 +11,9 @@ What already works:
 - GitHub webhook ingestion
 - webhook-native canonical projection
 - read endpoints for:
-  - `GET /repos/{owner}/{repo}`
-  - `GET /repos/{owner}/{repo}/issues`
-  - `GET /repos/{owner}/{repo}/pulls`
+  - `GET /v1/github/repos/{owner}/{repo}`
+  - `GET /v1/github/repos/{owner}/{repo}/issues`
+  - `GET /v1/github/repos/{owner}/{repo}/pulls`
 
 What is still missing:
 
@@ -76,8 +76,8 @@ Make the mirror usable for actual PR triage flows rather than only list views.
 
 Scope:
 
-- add `GET /repos/{owner}/{repo}/issues/{number}`
-- add `GET /repos/{owner}/{repo}/pulls/{number}`
+- add `GET /v1/github/repos/{owner}/{repo}/issues/{number}`
+- add `GET /v1/github/repos/{owner}/{repo}/pulls/{number}`
 - sync and serve:
   - issue comments
   - pull request reviews
@@ -104,11 +104,11 @@ Scope:
 
 - build contract tests that compare GitHub and `ghreplica`
 - start with:
-  - `GET /repos/{owner}/{repo}`
-  - `GET /repos/{owner}/{repo}/issues`
-  - `GET /repos/{owner}/{repo}/issues/{number}`
-  - `GET /repos/{owner}/{repo}/pulls`
-  - `GET /repos/{owner}/{repo}/pulls/{number}`
+  - `GET /v1/github/repos/{owner}/{repo}`
+  - `GET /v1/github/repos/{owner}/{repo}/issues`
+  - `GET /v1/github/repos/{owner}/{repo}/issues/{number}`
+  - `GET /v1/github/repos/{owner}/{repo}/pulls`
+  - `GET /v1/github/repos/{owner}/{repo}/pulls/{number}`
 - compare:
   - status code
   - key headers

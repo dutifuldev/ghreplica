@@ -72,7 +72,7 @@ func TestWorkerRetriesTemporaryErrorsThenSucceeds(t *testing.T) {
 	require.Equal(t, 2, job.Attempts)
 }
 
-func TestWorkerSupersedesLegacyWebhookJobsAndRecoversExpiredLeases(t *testing.T) {
+func TestWorkerSupersedesWebhookRefreshJobsAndRecoversExpiredLeases(t *testing.T) {
 	ctx := context.Background()
 
 	db, err := database.Open(testDatabaseURL(t))

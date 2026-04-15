@@ -176,7 +176,7 @@ func TestMirrorStatusEndpoint(t *testing.T) {
 	}).Error)
 
 	server := httpapi.NewServer(db, httpapi.Options{})
-	req := httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/_ghreplica", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/changes/repos/acme/widgets/mirror-status", nil)
 	rec := httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 
@@ -210,7 +210,7 @@ func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 
 	server := httpapi.NewServer(db, httpapi.Options{})
 
-	req := httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/pulls/66863", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/pulls/66863", nil)
 	rec := httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -225,7 +225,7 @@ func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 	require.Equal(t, "openclaw/openclaw", base["repo"].(map[string]any)["full_name"])
 	require.Equal(t, "Yellowfish23", pull["user"].(map[string]any)["login"])
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/pulls/66863/reviews", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/pulls/66863/reviews", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -235,7 +235,7 @@ func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 	require.Len(t, reviews, 1)
 	require.Equal(t, "greptile-apps[bot]", reviews[0]["user"].(map[string]any)["login"])
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/pulls/66863/comments", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/pulls/66863/comments", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -246,7 +246,7 @@ func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 	require.Equal(t, "extensions/whatsapp/src/use-atomic-auth-state.ts", reviewComments[0]["path"])
 	require.EqualValues(t, 204, reviewComments[0]["line"])
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/issues/66797/comments", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/issues/66797/comments", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)

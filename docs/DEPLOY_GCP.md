@@ -138,6 +138,27 @@ mkdir -p ~/ghreplica/secrets
 chmod 700 ~/ghreplica/secrets
 ```
 
+Important runtime requirements:
+
+- the GitHub App private key must be readable by the container user
+- the mounted git-mirror data directory must be owned by the container user
+
+In production we hit both of these after switching to a Debian-based image that runs as the `ghreplica` user.
+
+If the private key is only readable by the host account, GitHub-authenticated sync and structural search can fail with `permission denied`.
+
+If the mounted mirror root is owned by a different UID from the container user, Git can reject mirrored repositories with a `dubious ownership` error.
+
+The simplest working fix on the VM is:
+
+```bash
+chmod 755 ~/ghreplica/secrets
+chmod 644 ~/ghreplica/secrets/github-app.private-key.pem
+sudo chown -R 999:999 ~/ghreplica/data
+```
+
+That matches the current container user in the shipped image.
+
 ## 4. Run Migrations And Start The Stack
 
 From the repo root on the VM:
@@ -147,6 +168,13 @@ docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.
 docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml up -d --build
 ```
 
+If Docker on the VM requires root, use:
+
+```bash
+sudo docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml --profile ops run --rm ghreplica-migrate
+sudo docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml up -d --build
+```
+
 ## 5. Verify
 
 Once DNS and TLS settle, these should succeed:
@@ -154,7 +182,14 @@ Once DNS and TLS settle, these should succeed:
 ```bash
 curl https://ghreplica.dutiful.dev/healthz
 curl https://ghreplica.dutiful.dev/readyz
-curl https://ghreplica.dutiful.dev/repos/dutifuldev/ghreplica
+curl https://ghreplica.dutiful.dev/v1/github/repos/dutifuldev/ghreplica
+```
+
+If you want to verify the two permission-sensitive runtime dependencies inside the container, these should also work:
+
+```bash
+sudo docker exec gcp-ghreplica-1 sh -lc 'test -r /home/bob/ghreplica/secrets/github-app.private-key.pem && echo key-ok'
+sudo docker exec gcp-ghreplica-1 sh -lc 'git -C /app/data/git-mirrors/openclaw/openclaw.git show-ref | head -5'
 ```
 
 ## 6. Add The GitHub Webhook

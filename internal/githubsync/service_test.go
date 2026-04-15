@@ -55,7 +55,7 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 
 	server := httpapi.NewServer(db, httpapi.Options{})
 
-	req := httptest.NewRequest(http.MethodGet, "/repos/acme/widgets", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/github/repos/acme/widgets", nil)
 	rec := httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -63,7 +63,7 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &repo))
 	require.Equal(t, "acme/widgets", repo["full_name"])
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/issues?state=all", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/acme/widgets/issues?state=all", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -73,7 +73,7 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	require.Equal(t, "Fix parser", issues[0]["title"])
 	require.NotNil(t, issues[0]["pull_request"])
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/pulls?state=all", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/acme/widgets/pulls?state=all", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -83,12 +83,12 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	require.Equal(t, "Fix parser", pulls[0]["title"])
 	require.Equal(t, "fix/parser", pulls[0]["head"].(map[string]any)["ref"])
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/issues/2", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/acme/widgets/issues/2", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/issues/2/comments", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/acme/widgets/issues/2/comments", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -96,12 +96,12 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &issueComments))
 	require.Len(t, issueComments, 1)
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/pulls/2", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/acme/widgets/pulls/2", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/pulls/2/reviews", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/acme/widgets/pulls/2/reviews", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -109,7 +109,7 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &reviews))
 	require.Len(t, reviews, 1)
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/acme/widgets/pulls/2/comments", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/acme/widgets/pulls/2/comments", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -118,7 +118,7 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	require.Len(t, reviewComments, 1)
 }
 
-func TestBootstrapRepositoryNormalizesLegacyWebhookSyncMode(t *testing.T) {
+func TestBootstrapRepositoryNormalizesWebhookAliasSyncMode(t *testing.T) {
 	ctx := context.Background()
 
 	db, err := database.Open(testDatabaseURL(t))
@@ -322,7 +322,7 @@ func TestTargetedSyncWithRealFixturesPersistsDiscussionData(t *testing.T) {
 
 	server := httpapi.NewServer(db, httpapi.Options{})
 
-	req := httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/pulls/66863/reviews", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/pulls/66863/reviews", nil)
 	rec := httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -332,7 +332,7 @@ func TestTargetedSyncWithRealFixturesPersistsDiscussionData(t *testing.T) {
 	require.Equal(t, "greptile-apps[bot]", apiReviews[0]["user"].(map[string]any)["login"])
 	require.Equal(t, "COMMENTED", apiReviews[0]["state"])
 
-	req = httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/pulls/66863/comments", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/pulls/66863/comments", nil)
 	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)

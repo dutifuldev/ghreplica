@@ -143,7 +143,7 @@ func (w *Worker) Start(ctx context.Context) error {
 }
 
 func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
-	if err := w.supersedeLegacyWebhookJobs(ctx); err != nil {
+	if err := w.supersedeWebhookRefreshJobs(ctx); err != nil {
 		return false, err
 	}
 	if err := w.recoverExpiredLeases(ctx); err != nil {
@@ -352,7 +352,7 @@ func CompletenessUpdatesForEvent(event string) map[string]any {
 	}
 }
 
-func (w *Worker) supersedeLegacyWebhookJobs(ctx context.Context) error {
+func (w *Worker) supersedeWebhookRefreshJobs(ctx context.Context) error {
 	now := time.Now().UTC()
 	return w.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).
 		Where("source = ? AND status IN ?", "webhook", []string{"pending", "processing", "failed"}).

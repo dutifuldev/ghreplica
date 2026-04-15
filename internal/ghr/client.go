@@ -69,7 +69,7 @@ func (c *Client) GetRepository(ctx context.Context, repo string) (gh.RepositoryR
 
 func (c *Client) GetMirrorStatus(ctx context.Context, repo string) (MirrorStatusResponse, error) {
 	var out MirrorStatusResponse
-	err := c.getJSON(ctx, "/repos/"+repo+"/_ghreplica", &out)
+	err := c.getJSON(ctx, "/v1/changes/repos/"+repo+"/mirror-status", &out)
 	return out, err
 }
 

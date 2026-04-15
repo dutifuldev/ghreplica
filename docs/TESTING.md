@@ -173,7 +173,7 @@ Add tests for:
 - webhook-projected repos remain `webhook_only`
 - targeted repair does not accidentally switch repos into backfill modes
 - completeness fields remain `sparse` unless an explicit backfill path changes them
-- `_ghreplica` counts match canonical row counts
+- mirror-status counts match canonical row counts
 
 ## 5. GitHub-Shaped API Responses
 

@@ -75,14 +75,14 @@ make serve
 Important local endpoints:
 
 - `GET http://127.0.0.1:8080/healthz`
-- `GET http://127.0.0.1:8080/repos/dutifuldev/ghreplica`
-- `GET http://127.0.0.1:8080/repos/dutifuldev/ghreplica/issues?state=all`
-- `GET http://127.0.0.1:8080/repos/dutifuldev/ghreplica/issues/1`
-- `GET http://127.0.0.1:8080/repos/dutifuldev/ghreplica/issues/1/comments`
-- `GET http://127.0.0.1:8080/repos/dutifuldev/ghreplica/pulls?state=all`
-- `GET http://127.0.0.1:8080/repos/dutifuldev/ghreplica/pulls/1`
-- `GET http://127.0.0.1:8080/repos/dutifuldev/ghreplica/pulls/1/reviews`
-- `GET http://127.0.0.1:8080/repos/dutifuldev/ghreplica/pulls/1/comments`
+- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica`
+- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/issues?state=all`
+- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/issues/1`
+- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/issues/1/comments`
+- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/pulls?state=all`
+- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/pulls/1`
+- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/pulls/1/reviews`
+- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/pulls/1/comments`
 - `GET http://127.0.0.1:8080/readyz`
 - `GET http://127.0.0.1:8080/metrics`
 
@@ -138,7 +138,7 @@ Once configured, GitHub deliveries will hit the local API, enqueue refresh work,
 4. `make sync REPO=dutifuldev/ghreplica`
 5. `make serve`
 6. `curl http://127.0.0.1:8080/healthz`
-7. `curl http://127.0.0.1:8080/repos/dutifuldev/ghreplica`
+7. `curl http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica`
 8. start `ngrok`
 9. point a controlled repo webhook at `/webhooks/github`
 10. trigger a `ping` or open a test issue or PR

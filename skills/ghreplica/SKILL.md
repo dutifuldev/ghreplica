@@ -151,6 +151,8 @@ Common failure cases:
   - the command fails because only PR-head searches know what the changed files are
 - the requested commit or ref is not present in the local mirror yet
   - the API returns `404`
+- the service has the code but cannot reach the mirror or GitHub auth material
+  - check that `ast-grep` is installed, the GitHub App private key is readable by the runtime user, and the mirror root is owned by the runtime user
 
 ## Text search with `ghr search mentions`
 

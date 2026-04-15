@@ -458,7 +458,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/v1/github/repos/acme/widgets", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, repo)
 	})
-	mux.HandleFunc("/repos/acme/widgets/_ghreplica", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/changes/repos/acme/widgets/mirror-status", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, status)
 	})
 	mux.HandleFunc("/v1/github/repos/acme/widgets/issues", func(w http.ResponseWriter, r *http.Request) {
@@ -618,7 +618,7 @@ func newOpenClawTestServer(t *testing.T) *httptest.Server {
 	mux.HandleFunc("/v1/github/repos/openclaw/openclaw", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, repo)
 	})
-	mux.HandleFunc("/repos/openclaw/openclaw/_ghreplica", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/changes/repos/openclaw/openclaw/mirror-status", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, status)
 	})
 	mux.HandleFunc("/v1/github/repos/openclaw/openclaw/issues", func(w http.ResponseWriter, r *http.Request) {

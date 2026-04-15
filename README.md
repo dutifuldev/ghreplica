@@ -25,17 +25,15 @@ Current deployment:
 
 ## Current Surface
 
-The versioned API structure is:
+The API structure is:
 
 - `/v1/github/...` for GitHub-compatible mirrored resources
 - `/v1/changes/...` for normalized Git-backed change data
 - `/v1/search/...` for overlap and related-change queries
 
-The legacy unversioned `/repos/...` read surface still exists for the original mirrored GitHub-style endpoints.
-
 Implemented today:
 
-- `/repos/...` and `/v1/github/...`
+- `/v1/github/...`
   - repository view
   - issue list
   - issue view
@@ -60,7 +58,7 @@ Implemented today:
   - repo-level text-search status
   - mirrored text search across PRs, issues, comments, reviews, and review comments
   - structural code search with `ast-grep` against an exact commit, ref, or PR head
-- `/repos/{owner}/{repo}/_ghreplica`
+- `/v1/changes/repos/{owner}/{repo}/mirror-status`
   - repo mirror status
 
 The mirror preserves GitHub-native field names and response shapes wherever the data already exists on GitHub.
@@ -137,6 +135,12 @@ Results include:
 - the resolved ref when one exists
 - file path and line/column span
 - captured variables from the structural match
+
+Self-hosting note:
+
+- `ast-grep` must be installed in the runtime image
+- the GitHub App private key must be readable by the runtime user
+- the mounted git-mirror directory must be owned by the runtime user
 
 ## Sync Model
 

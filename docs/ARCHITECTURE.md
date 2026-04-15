@@ -313,18 +313,18 @@ Clients need to know how stale the mirror is.
 
 Trying to replicate all of GitHub immediately will kill the project. Start with the repo-scoped read API that triage and agent systems actually use:
 
-- `GET /repos/{owner}/{repo}`
-- `GET /repos/{owner}/{repo}/issues`
-- `GET /repos/{owner}/{repo}/issues/{number}`
-- `GET /repos/{owner}/{repo}/issues/{number}/comments`
-- `GET /repos/{owner}/{repo}/pulls`
-- `GET /repos/{owner}/{repo}/pulls/{number}`
-- `GET /repos/{owner}/{repo}/pulls/{number}/comments`
-- `GET /repos/{owner}/{repo}/pulls/{number}/reviews`
-- `GET /repos/{owner}/{repo}/commits`
-- `GET /repos/{owner}/{repo}/commits/{sha}`
-- `GET /repos/{owner}/{repo}/labels`
-- `GET /repos/{owner}/{repo}/check-runs`
+- `GET /v1/github/repos/{owner}/{repo}`
+- `GET /v1/github/repos/{owner}/{repo}/issues`
+- `GET /v1/github/repos/{owner}/{repo}/issues/{number}`
+- `GET /v1/github/repos/{owner}/{repo}/issues/{number}/comments`
+- `GET /v1/github/repos/{owner}/{repo}/pulls`
+- `GET /v1/github/repos/{owner}/{repo}/pulls/{number}`
+- `GET /v1/github/repos/{owner}/{repo}/pulls/{number}/comments`
+- `GET /v1/github/repos/{owner}/{repo}/pulls/{number}/reviews`
+- `GET /v1/github/repos/{owner}/{repo}/commits`
+- `GET /v1/github/repos/{owner}/{repo}/commits/{sha}`
+- `GET /v1/github/repos/{owner}/{repo}/labels`
+- `GET /v1/github/repos/{owner}/{repo}/check-runs`
 
 Then add:
 

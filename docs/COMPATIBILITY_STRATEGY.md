@@ -281,11 +281,11 @@ Endpoints should be added in ordered slices.
 
 ### Slice 1
 
-- `GET /repos/{owner}/{repo}`
-- `GET /repos/{owner}/{repo}/issues`
-- `GET /repos/{owner}/{repo}/issues/{number}`
-- `GET /repos/{owner}/{repo}/pulls`
-- `GET /repos/{owner}/{repo}/pulls/{number}`
+- `GET /v1/github/repos/{owner}/{repo}`
+- `GET /v1/github/repos/{owner}/{repo}/issues`
+- `GET /v1/github/repos/{owner}/{repo}/issues/{number}`
+- `GET /v1/github/repos/{owner}/{repo}/pulls`
+- `GET /v1/github/repos/{owner}/{repo}/pulls/{number}`
 
 ### Slice 2
 

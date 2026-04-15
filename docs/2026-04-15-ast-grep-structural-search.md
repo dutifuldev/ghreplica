@@ -277,6 +277,24 @@ But the design should leave room for:
 
 without changing the product surface.
 
+## Production Notes
+
+The deployed runtime surfaced two concrete operational requirements:
+
+- the GitHub App private key mount must be readable by the runtime user
+- the mounted git-mirror root must be owned by the runtime user
+
+If either of those is wrong, structural search can fail even though the API and binary are present:
+
+- unreadable key material breaks GitHub-authenticated sync and ref refresh
+- wrong mirror ownership can make Git reject the local mirror with a `dubious ownership` error
+
+So structural search should be treated as depending on three runtime prerequisites:
+
+- `ast-grep` is installed and executable
+- GitHub auth material is readable
+- the mirror root is readable and Git-safe for the runtime user
+
 ## Error Handling
 
 The API should distinguish between:
