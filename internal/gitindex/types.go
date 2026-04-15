@@ -51,29 +51,29 @@ type PullRequestSnapshot struct {
 }
 
 type RepoStatus struct {
-	RepositoryID          uint       `json:"repository_id"`
-	FullName              string     `json:"full_name"`
-	Dirty                 bool       `json:"dirty"`
-	DirtySince            *time.Time `json:"dirty_since,omitempty"`
-	LastWebhookAt         *time.Time `json:"last_webhook_at,omitempty"`
-	LastRequestedFetchAt  *time.Time `json:"last_requested_fetch_at,omitempty"`
-	LastFetchStartedAt    *time.Time `json:"last_fetch_started_at,omitempty"`
-	LastFetchFinishedAt   *time.Time `json:"last_fetch_finished_at,omitempty"`
-	LastSuccessfulFetchAt *time.Time `json:"last_successful_fetch_at,omitempty"`
-	LastBackfillStartedAt *time.Time `json:"last_backfill_started_at,omitempty"`
+	RepositoryID           uint       `json:"repository_id"`
+	FullName               string     `json:"full_name"`
+	Dirty                  bool       `json:"dirty"`
+	DirtySince             *time.Time `json:"dirty_since,omitempty"`
+	LastWebhookAt          *time.Time `json:"last_webhook_at,omitempty"`
+	LastRequestedFetchAt   *time.Time `json:"last_requested_fetch_at,omitempty"`
+	LastFetchStartedAt     *time.Time `json:"last_fetch_started_at,omitempty"`
+	LastFetchFinishedAt    *time.Time `json:"last_fetch_finished_at,omitempty"`
+	LastSuccessfulFetchAt  *time.Time `json:"last_successful_fetch_at,omitempty"`
+	LastBackfillStartedAt  *time.Time `json:"last_backfill_started_at,omitempty"`
 	LastBackfillFinishedAt *time.Time `json:"last_backfill_finished_at,omitempty"`
-	LastOpenPRScanAt      *time.Time `json:"last_open_pr_scan_at,omitempty"`
-	BackfillMode          string     `json:"backfill_mode"`
-	BackfillPriority      int        `json:"backfill_priority"`
-	FetchInProgress       bool       `json:"fetch_in_progress"`
-	BackfillInProgress    bool       `json:"backfill_in_progress"`
-	OpenPRTotal           int        `json:"open_pr_total"`
-	OpenPRCurrent         int        `json:"open_pr_current"`
-	OpenPRStale           int        `json:"open_pr_stale"`
-	OpenPRMissing         int        `json:"open_pr_missing"`
-	OpenPRCursorNumber    *int       `json:"open_pr_cursor_number,omitempty"`
-	OpenPRCursorUpdatedAt *time.Time `json:"open_pr_cursor_updated_at,omitempty"`
-	LastError             string     `json:"last_error,omitempty"`
+	LastOpenPRScanAt       *time.Time `json:"last_open_pr_scan_at,omitempty"`
+	BackfillMode           string     `json:"backfill_mode"`
+	BackfillPriority       int        `json:"backfill_priority"`
+	FetchInProgress        bool       `json:"fetch_in_progress"`
+	BackfillInProgress     bool       `json:"backfill_in_progress"`
+	OpenPRTotal            int        `json:"open_pr_total"`
+	OpenPRCurrent          int        `json:"open_pr_current"`
+	OpenPRStale            int        `json:"open_pr_stale"`
+	OpenPRMissing          int        `json:"open_pr_missing"`
+	OpenPRCursorNumber     *int       `json:"open_pr_cursor_number,omitempty"`
+	OpenPRCursorUpdatedAt  *time.Time `json:"open_pr_cursor_updated_at,omitempty"`
+	LastError              string     `json:"last_error,omitempty"`
 }
 
 type PullRequestStatus struct {
