@@ -55,6 +55,26 @@ The system should not:
 - run blind per-repo polling loops every few seconds
 - hide whether search results are incomplete because data is missing
 
+## Plain-Language Summary
+
+The next backfill refactor should do three simple things.
+
+First, the worker should stop asking GitHub for the full open-PR list over and over again.
+
+It should fetch that list once, store it locally, and then let later backfill batches walk through the stored list with a cursor.
+
+Second, progress reporting should update while the job is running.
+
+Right now the system can be doing real work while the status numbers look frozen.
+
+Instead, every time one PR finishes indexing, the repo-level counters should move immediately so operators can see real progress.
+
+Third, one PR sync should do less work at once.
+
+At the moment one PR often pays for discovery, metadata refresh, and git indexing together even when some of that work was already done.
+
+The refactor should separate those concerns so the worker does not keep repeating expensive steps that were already settled.
+
 ## Core Principle
 
 The design should treat freshness and completeness as separate concerns.
