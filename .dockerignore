@@ -1,5 +1,10 @@
 .git
 .github
+data
 deploy/gcp/ghreplica.env
+deploy/gcp/github-app.env
 infra/local
+node_modules
+secrets
+.tmpinventory
 /tmp
