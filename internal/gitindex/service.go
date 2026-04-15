@@ -25,6 +25,8 @@ const (
 	indexedAsOversized = "oversized"
 	indexedAsFailed    = "failed"
 
+	defaultIndexTimeout = 2 * time.Minute
+
 	freshnessCurrent          = "current"
 	freshnessStaleHeadChanged = "stale_head_changed"
 	freshnessStaleBaseMoved   = "stale_base_moved"
@@ -33,11 +35,12 @@ const (
 )
 
 type Service struct {
-	db         *gorm.DB
-	github     *gh.Client
-	mirrorRoot string
-	gitBin     string
-	authHeader string
+	db           *gorm.DB
+	github       *gh.Client
+	mirrorRoot   string
+	gitBin       string
+	authHeader   string
+	indexTimeout time.Duration
 }
 
 func NewService(db *gorm.DB, githubClient *gh.Client, mirrorRoot string) *Service {
@@ -45,10 +48,11 @@ func NewService(db *gorm.DB, githubClient *gh.Client, mirrorRoot string) *Servic
 		mirrorRoot = ".data/git-mirrors"
 	}
 	return &Service{
-		db:         db,
-		github:     githubClient,
-		mirrorRoot: mirrorRoot,
-		gitBin:     "git",
+		db:           db,
+		github:       githubClient,
+		mirrorRoot:   mirrorRoot,
+		gitBin:       "git",
+		indexTimeout: defaultIndexTimeout,
 	}
 }
 
@@ -58,6 +62,14 @@ func (s *Service) IndexPullRequest(ctx context.Context, owner, repo string, repo
 	}
 	if pull.IssueID == 0 {
 		return errors.New("pull request is required")
+	}
+
+	if timeout := s.indexTimeout; timeout > 0 {
+		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > timeout {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
 	}
 
 	return s.withRepoLock(ctx, owner, repo, func() error {
