@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,6 +62,11 @@ func TestChangeSyncWorkerBackfillsOpenPullRequestsGradually(t *testing.T) {
 	require.Equal(t, 3, status.OpenPRMissing)
 	require.False(t, status.Dirty)
 	require.Nil(t, status.OpenPRCursorNumber)
+	require.Equal(t, 1, server.ListPullCount())
+
+	var inventoryRows int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.RepoOpenPullInventory{}).Count(&inventoryRows).Error)
+	require.EqualValues(t, 3, inventoryRows)
 
 	processed, err = worker.RunOnce(ctx)
 	require.NoError(t, err)
@@ -72,6 +78,7 @@ func TestChangeSyncWorkerBackfillsOpenPullRequestsGradually(t *testing.T) {
 	require.Equal(t, 2, status.OpenPRMissing)
 	require.False(t, status.Dirty)
 	require.NotNil(t, status.OpenPRCursorNumber)
+	require.Equal(t, 1, server.ListPullCount())
 
 	processed, err = worker.RunOnce(ctx)
 	require.NoError(t, err)
@@ -82,6 +89,7 @@ func TestChangeSyncWorkerBackfillsOpenPullRequestsGradually(t *testing.T) {
 	require.Equal(t, 2, status.OpenPRCurrent)
 	require.Equal(t, 1, status.OpenPRMissing)
 	require.False(t, status.Dirty)
+	require.Equal(t, 1, server.ListPullCount())
 
 	processed, err = worker.RunOnce(ctx)
 	require.NoError(t, err)
@@ -93,6 +101,7 @@ func TestChangeSyncWorkerBackfillsOpenPullRequestsGradually(t *testing.T) {
 	require.Equal(t, 0, status.OpenPRMissing)
 	require.False(t, status.Dirty)
 	require.Nil(t, status.OpenPRCursorNumber)
+	require.Equal(t, 1, server.ListPullCount())
 
 	prStatus, err := service.GetPullRequestChangeStatus(ctx, "acme", "widgets", 101)
 	require.NoError(t, err)
@@ -142,6 +151,7 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 	require.NoError(t, err)
 	firstFetchStarted := status.LastFetchStartedAt
 	require.NotNil(t, firstFetchStarted)
+	require.Equal(t, 1, server.ListPullCount())
 
 	processed, err = worker.RunOnce(ctx)
 	require.NoError(t, err)
@@ -150,6 +160,7 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 	status, err = service.GetRepoChangeStatus(ctx, "acme", "widgets")
 	require.NoError(t, err)
 	require.Equal(t, 1, status.OpenPRCurrent)
+	require.Equal(t, 1, server.ListPullCount())
 
 	dirtyAt := time.Now().UTC()
 	require.NoError(t, service.MarkRepositoryChangeDirty(ctx, state.RepositoryID, dirtyAt))
@@ -164,9 +175,28 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 	require.Equal(t, 2, status.OpenPRCurrent)
 	require.Equal(t, 1, status.OpenPRMissing)
 	require.Equal(t, firstFetchStarted, status.LastFetchStartedAt)
+	require.Equal(t, 1, server.ListPullCount())
 }
 
-func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *httptest.Server {
+type backfillGitHubServer struct {
+	*httptest.Server
+	mu            sync.Mutex
+	listPullCount int
+}
+
+func (s *backfillGitHubServer) recordListPull() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listPullCount++
+}
+
+func (s *backfillGitHubServer) ListPullCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listPullCount
+}
+
+func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *backfillGitHubServer {
 	t.Helper()
 
 	repo := github.RepositoryResponse{
@@ -250,11 +280,13 @@ func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *
 		}
 	}
 
+	server := &backfillGitHubServer{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/widgets", func(w http.ResponseWriter, r *http.Request) {
 		writeBackfillJSON(t, w, repo)
 	})
 	mux.HandleFunc("/repos/acme/widgets/pulls", func(w http.ResponseWriter, r *http.Request) {
+		server.recordListPull()
 		writeBackfillJSON(t, w, []github.PullRequestResponse{pulls[103], pulls[102], pulls[101]})
 	})
 	mux.HandleFunc("/repos/acme/widgets/issues/", func(w http.ResponseWriter, r *http.Request) {
@@ -268,7 +300,8 @@ func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *
 		writeBackfillJSON(t, w, pulls[number])
 	})
 
-	return httptest.NewServer(mux)
+	server.Server = httptest.NewServer(mux)
+	return server
 }
 
 func tailNumber(path, prefix string) (int, bool) {
