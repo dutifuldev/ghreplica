@@ -4,6 +4,8 @@
 
 It keeps GitHub-shaped repository data in local storage, uses Git as ground truth for change indexing, and serves a stable read API and CLI so downstream tools do not need to build their own webhook handlers, crawlers, and caches.
 
+Current ownership note: this project is currently being developed by Onur Solmaz and is expected to move to another organization once it is stable.
+
 Current public instance:
 
 - API: `https://ghreplica.dutiful.dev`
