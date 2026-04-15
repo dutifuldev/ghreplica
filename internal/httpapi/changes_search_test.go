@@ -219,25 +219,35 @@ func TestChangeStatusEndpoints(t *testing.T) {
 	now := time.Now().UTC()
 	cursorNumber := 102
 	cursorUpdatedAt := now.Add(-time.Minute)
+	fetchHeartbeat := now.Add(-15 * time.Second)
+	fetchExpires := now.Add(45 * time.Second)
+	backfillHeartbeat := now.Add(-10 * time.Second)
+	backfillExpires := now.Add(50 * time.Second)
 	require.NoError(t, db.Create(&database.RepoChangeSyncState{
-		RepositoryID:           repo.ID,
-		Dirty:                  true,
-		DirtySince:             &now,
-		LastWebhookAt:          &now,
-		LastRequestedFetchAt:   &now,
-		LastFetchStartedAt:     &now,
-		LastFetchFinishedAt:    &now,
-		LastSuccessfulFetchAt:  &now,
-		LastBackfillStartedAt:  &now,
-		LastBackfillFinishedAt: &now,
-		LastOpenPRScanAt:       &now,
-		OpenPRTotal:            3,
-		OpenPRCurrent:          1,
-		OpenPRStale:            1,
-		OpenPRCursorNumber:     &cursorNumber,
-		OpenPRCursorUpdatedAt:  &cursorUpdatedAt,
-		BackfillMode:           "open_only",
-		BackfillPriority:       5,
+		RepositoryID:             repo.ID,
+		Dirty:                    true,
+		DirtySince:               &now,
+		LastWebhookAt:            &now,
+		LastRequestedFetchAt:     &now,
+		LastFetchStartedAt:       &now,
+		LastFetchFinishedAt:      &now,
+		LastSuccessfulFetchAt:    &now,
+		LastBackfillStartedAt:    &now,
+		LastBackfillFinishedAt:   &now,
+		LastOpenPRScanAt:         &now,
+		OpenPRTotal:              3,
+		OpenPRCurrent:            1,
+		OpenPRStale:              1,
+		OpenPRCursorNumber:       &cursorNumber,
+		OpenPRCursorUpdatedAt:    &cursorUpdatedAt,
+		BackfillMode:             "open_only",
+		BackfillPriority:         5,
+		FetchLeaseOwnerID:        "worker-a",
+		FetchLeaseHeartbeatAt:    &fetchHeartbeat,
+		FetchLeaseUntil:          &fetchExpires,
+		BackfillLeaseOwnerID:     "worker-a",
+		BackfillLeaseHeartbeatAt: &backfillHeartbeat,
+		BackfillLeaseUntil:       &backfillExpires,
 	}).Error)
 
 	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}), indexer)
@@ -255,6 +265,8 @@ func TestChangeStatusEndpoints(t *testing.T) {
 	require.EqualValues(t, 1, repoStatus["open_pr_stale"])
 	require.EqualValues(t, 1, repoStatus["open_pr_missing"])
 	require.Equal(t, "open_only", repoStatus["backfill_mode"])
+	require.Equal(t, "worker-a", repoStatus["fetch_lease_owner_id"])
+	require.Equal(t, "worker-a", repoStatus["backfill_lease_owner_id"])
 
 	req = httptest.NewRequest(http.MethodGet, "/v1/changes/repos/acme/widgets/pulls/101/status", nil)
 	rec = httptest.NewRecorder()

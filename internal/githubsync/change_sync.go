@@ -3,6 +3,7 @@ package githubsync
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -22,7 +23,6 @@ const (
 type RepoBackfillOptions struct {
 	MaxPRs     int
 	MaxRuntime time.Duration
-	LeaseTTL   time.Duration
 }
 
 type RepoBackfillResult struct {
@@ -45,6 +45,7 @@ type backfillCandidate struct {
 type ChangeSyncWorker struct {
 	db                     *gorm.DB
 	service                *Service
+	leases                 *repoLeaseManager
 	pollInterval           time.Duration
 	webhookFetchDebounce   time.Duration
 	repoMinFetchInterval   time.Duration
@@ -79,6 +80,7 @@ func NewChangeSyncWorker(db *gorm.DB, service *Service, pollInterval, webhookFet
 	return &ChangeSyncWorker{
 		db:                     db,
 		service:                service,
+		leases:                 newRepoLeaseManager(db, leaseTTL),
 		pollInterval:           pollInterval,
 		webhookFetchDebounce:   webhookFetchDebounce,
 		repoMinFetchInterval:   repoMinFetchInterval,
@@ -90,6 +92,11 @@ func NewChangeSyncWorker(db *gorm.DB, service *Service, pollInterval, webhookFet
 }
 
 func (w *ChangeSyncWorker) Start(ctx context.Context) error {
+	slog.Info("change sync worker starting", "owner_id", w.leases.owner())
+	if err := w.recoverLeases(ctx); err != nil {
+		return err
+	}
+
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
@@ -203,8 +210,14 @@ func (s *Service) GetRepoChangeStatus(ctx context.Context, owner, repo string) (
 		status.LastOpenPRScanAt = state.LastOpenPRScanAt
 		status.BackfillMode = normalizeBackfillMode(state.BackfillMode)
 		status.BackfillPriority = state.BackfillPriority
-		status.FetchInProgress = state.FetchLeaseUntil != nil && state.FetchLeaseUntil.After(now)
-		status.BackfillInProgress = state.BackfillLeaseUntil != nil && state.BackfillLeaseUntil.After(now)
+		status.FetchLeaseOwnerID = state.FetchLeaseOwnerID
+		status.FetchLeaseHeartbeatAt = state.FetchLeaseHeartbeatAt
+		status.FetchLeaseExpiresAt = state.FetchLeaseUntil
+		status.BackfillLeaseOwnerID = state.BackfillLeaseOwnerID
+		status.BackfillLeaseHeartbeatAt = state.BackfillLeaseHeartbeatAt
+		status.BackfillLeaseExpiresAt = state.BackfillLeaseUntil
+		status.FetchInProgress = leaseIsActive(now, state.FetchLeaseHeartbeatAt, state.FetchLeaseUntil)
+		status.BackfillInProgress = leaseIsActive(now, state.BackfillLeaseHeartbeatAt, state.BackfillLeaseUntil)
 		status.OpenPRTotal = state.OpenPRTotal
 		status.OpenPRCurrent = state.OpenPRCurrent
 		status.OpenPRStale = state.OpenPRStale
@@ -278,7 +291,7 @@ func (s *Service) GetPullRequestChangeStatus(ctx context.Context, owner, repo st
 	}
 	if state != nil {
 		now := time.Now().UTC()
-		status.BackfillInProgress = state.BackfillLeaseUntil != nil && state.BackfillLeaseUntil.After(now)
+		status.BackfillInProgress = leaseIsActive(now, state.BackfillLeaseHeartbeatAt, state.BackfillLeaseUntil)
 		status.RepoDirty = state.Dirty
 		status.LastError = state.LastError
 	}
@@ -320,9 +333,6 @@ func (s *Service) BackfillOpenPullRequests(ctx context.Context, owner, repo stri
 	for _, candidate := range candidates {
 		if result.ProcessedPRs >= options.MaxPRs || time.Now().UTC().After(deadline) {
 			break
-		}
-		if err := s.heartbeatBackfillLease(ctx, state.ID, options.LeaseTTL); err != nil {
-			return RepoBackfillResult{}, err
 		}
 		result.ProcessedPRs++
 		newFreshness := candidate.inventory.FreshnessState
@@ -408,9 +418,11 @@ func (s *Service) syncPullRequestChangeOnly(ctx context.Context, owner, repo str
 
 func (w *ChangeSyncWorker) processDirtyRepo(ctx context.Context) (bool, error) {
 	now := time.Now().UTC()
+	fetchAvailableSQL, fetchAvailableArgs := w.leases.reclaimableSQL(fetchLeaseKind, now)
 	var state database.RepoChangeSyncState
 	err := w.db.WithContext(ctx).
-		Where("dirty = ? AND (fetch_lease_until IS NULL OR fetch_lease_until <= ?)", true, now).
+		Where("dirty = ?", true).
+		Where(fetchAvailableSQL, fetchAvailableArgs...).
 		Where("dirty_since IS NULL OR dirty_since <= ?", now.Add(-w.webhookFetchDebounce)).
 		Where("last_fetch_finished_at IS NULL OR last_fetch_finished_at <= ?", now.Add(-w.repoMinFetchInterval)).
 		Order("dirty_since ASC NULLS FIRST, backfill_priority DESC, repository_id ASC").
@@ -422,30 +434,38 @@ func (w *ChangeSyncWorker) processDirtyRepo(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	leaseUntil := now.Add(w.leaseTTL)
-	result := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
-		Where("id = ? AND (fetch_lease_until IS NULL OR fetch_lease_until <= ?)", state.ID, now).
-		Updates(map[string]any{
-			"fetch_lease_until":     leaseUntil,
-			"last_fetch_started_at": now,
-			"updated_at":            now,
-		})
-	if result.Error != nil {
-		return false, result.Error
+	acquired, leasedUntil, err := w.leases.acquire(ctx, state.ID, fetchLeaseKind, now)
+	if err != nil {
+		return false, err
 	}
-	if result.RowsAffected == 0 {
+	if !acquired {
 		return false, nil
 	}
-	state.FetchLeaseUntil = &leaseUntil
+	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
+		Where("id = ? AND fetch_lease_owner_id = ?", state.ID, w.leases.owner()).
+		Updates(map[string]any{
+			"last_fetch_started_at": now,
+			"updated_at":            now,
+		}).Error; err != nil {
+		return false, err
+	}
+	slog.Info("change sync fetch lease acquired", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "lease_until", leasedUntil)
+	state.FetchLeaseOwnerID = w.leases.owner()
+	state.FetchLeaseStartedAt = &now
+	state.FetchLeaseHeartbeatAt = &now
+	state.FetchLeaseUntil = leasedUntil
 	return true, w.runFetchPass(ctx, state)
 }
 
 func (w *ChangeSyncWorker) processBackfillRepo(ctx context.Context) (bool, error) {
 	now := time.Now().UTC()
+	backfillAvailableSQL, backfillAvailableArgs := w.leases.reclaimableSQL(backfillLeaseKind, now)
+	fetchAvailableSQL, fetchAvailableArgs := w.leases.reclaimableSQL(fetchLeaseKind, now)
 	var state database.RepoChangeSyncState
 	err := w.db.WithContext(ctx).
-		Where("backfill_mode <> ? AND (backfill_lease_until IS NULL OR backfill_lease_until <= ?)", changeBackfillModeOff, now).
-		Where("fetch_lease_until IS NULL OR fetch_lease_until <= ?", now).
+		Where("backfill_mode <> ?", changeBackfillModeOff).
+		Where(backfillAvailableSQL, backfillAvailableArgs...).
+		Where(fetchAvailableSQL, fetchAvailableArgs...).
 		Where("last_backfill_finished_at IS NULL OR last_backfill_finished_at <= ?", now.Add(-w.openPRBackfillInterval)).
 		Order("backfill_priority DESC, last_backfill_finished_at ASC NULLS FIRST, repository_id ASC").
 		First(&state).Error
@@ -456,64 +476,78 @@ func (w *ChangeSyncWorker) processBackfillRepo(ctx context.Context) (bool, error
 		return false, err
 	}
 
-	leaseUntil := now.Add(w.leaseTTL)
-	result := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
-		Where("id = ? AND (backfill_lease_until IS NULL OR backfill_lease_until <= ?)", state.ID, now).
-		Updates(map[string]any{
-			"backfill_lease_until":     leaseUntil,
-			"last_backfill_started_at": now,
-			"updated_at":               now,
-		})
-	if result.Error != nil {
-		return false, result.Error
+	acquired, leasedUntil, err := w.leases.acquire(ctx, state.ID, backfillLeaseKind, now)
+	if err != nil {
+		return false, err
 	}
-	if result.RowsAffected == 0 {
+	if !acquired {
 		return false, nil
 	}
-	state.BackfillLeaseUntil = &leaseUntil
+	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
+		Where("id = ? AND backfill_lease_owner_id = ?", state.ID, w.leases.owner()).
+		Updates(map[string]any{
+			"last_backfill_started_at": now,
+			"updated_at":               now,
+		}).Error; err != nil {
+		return false, err
+	}
+	slog.Info("change sync backfill lease acquired", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "lease_until", leasedUntil)
+	state.BackfillLeaseOwnerID = w.leases.owner()
+	state.BackfillLeaseStartedAt = &now
+	state.BackfillLeaseHeartbeatAt = &now
+	state.BackfillLeaseUntil = leasedUntil
 	return true, w.runBackfillPass(ctx, state, false)
 }
 
 func (w *ChangeSyncWorker) runFetchPass(ctx context.Context, state database.RepoChangeSyncState) error {
-	repository, err := repositoryByID(ctx, w.db, state.RepositoryID)
-	if err != nil {
-		return w.finishFetchStateWithError(ctx, state, err)
-	}
-	owner, name, err := splitFullName(repository.FullName)
-	if err != nil {
-		return w.finishFetchStateWithError(ctx, state, err)
-	}
+	var result RepoBackfillResult
+	runErr := w.runWithLeaseHeartbeat(ctx, state.ID, fetchLeaseKind, func(passCtx context.Context) error {
+		repository, err := repositoryByID(passCtx, w.db, state.RepositoryID)
+		if err != nil {
+			return err
+		}
+		owner, name, err := splitFullName(repository.FullName)
+		if err != nil {
+			return err
+		}
 
-	result, err := w.service.syncOpenPullInventory(ctx, owner, name, repository.ID)
-	if err != nil {
-		return w.finishFetchStateWithError(ctx, state, err)
+		result, err = w.service.syncOpenPullInventory(passCtx, owner, name, repository.ID)
+		return err
+	})
+	if runErr != nil {
+		return w.finishFetchStateWithError(ctx, state, runErr)
 	}
 	return w.completeFetchPass(ctx, state, result)
 }
 
 func (w *ChangeSyncWorker) runBackfillPass(ctx context.Context, state database.RepoChangeSyncState, _ bool) error {
-	repository, err := repositoryByID(ctx, w.db, state.RepositoryID)
-	if err != nil {
-		return w.finishBackfillStateWithError(ctx, state, err)
-	}
-	owner, name, err := splitFullName(repository.FullName)
-	if err != nil {
-		return w.finishBackfillStateWithError(ctx, state, err)
-	}
+	var updates map[string]any
+	runErr := w.runWithLeaseHeartbeat(ctx, state.ID, backfillLeaseKind, func(passCtx context.Context) error {
+		repository, err := repositoryByID(passCtx, w.db, state.RepositoryID)
+		if err != nil {
+			return err
+		}
+		owner, name, err := splitFullName(repository.FullName)
+		if err != nil {
+			return err
+		}
 
-	result, err := w.service.BackfillOpenPullRequests(ctx, owner, name, state, RepoBackfillOptions{
-		MaxPRs:     w.maxPRs,
-		MaxRuntime: w.maxRuntime,
-		LeaseTTL:   w.leaseTTL,
+		result, err := w.service.BackfillOpenPullRequests(passCtx, owner, name, state, RepoBackfillOptions{
+			MaxPRs:     w.maxPRs,
+			MaxRuntime: w.maxRuntime,
+		})
+		if err != nil {
+			return err
+		}
+		updates = map[string]any{
+			"last_error":                "",
+			"open_pr_cursor_number":     result.NextCursorNum,
+			"open_pr_cursor_updated_at": result.NextCursorTime,
+		}
+		return nil
 	})
-	if err != nil {
-		return w.finishBackfillStateWithError(ctx, state, err)
-	}
-
-	updates := map[string]any{
-		"last_error":                "",
-		"open_pr_cursor_number":     result.NextCursorNum,
-		"open_pr_cursor_updated_at": result.NextCursorTime,
+	if runErr != nil {
+		return w.finishBackfillStateWithError(ctx, state, runErr)
 	}
 	return w.completeBackfillPass(ctx, state, updates)
 }
@@ -528,16 +562,16 @@ func (w *ChangeSyncWorker) completeFetchPass(ctx context.Context, state database
 		"open_pr_total":            result.OpenPRTotal,
 		"open_pr_current":          result.OpenPRCurrent,
 		"open_pr_stale":            result.OpenPRStale,
-		"fetch_lease_until":        nil,
 		"updated_at":               now,
 	}
 	if result.OpenPRCurrent == result.OpenPRTotal {
 		updates["open_pr_cursor_number"] = nil
 		updates["open_pr_cursor_updated_at"] = nil
 	}
-	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).Where("id = ?", state.ID).Updates(updates).Error; err != nil {
+	if err := w.leases.release(ctx, state.ID, fetchLeaseKind, updates); err != nil {
 		return err
 	}
+	slog.Info("change sync fetch pass completed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "open_pr_total", result.OpenPRTotal, "open_pr_current", result.OpenPRCurrent, "open_pr_stale", result.OpenPRStale)
 
 	clearDirty := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).Where("id = ?", state.ID)
 	if state.LastRequestedFetchAt != nil {
@@ -555,12 +589,12 @@ func (w *ChangeSyncWorker) completeFetchPass(ctx context.Context, state database
 
 func (w *ChangeSyncWorker) completeBackfillPass(ctx context.Context, state database.RepoChangeSyncState, updates map[string]any) error {
 	now := time.Now().UTC()
-	updates["backfill_lease_until"] = nil
 	updates["last_backfill_finished_at"] = now
-	updates["updated_at"] = now
-	return w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
-		Where("id = ?", state.ID).
-		Updates(updates).Error
+	if err := w.leases.release(ctx, state.ID, backfillLeaseKind, updates); err != nil {
+		return err
+	}
+	slog.Info("change sync backfill pass completed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner())
+	return nil
 }
 
 func (w *ChangeSyncWorker) finishFetchStateWithError(ctx context.Context, state database.RepoChangeSyncState, runErr error) error {
@@ -568,12 +602,11 @@ func (w *ChangeSyncWorker) finishFetchStateWithError(ctx context.Context, state 
 	updates := map[string]any{
 		"last_error":             runErr.Error(),
 		"last_fetch_finished_at": now,
-		"fetch_lease_until":      nil,
-		"updated_at":             now,
 	}
-	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).Where("id = ?", state.ID).Updates(updates).Error; err != nil {
+	if err := w.leases.release(ctx, state.ID, fetchLeaseKind, updates); err != nil {
 		return err
 	}
+	slog.Warn("change sync fetch pass failed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "error", runErr)
 	return runErr
 }
 
@@ -582,12 +615,11 @@ func (w *ChangeSyncWorker) finishBackfillStateWithError(ctx context.Context, sta
 	updates := map[string]any{
 		"last_error":                runErr.Error(),
 		"last_backfill_finished_at": now,
-		"backfill_lease_until":      nil,
-		"updated_at":                now,
 	}
-	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).Where("id = ?", state.ID).Updates(updates).Error; err != nil {
+	if err := w.leases.release(ctx, state.ID, backfillLeaseKind, updates); err != nil {
 		return err
 	}
+	slog.Warn("change sync backfill pass failed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "error", runErr)
 	return runErr
 }
 
@@ -932,19 +964,6 @@ func backfillFreshnessCategory(freshness string) string {
 	default:
 		return "stale"
 	}
-}
-
-func (s *Service) heartbeatBackfillLease(ctx context.Context, stateID uint, leaseTTL time.Duration) error {
-	if stateID == 0 || leaseTTL <= 0 {
-		return nil
-	}
-	now := time.Now().UTC()
-	return s.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
-		Where("id = ?", stateID).
-		Updates(map[string]any{
-			"backfill_lease_until": now.Add(leaseTTL),
-			"updated_at":           now,
-		}).Error
 }
 
 func intPtr(v int) *int {

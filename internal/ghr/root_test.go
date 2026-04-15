@@ -211,6 +211,8 @@ func TestChangesStatusCommands(t *testing.T) {
 	require.Contains(t, stdout, "acme/widgets change status")
 	require.Contains(t, stdout, "Backfill mode:")
 	require.Contains(t, stdout, "open_only")
+	require.Contains(t, stdout, "Fetch owner:")
+	require.Contains(t, stdout, "Backfill owner:")
 
 	cmd = NewRootCmd()
 	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "pr", "status", "2")
