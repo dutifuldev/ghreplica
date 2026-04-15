@@ -106,6 +106,8 @@ The current hosted instance runs on GCP with:
 - [CLI](docs/CLI.md)
 - [GitHub API Surface Research](docs/GITHUB_API_SURFACE.md)
 - [GitHub App Event Inventory](docs/GITHUB_APP_EVENTS.md)
+- [Git Ground Truth](docs/GIT_GROUND_TRUTH.md)
+- [2026-04-15 Git Ground Truth Implementation Plan](docs/2026-04-15_GIT_GROUND_TRUTH_IMPLEMENTATION_PLAN.md)
 - [Data Model For PR Triage](docs/DATA_MODEL.md)
 - [GCP Deployment](docs/DEPLOY_GCP.md)
 - [Local Development](docs/LOCAL_DEVELOPMENT.md)
