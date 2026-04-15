@@ -1,6 +1,6 @@
-# Desired Tests
+# TESTING
 
-This document describes the desired unit and integration test coverage for `ghreplica`.
+This document describes the unit and integration test strategy for `ghreplica`.
 
 It is intentionally focused on local, deterministic coverage:
 
@@ -9,6 +9,32 @@ It is intentionally focused on local, deterministic coverage:
 - fixture-based contract tests
 
 It does not cover live end-to-end or staging verification.
+
+## Fixture Policy
+
+Fixtures should come from two sources:
+
+- small synthetic payloads for focused behavior tests
+- sanitized real GitHub payloads that `ghreplica` has already received
+
+For webhook and response regression coverage, real received payloads are preferred whenever they capture shapes that are easy to miss in hand-written fixtures.
+
+That includes:
+
+- pull request payloads with complex nested `head` and `base` objects
+- review and review-comment payloads
+- issue comment payloads
+- repository rename and edit payloads
+- bot-authored reviews and comments
+
+These real payloads should be:
+
+- copied into `testdata/`
+- sanitized if needed
+- frozen as deterministic fixtures
+- used in offline tests only
+
+Normal CI should not depend on live GitHub state.
 
 ## Priorities
 
@@ -161,6 +187,8 @@ Add tests for:
 
 These should primarily be fixture-based HTTP handler tests.
 
+Where practical, use sanitized real GitHub responses and real webhook-derived payloads instead of synthetic-only fixtures.
+
 ## 6. CLI Coverage
 
 `ghr` should have strong output and behavior tests.
@@ -177,6 +205,8 @@ Add tests for:
 - repo-selection errors and argument-validation errors
 
 Golden-style snapshots are appropriate here as long as they are kept small and readable.
+
+CLI golden tests should prefer realistic mirrored payload fixtures so formatting stays aligned with the data shapes the service actually stores and returns.
 
 ## 7. Migrations And Schema Assumptions
 

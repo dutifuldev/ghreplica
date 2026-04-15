@@ -1,0 +1,28 @@
+{
+  "id": 4264603426,
+  "node_id": "I_kwDOQb6kR87-MK8i",
+  "number": 66797,
+  "title": "[Bug]: Group natural-language messages silently dropped in 2026.4.11 (regression of #29637/#30591)",
+  "body": "### Summary\n\nIn 2026.4.11, group natural-language messages are silently dropped between gateway intake and agent invocation. Slash commands (e.g. `/whoami`) in the same group do get processed and return a reply. DMs to the same bot work normally.\n\n### Environment\n\n- OpenClaw 2026.4.11 (`769908e`)\n- Telegram channel, long-polling\n- Bot privacy mode: disabled\n- Bot status in group: `member`\n- Group is a regular group\n\n### Observed behavior\n\n1. `/whoami` in the group works.\n2. Natural-language text in the same group gets no reply.\n3. `lastUpdateId` advances, so the gateway consumed the update.\n4. `sessions.json` is updated, but no JSONL file is created.\n5. No errors or skip reasons are logged.\n\n### Reproduction\n\n1. Fresh OpenClaw 2026.4.11 install\n2. Configure Telegram channel for the group\n3. Disable bot privacy mode\n4. Add bot to a regular group\n5. Send `/whoami` → reply appears\n6. Send `hello` → silent drop\n\n### Workaround in use\n\nBoth users DM the bot separately. That works, but loses the shared group conversation.",
+  "state": "open",
+  "state_reason": "",
+  "user": {
+    "avatar_url": "https://avatars.githubusercontent.com/u/37152866?v=4",
+    "html_url": "https://github.com/kpiyush88",
+    "id": 37152866,
+    "login": "kpiyush88",
+    "name": "",
+    "node_id": "MDQ6VXNlcjM3MTUyODY2",
+    "site_admin": false,
+    "type": "User",
+    "url": "https://api.github.com/users/kpiyush88"
+  },
+  "comments": 1,
+  "closed_at": null,
+  "created_at": "2026-04-14T20:37:17Z",
+  "updated_at": "2026-04-14T20:50:39Z",
+  "labels": null,
+  "html_url": "https://github.com/openclaw/openclaw/issues/66797",
+  "url": "https://api.github.com/repos/openclaw/openclaw/issues/66797",
+  "repository_url": null
+}

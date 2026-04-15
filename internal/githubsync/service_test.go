@@ -13,6 +13,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/github"
 	"github.com/dutifuldev/ghreplica/internal/githubsync"
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
+	"github.com/dutifuldev/ghreplica/internal/testfixtures"
 	"github.com/stretchr/testify/require"
 )
 
@@ -248,6 +249,70 @@ func TestTargetedSyncIssueAndPullRequest(t *testing.T) {
 	require.EqualValues(t, 1, issueComments)
 	require.EqualValues(t, 1, reviews)
 	require.EqualValues(t, 1, reviewComments)
+}
+
+func TestTargetedSyncWithRealFixturesPersistsDiscussionData(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	githubServer := httptest.NewServer(testfixtures.NewOpenClawGitHubHandler(t))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	require.NoError(t, service.SyncIssue(ctx, "openclaw", "openclaw", 66797))
+	require.NoError(t, service.SyncPullRequest(ctx, "openclaw", "openclaw", 66863))
+
+	var repo database.Repository
+	require.NoError(t, db.Where("full_name = ?", "openclaw/openclaw").First(&repo).Error)
+
+	var tracked database.TrackedRepository
+	require.NoError(t, db.Where("full_name = ?", "openclaw/openclaw").First(&tracked).Error)
+	require.Equal(t, "webhook_only", tracked.SyncMode)
+	require.Equal(t, "sparse", tracked.IssuesCompleteness)
+	require.Equal(t, "sparse", tracked.PullsCompleteness)
+	require.Equal(t, "sparse", tracked.CommentsCompleteness)
+	require.Equal(t, "sparse", tracked.ReviewsCompleteness)
+
+	var issues int64
+	var pulls int64
+	var issueComments int64
+	var reviews int64
+	var reviewComments int64
+	require.NoError(t, db.Model(&database.Issue{}).Where("repository_id = ?", repo.ID).Count(&issues).Error)
+	require.NoError(t, db.Model(&database.PullRequest{}).Where("repository_id = ?", repo.ID).Count(&pulls).Error)
+	require.NoError(t, db.Model(&database.IssueComment{}).Where("repository_id = ?", repo.ID).Count(&issueComments).Error)
+	require.NoError(t, db.Model(&database.PullRequestReview{}).Where("repository_id = ?", repo.ID).Count(&reviews).Error)
+	require.NoError(t, db.Model(&database.PullRequestReviewComment{}).Where("repository_id = ?", repo.ID).Count(&reviewComments).Error)
+	require.EqualValues(t, 2, issues)
+	require.EqualValues(t, 1, pulls)
+	require.EqualValues(t, 2, issueComments)
+	require.EqualValues(t, 1, reviews)
+	require.EqualValues(t, 2, reviewComments)
+
+	server := httpapi.NewServer(db, httpapi.Options{})
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/pulls/66863/reviews", nil)
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var apiReviews []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &apiReviews))
+	require.Len(t, apiReviews, 1)
+	require.Equal(t, "greptile-apps[bot]", apiReviews[0]["user"].(map[string]any)["login"])
+	require.Equal(t, "COMMENTED", apiReviews[0]["state"])
+
+	req = httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/pulls/66863/comments", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var apiReviewComments []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &apiReviewComments))
+	require.Len(t, apiReviewComments, 2)
+	require.Equal(t, "extensions/whatsapp/src/use-atomic-auth-state.ts", apiReviewComments[0]["path"])
+	require.EqualValues(t, 204, apiReviewComments[0]["line"])
 }
 
 func testDatabaseURL(t *testing.T) string {

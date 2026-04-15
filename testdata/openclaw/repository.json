@@ -1,0 +1,26 @@
+{
+  "id": 1103012935,
+  "node_id": "R_kgDOQb6kRw",
+  "name": "openclaw",
+  "full_name": "openclaw/openclaw",
+  "private": false,
+  "owner": {
+    "avatar_url": "https://avatars.githubusercontent.com/u/252820863?v=4",
+    "html_url": "https://github.com/openclaw",
+    "id": 252820863,
+    "login": "openclaw",
+    "name": "",
+    "node_id": "O_kgDODxG9fw",
+    "site_admin": false,
+    "type": "Organization",
+    "url": "https://api.github.com/users/openclaw"
+  },
+  "html_url": "https://github.com/openclaw/openclaw",
+  "description": "Your own personal AI assistant. Any OS. Any Platform. The lobster way. 🦞 ",
+  "fork": false,
+  "url": "https://api.github.com/repos/openclaw/openclaw",
+  "default_branch": "main",
+  "visibility": "public",
+  "created_at": "2025-11-24T10:16:47Z",
+  "updated_at": "2026-04-15T08:17:18Z"
+}

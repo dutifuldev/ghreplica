@@ -1,0 +1,31 @@
+{
+  "id": 4265260696,
+  "node_id": "PR_kwDOQb6kR87Sd09n",
+  "number": 66863,
+  "title": "fix(whatsapp): atomic auth state + socket keepalive tuning",
+  "body": "## Summary\n\n- Replace `useMultiFileAuthState` with a consolidated atomic auth store.\n- Tune Baileys socket config for connection persistence.\n- Batch rapid key writes with a debounce.\n\nRefs: #56054, #9544\n\n## Root Cause\n\n1. Keepalive timeout: the socket is too sensitive when the event loop is busy.\n2. Credential corruption: multi-file auth writes too many JSON files and corrupts on Windows.\n\n## Test plan\n\n- Verify atomic auth state migration\n- Verify fresh install bootstraps auth state\n- Verify backup rotation\n- Verify keepalive under inference load\n- Verify backward compatibility for test helpers",
+  "state": "open",
+  "state_reason": "",
+  "user": {
+    "avatar_url": "https://avatars.githubusercontent.com/u/96955022?v=4",
+    "html_url": "https://github.com/Yellowfish23",
+    "id": 96955022,
+    "login": "Yellowfish23",
+    "name": "",
+    "node_id": "U_kgDOBcdqjg",
+    "site_admin": false,
+    "type": "User",
+    "url": "https://api.github.com/users/Yellowfish23"
+  },
+  "comments": 1,
+  "closed_at": null,
+  "created_at": "2026-04-14T23:15:42Z",
+  "updated_at": "2026-04-14T23:34:11Z",
+  "labels": null,
+  "html_url": "https://github.com/openclaw/openclaw/pull/66863",
+  "url": "https://api.github.com/repos/openclaw/openclaw/issues/66863",
+  "repository_url": null,
+  "pull_request": {
+    "url": "https://api.github.com/repos/openclaw/openclaw/pulls/66863"
+  }
+}

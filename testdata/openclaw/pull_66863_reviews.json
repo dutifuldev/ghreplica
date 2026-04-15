@@ -1,0 +1,25 @@
+[
+  {
+    "id": 4109827861,
+    "node_id": "PRR_kwDOQb6kR8709v8V",
+    "user": {
+      "avatar_url": "https://avatars.githubusercontent.com/in/867647?v=4",
+      "html_url": "https://github.com/apps/greptile-apps",
+      "id": 165735046,
+      "login": "greptile-apps[bot]",
+      "name": "",
+      "node_id": "BOT_kgDOCeDqhg",
+      "site_admin": false,
+      "type": "Bot",
+      "url": "https://api.github.com/users/greptile-apps%5Bbot%5D"
+    },
+    "body": "",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/openclaw/openclaw/pull/66863#pullrequestreview-4109827861",
+    "url": "",
+    "commit_id": "45e230a59ccd8d3332ebd04a48906f10fb4682f0",
+    "submitted_at": "2026-04-14T23:19:23Z",
+    "created_at": "0001-01-01T00:00:00Z",
+    "updated_at": "0001-01-01T00:00:00Z"
+  }
+]

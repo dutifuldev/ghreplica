@@ -9,6 +9,7 @@ import (
 	"time"
 
 	gh "github.com/dutifuldev/ghreplica/internal/github"
+	"github.com/dutifuldev/ghreplica/internal/testfixtures"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
@@ -107,6 +108,59 @@ func TestPRViewCommentsOutput(t *testing.T) {
 	require.Contains(t, stdout, "Fix parser")
 	require.Contains(t, stdout, "Comments")
 	require.Contains(t, stdout, "I can reproduce this.")
+}
+
+func TestIssueAndPRCommandsWithRealFixtures(t *testing.T) {
+	server := newOpenClawTestServer(t)
+	cmd := NewRootCmd()
+
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "openclaw/openclaw", "issue", "view", "66797", "--comments")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "Group natural-language messages silently dropped")
+	require.Contains(t, stdout, "kpiyush88 commented")
+	require.Contains(t, stdout, "Still broken in 2026.4.14")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "openclaw/openclaw", "pr", "view", "66863", "--comments")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "fix(whatsapp): atomic auth state + socket keepalive tuning")
+	require.Contains(t, stdout, "Greptile Summary")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "openclaw/openclaw", "pr", "reviews", "66863")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "greptile-apps[bot] reviewed")
+	require.Contains(t, stdout, "(no review body)")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "openclaw/openclaw", "pr", "comments", "66863")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "greptile-apps[bot] commented on extensions/whatsapp/src/use-atomic-auth-state.ts:204")
+	require.Contains(t, stdout, "auth-state.json")
+}
+
+func TestPRReviewAndCommentJSONOutputWithRealFixtures(t *testing.T) {
+	server := newOpenClawTestServer(t)
+	cmd := NewRootCmd()
+
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "--repo", "openclaw/openclaw", "pr", "reviews", "66863", "--json", "id,state,user")
+	require.NoError(t, err)
+	var reviews []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &reviews))
+	require.Len(t, reviews, 1)
+	require.EqualValues(t, 4109827861, reviews[0]["id"])
+	require.Equal(t, "COMMENTED", reviews[0]["state"])
+	require.Equal(t, "greptile-apps[bot]", reviews[0]["user"].(map[string]any)["login"])
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "openclaw/openclaw", "pr", "comments", "66863", "--json", "id,body,user,path")
+	require.NoError(t, err)
+	var comments []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &comments))
+	require.Len(t, comments, 2)
+	require.EqualValues(t, 3083064505, comments[0]["id"])
+	require.Equal(t, "extensions/whatsapp/src/use-atomic-auth-state.ts", comments[0]["path"])
+	require.Equal(t, "greptile-apps[bot]", comments[0]["user"].(map[string]any)["login"])
 }
 
 func TestPRReviewsAndCommentsEmptyOutput(t *testing.T) {
@@ -254,6 +308,72 @@ func newTestServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/repos/acme/widgets/pulls/3/comments", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, reviewComments[:0])
+	})
+
+	return httptest.NewServer(mux)
+}
+
+func newOpenClawTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	repo := testfixtures.OpenClawRepository(t)
+	issue := testfixtures.OpenClawIssue66797(t)
+	issueComments := testfixtures.OpenClawIssue66797Comments(t)
+	prIssueComments := testfixtures.OpenClawIssue66863Comments(t)
+	pull := testfixtures.OpenClawPull66863(t)
+	reviews := testfixtures.OpenClawPull66863Reviews(t)
+	reviewComments := testfixtures.OpenClawPull66863ReviewComments(t)
+	status := MirrorStatusResponse{
+		FullName:                 "openclaw/openclaw",
+		RepositoryPresent:        true,
+		TrackedRepositoryPresent: true,
+		Enabled:                  true,
+		SyncMode:                 "webhook_only",
+		WebhookProjectionEnabled: true,
+		AllowManualBackfill:      false,
+		IssuesCompleteness:       "sparse",
+		PullsCompleteness:        "sparse",
+		CommentsCompleteness:     "sparse",
+		ReviewsCompleteness:      "sparse",
+		Counts: MirrorCountsResponse{
+			Issues:                    2,
+			Pulls:                     1,
+			IssueComments:             2,
+			PullRequestReviews:        1,
+			PullRequestReviewComments: 2,
+		},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/openclaw/openclaw", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, repo)
+	})
+	mux.HandleFunc("/repos/openclaw/openclaw/_ghreplica", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, status)
+	})
+	mux.HandleFunc("/repos/openclaw/openclaw/issues", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, []gh.IssueResponse{issue})
+	})
+	mux.HandleFunc("/repos/openclaw/openclaw/issues/66797", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, issue)
+	})
+	mux.HandleFunc("/repos/openclaw/openclaw/issues/66797/comments", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, issueComments)
+	})
+	mux.HandleFunc("/repos/openclaw/openclaw/pulls", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, []gh.PullRequestResponse{pull})
+	})
+	mux.HandleFunc("/repos/openclaw/openclaw/pulls/66863", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, pull)
+	})
+	mux.HandleFunc("/repos/openclaw/openclaw/issues/66863/comments", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, prIssueComments)
+	})
+	mux.HandleFunc("/repos/openclaw/openclaw/pulls/66863/reviews", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, reviews)
+	})
+	mux.HandleFunc("/repos/openclaw/openclaw/pulls/66863/comments", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, reviewComments)
 	})
 
 	return httptest.NewServer(mux)

@@ -1,0 +1,23 @@
+[
+  {
+    "id": 4247906454,
+    "node_id": "IC_kwDOQb6kR879MeiW",
+    "body": "<h3>Greptile Summary</h3>\n\nThis PR replaces `useMultiFileAuthState` with a single-file atomic auth store (`auth-state.json`) to fix Windows credential corruption, tunes Baileys keepalive and timeout parameters, and adds a debounced key-write path.\n\n- Fresh-install regression: `auth-state.json` is written, but older linked-state checks still look for `creds.json`.\n- Silent key loss on write failure: the debounce timer does not re-arm itself after a failed atomic write.\n\n<h3>Confidence Score: 3/5</h3>\n\nThe fresh-install regression should be addressed before merge because new users can appear unlinked after successful QR pairing.",
+    "user": {
+      "avatar_url": "https://avatars.githubusercontent.com/in/867647?v=4",
+      "html_url": "https://github.com/apps/greptile-apps",
+      "id": 165735046,
+      "login": "greptile-apps[bot]",
+      "name": "",
+      "node_id": "BOT_kgDOCeDqhg",
+      "site_admin": false,
+      "type": "Bot",
+      "url": "https://api.github.com/users/greptile-apps%5Bbot%5D"
+    },
+    "html_url": "https://github.com/openclaw/openclaw/pull/66863#issuecomment-4247906454",
+    "url": "https://api.github.com/repos/openclaw/openclaw/issues/comments/4247906454",
+    "issue_url": "https://api.github.com/repos/openclaw/openclaw/issues/66863",
+    "created_at": "2026-04-14T23:19:16Z",
+    "updated_at": "2026-04-14T23:19:16Z"
+  }
+]

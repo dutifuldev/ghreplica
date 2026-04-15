@@ -1,0 +1,23 @@
+[
+  {
+    "id": 4247061765,
+    "node_id": "IC_kwDOQb6kR879JQUF",
+    "body": "**Still broken in 2026.4.14** — upgraded today, exact same symptoms.\n\n- Group session key registered in `sessions.json`\n- No JSONL file is created for that session\n- No log entries when natural-language messages arrive\n- `lastUpdateId` advances, so the gateway consumes the update\n- Slash commands still work in the same group\n- DMs to the same bot still work fine\n\nSame config as filed, no changes needed.",
+    "user": {
+      "avatar_url": "https://avatars.githubusercontent.com/u/37152866?v=4",
+      "html_url": "https://github.com/kpiyush88",
+      "id": 37152866,
+      "login": "kpiyush88",
+      "name": "",
+      "node_id": "MDQ6VXNlcjM3MTUyODY2",
+      "site_admin": false,
+      "type": "User",
+      "url": "https://api.github.com/users/kpiyush88"
+    },
+    "html_url": "https://github.com/openclaw/openclaw/issues/66797#issuecomment-4247061765",
+    "url": "https://api.github.com/repos/openclaw/openclaw/issues/comments/4247061765",
+    "issue_url": "https://api.github.com/repos/openclaw/openclaw/issues/66797",
+    "created_at": "2026-04-14T20:50:39Z",
+    "updated_at": "2026-04-14T20:50:39Z"
+  }
+]

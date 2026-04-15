@@ -11,6 +11,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/github"
 	"github.com/dutifuldev/ghreplica/internal/githubsync"
+	"github.com/dutifuldev/ghreplica/internal/testfixtures"
 	"github.com/dutifuldev/ghreplica/internal/webhooks"
 	"github.com/stretchr/testify/require"
 )
@@ -142,6 +143,162 @@ func TestWebhookIngestionProjectsIssueCommentPayload(t *testing.T) {
 	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&tracked).Error)
 	require.Equal(t, "sparse", tracked.IssuesCompleteness)
 	require.Equal(t, "sparse", tracked.CommentsCompleteness)
+}
+
+func TestWebhookIngestionProjectsReviewAndReviewCommentPayloadsFromRealFixtures(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
+
+	repo := testfixtures.OpenClawRepository(t)
+	pull := testfixtures.OpenClawPull66863(t)
+	review := testfixtures.OpenClawPull66863Reviews(t)[0]
+	reviewComment := testfixtures.OpenClawPull66863ReviewComments(t)[0]
+
+	reviewPayload, err := json.Marshal(map[string]any{
+		"action":       "submitted",
+		"repository":   repo,
+		"pull_request": pull,
+		"review":       review,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review", "pull_request_review", http.Header{"X-GitHub-Event": []string{"pull_request_review"}}, reviewPayload))
+
+	reviewCommentPayload, err := json.Marshal(map[string]any{
+		"action":       "created",
+		"repository":   repo,
+		"pull_request": pull,
+		"comment":      reviewComment,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-comment", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, reviewCommentPayload))
+
+	var storedRepo database.Repository
+	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&storedRepo).Error)
+
+	var reviews int64
+	var reviewComments int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.PullRequestReview{}).Where("repository_id = ?", storedRepo.ID).Count(&reviews).Error)
+	require.NoError(t, db.WithContext(ctx).Model(&database.PullRequestReviewComment{}).Where("repository_id = ?", storedRepo.ID).Count(&reviewComments).Error)
+	require.EqualValues(t, 1, reviews)
+	require.EqualValues(t, 1, reviewComments)
+
+	var tracked database.TrackedRepository
+	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&tracked).Error)
+	require.Equal(t, "sparse", tracked.PullsCompleteness)
+	require.Equal(t, "sparse", tracked.ReviewsCompleteness)
+	require.Equal(t, "sparse", tracked.CommentsCompleteness)
+}
+
+func TestWebhookIngestionUpsertsIssueCommentAcrossDeliveries(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
+
+	repo := testfixtures.OpenClawRepository(t)
+	issue := testfixtures.OpenClawIssue66797(t)
+	comment := testfixtures.OpenClawIssue66797Comments(t)[0]
+
+	payload, err := json.Marshal(map[string]any{
+		"action":     "created",
+		"repository": repo,
+		"issue":      issue,
+		"comment":    comment,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-issue-comment-1", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload))
+
+	edited := comment
+	edited.Body = "Updated issue comment body from an edited delivery."
+	payload, err = json.Marshal(map[string]any{
+		"action":     "edited",
+		"repository": repo,
+		"issue":      issue,
+		"comment":    edited,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-issue-comment-2", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload))
+
+	var comments []database.IssueComment
+	require.NoError(t, db.WithContext(ctx).Order("github_id ASC").Find(&comments).Error)
+	require.Len(t, comments, 1)
+	require.Equal(t, edited.Body, comments[0].Body)
+}
+
+func TestWebhookIngestionDeletesIssueAndReviewComments(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
+
+	repo := testfixtures.OpenClawRepository(t)
+	issue := testfixtures.OpenClawIssue66797(t)
+	issueComment := testfixtures.OpenClawIssue66797Comments(t)[0]
+
+	payload, err := json.Marshal(map[string]any{
+		"action":     "created",
+		"repository": repo,
+		"issue":      issue,
+		"comment":    issueComment,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-issue-comment-create", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload))
+
+	payload, err = json.Marshal(map[string]any{
+		"action":     "deleted",
+		"repository": repo,
+		"issue":      issue,
+		"comment":    issueComment,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-issue-comment-delete", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload))
+
+	pullIssue := testfixtures.OpenClawIssue66863(t)
+	pull := testfixtures.OpenClawPull66863(t)
+	reviewComment := testfixtures.OpenClawPull66863ReviewComments(t)[0]
+
+	payload, err = json.Marshal(map[string]any{
+		"action":       "created",
+		"repository":   repo,
+		"pull_request": pull,
+		"comment":      reviewComment,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-comment-create", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, payload))
+
+	payload, err = json.Marshal(map[string]any{
+		"action":       "deleted",
+		"repository":   repo,
+		"pull_request": pull,
+		"comment":      reviewComment,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-comment-delete", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, payload))
+
+	var issueComments int64
+	var reviewComments int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.IssueComment{}).Count(&issueComments).Error)
+	require.NoError(t, db.WithContext(ctx).Model(&database.PullRequestReviewComment{}).Count(&reviewComments).Error)
+	require.Zero(t, issueComments)
+	require.Zero(t, reviewComments)
+
+	var issueRows int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.Issue{}).Where("number IN ?", []int{issue.Number, pullIssue.Number}).Count(&issueRows).Error)
+	require.EqualValues(t, 2, issueRows)
 }
 
 func repoFixture() github.RepositoryResponse {

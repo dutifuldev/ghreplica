@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
+	"github.com/dutifuldev/ghreplica/internal/github"
+	"github.com/dutifuldev/ghreplica/internal/githubsync"
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
+	"github.com/dutifuldev/ghreplica/internal/testfixtures"
 	"github.com/stretchr/testify/require"
 )
 
@@ -188,4 +191,67 @@ func TestMirrorStatusEndpoint(t *testing.T) {
 	require.EqualValues(t, 1, counts["issue_comments"])
 	require.EqualValues(t, 1, counts["pull_request_reviews"])
 	require.EqualValues(t, 1, counts["pull_request_review_comments"])
+}
+
+func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open("sqlite://file::memory:?cache=shared")
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	githubServer := httptest.NewServer(testfixtures.NewOpenClawGitHubHandler(t))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	require.NoError(t, service.SyncIssue(ctx, "openclaw", "openclaw", 66797))
+	require.NoError(t, service.SyncPullRequest(ctx, "openclaw", "openclaw", 66863))
+
+	server := httpapi.NewServer(db, httpapi.Options{})
+
+	req := httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/pulls/66863", nil)
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var pull map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &pull))
+	head := pull["head"].(map[string]any)
+	base := pull["base"].(map[string]any)
+	require.Equal(t, "fix/whatsapp-connection-stability", head["ref"])
+	require.Equal(t, "main", base["ref"])
+	require.Equal(t, "Yellowfish23/openclaw", head["repo"].(map[string]any)["full_name"])
+	require.Equal(t, "openclaw/openclaw", base["repo"].(map[string]any)["full_name"])
+	require.Equal(t, "Yellowfish23", pull["user"].(map[string]any)["login"])
+
+	req = httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/pulls/66863/reviews", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var reviews []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &reviews))
+	require.Len(t, reviews, 1)
+	require.Equal(t, "greptile-apps[bot]", reviews[0]["user"].(map[string]any)["login"])
+
+	req = httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/pulls/66863/comments", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var reviewComments []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &reviewComments))
+	require.Len(t, reviewComments, 2)
+	require.Equal(t, "extensions/whatsapp/src/use-atomic-auth-state.ts", reviewComments[0]["path"])
+	require.EqualValues(t, 204, reviewComments[0]["line"])
+
+	req = httptest.NewRequest(http.MethodGet, "/repos/openclaw/openclaw/issues/66797/comments", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var issueComments []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &issueComments))
+	require.Len(t, issueComments, 1)
+	require.Equal(t, "kpiyush88", issueComments[0]["user"].(map[string]any)["login"])
 }

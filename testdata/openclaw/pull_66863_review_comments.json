@@ -1,0 +1,56 @@
+[
+  {
+    "id": 3083064505,
+    "node_id": "PRRC_kwDOQb6kR863w9S5",
+    "pull_request_url": "https://api.github.com/repos/openclaw/openclaw/pulls/66863",
+    "pull_request_review_id": 4109827861,
+    "html_url": "https://github.com/openclaw/openclaw/pull/66863#discussion_r3083064505",
+    "url": "https://api.github.com/repos/openclaw/openclaw/pulls/comments/3083064505",
+    "body": "Fresh installs now write only `auth-state.json`, but linked-state helpers still check `creds.json`. After QR pairing, the session can look unpaired even though the socket is authenticated.",
+    "path": "extensions/whatsapp/src/use-atomic-auth-state.ts",
+    "diff_hunk": "@@ -190,16 +190,22 @@ export async function useAtomicAuthState(folder: string) {",
+    "line": 204,
+    "original_line": 204,
+    "side": "RIGHT",
+    "user": {
+      "avatar_url": "https://avatars.githubusercontent.com/in/867647?v=4",
+      "html_url": "https://github.com/apps/greptile-apps",
+      "id": 165735046,
+      "login": "greptile-apps[bot]",
+      "name": "",
+      "node_id": "BOT_kgDOCeDqhg",
+      "site_admin": false,
+      "type": "Bot",
+      "url": "https://api.github.com/users/greptile-apps%5Bbot%5D"
+    },
+    "created_at": "2026-04-14T23:19:20Z",
+    "updated_at": "2026-04-14T23:19:23Z"
+  },
+  {
+    "id": 3083064542,
+    "node_id": "PRRC_kwDOQb6kR863w9Te",
+    "pull_request_url": "https://api.github.com/repos/openclaw/openclaw/pulls/66863",
+    "pull_request_review_id": 4109827861,
+    "html_url": "https://github.com/openclaw/openclaw/pull/66863#discussion_r3083064542",
+    "url": "https://api.github.com/repos/openclaw/openclaw/pulls/comments/3083064542",
+    "body": "If the atomic write fails inside the debounce timer, the pending key material can be lost unless another update arrives to re-arm the write.",
+    "path": "extensions/whatsapp/src/use-atomic-auth-state.ts",
+    "diff_hunk": "@@ -214,20 +220,20 @@ export async function useAtomicAuthState(folder: string) {",
+    "line": 231,
+    "original_line": 231,
+    "side": "RIGHT",
+    "user": {
+      "avatar_url": "https://avatars.githubusercontent.com/in/867647?v=4",
+      "html_url": "https://github.com/apps/greptile-apps",
+      "id": 165735046,
+      "login": "greptile-apps[bot]",
+      "name": "",
+      "node_id": "BOT_kgDOCeDqhg",
+      "site_admin": false,
+      "type": "Bot",
+      "url": "https://api.github.com/users/greptile-apps%5Bbot%5D"
+    },
+    "created_at": "2026-04-14T23:19:21Z",
+    "updated_at": "2026-04-14T23:19:23Z"
+  }
+]
