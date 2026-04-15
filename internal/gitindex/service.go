@@ -175,22 +175,21 @@ func (s *Service) syncRefs(ctx context.Context, repositoryID uint, mirrorPath, b
 		return err
 	}
 
-	forEachArgs := append([]string{"for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)%00%(*objectname)%00"}, refPatterns...)
+	forEachArgs := append([]string{"for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)%00%(*objectname)"}, refPatterns...)
 	out, err := s.runGit(ctx, mirrorPath, forEachArgs...)
 	if err != nil {
 		return err
 	}
-	tokens := splitNULTokens(out)
 	now := time.Now().UTC()
-	for i := 0; i+4 < len(tokens); i += 5 {
+	for _, tokens := range parseForEachRefRecords(out) {
 		ref := database.GitRef{
 			RepositoryID:    repositoryID,
-			RefName:         strings.TrimSpace(tokens[i]),
-			TargetOID:       strings.TrimSpace(tokens[i+1]),
-			TargetType:      strings.TrimSpace(tokens[i+2]),
-			SymbolicTarget:  strings.TrimSpace(tokens[i+3]),
-			PeeledCommitSHA: strings.TrimSpace(tokens[i+4]),
-			IsSymbolic:      strings.TrimSpace(tokens[i+3]) != "",
+			RefName:         strings.TrimSpace(tokens[0]),
+			TargetOID:       strings.TrimSpace(tokens[1]),
+			TargetType:      strings.TrimSpace(tokens[2]),
+			SymbolicTarget:  strings.TrimSpace(tokens[3]),
+			PeeledCommitSHA: strings.TrimSpace(tokens[4]),
+			IsSymbolic:      strings.TrimSpace(tokens[3]) != "",
 			UpdatedAt:       now,
 		}
 		if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
@@ -746,6 +745,19 @@ func splitNULTokens(raw []byte) []string {
 			continue
 		}
 		out = append(out, string(part))
+	}
+	return out
+}
+
+func parseForEachRefRecords(raw []byte) [][]string {
+	lines := splitLines(raw)
+	out := make([][]string, 0, len(lines))
+	for _, line := range lines {
+		fields := strings.Split(line, "\x00")
+		if len(fields) < 5 {
+			continue
+		}
+		out = append(out, fields[:5])
 	}
 	return out
 }

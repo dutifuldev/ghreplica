@@ -38,12 +38,12 @@ func TestIndexPullRequestBuildsSnapshotAndCommitIndexes(t *testing.T) {
 
 	var refs []database.GitRef
 	require.NoError(t, db.WithContext(ctx).Where("repository_id = ?", repo.ID).Order("ref_name ASC").Find(&refs).Error)
-	require.NotEmpty(t, refs)
 	refNames := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		refNames = append(refNames, ref.RefName)
 	}
 	require.Contains(t, refNames, "refs/pull/101/head")
+	require.Contains(t, refNames, "refs/remotes/origin/main")
 
 	var files []database.PullRequestChangeFile
 	require.NoError(t, db.WithContext(ctx).Where("snapshot_id = ?", snapshot.ID).Order("path ASC").Find(&files).Error)
