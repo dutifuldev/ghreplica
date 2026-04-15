@@ -77,10 +77,10 @@ It should contain:
 - refs
 - commits
 - commit parents
-- commit file changes
-- commit diff hunks
-- commit line ranges
+- commit-parent file changes
+- commit-parent diff hunks
 - PR head/base SHA mappings
+- PR merge-base SHA mappings
 - PR-level rolled-up change indexes
 - search and overlap tables derived from those indexes
 
@@ -153,14 +153,19 @@ For each indexed commit, store:
 - commit SHA
 - parent SHAs
 - commit metadata
-- changed file paths
+- per-parent diff rows for changed file paths
 - file status: added, modified, removed, renamed
 - previous path for renames
 - patch text or patch-derived metadata
-- parsed hunks
-- touched line ranges
+- parsed hunks with old and new line ranges
 
 This is the durable, stable basis for all higher-level features.
+
+Important detail:
+
+- a commit does not have one universal diff
+- merge commits can have multiple parents
+- any commit-level change index must therefore be keyed by commit and parent edge, not just by commit SHA
 
 ## PR-Level Materialized Change View
 
@@ -170,6 +175,7 @@ For each PR, store a derived current change view keyed by:
 - PR number
 - current head SHA
 - current base SHA
+- current merge-base SHA
 
 This view should roll up:
 
@@ -208,11 +214,10 @@ The exact names can be finalized during implementation, but the model should inc
 - `git_refs`
 - `git_commits`
 - `git_commit_parents`
-- `git_commit_files`
-- `git_commit_hunks`
-- `git_commit_line_ranges`
+- `git_commit_parent_files`
+- `git_commit_parent_hunks`
 - `pull_request_heads`
-- `pull_request_change_sets`
+- `pull_request_change_snapshots`
 - `pull_request_change_files`
 - `pull_request_change_hunks`
 - `pull_request_overlap_cache`
@@ -220,9 +225,10 @@ The exact names can be finalized during implementation, but the model should inc
 Important indexing requirements:
 
 - repository plus commit SHA
+- repository plus commit SHA plus parent edge
 - repository plus path
 - repository plus PR number
-- GiST indexes for line-range overlap
+- GiST indexes for hunk line-range overlap
 
 ## Concrete Schema Rules
 
@@ -261,6 +267,51 @@ So for these tables:
 - preserve GitHub relationships such as issue-to-PR linkage
 - preserve URLs, state fields, and timestamps in GitHub terms
 
+The important published shapes to preserve are:
+
+- pull request file objects from GitHub's pull-files and compare responses
+  - `sha`
+  - `filename`
+  - `previous_filename`
+  - `status`
+  - `additions`
+  - `deletions`
+  - `changes`
+  - `blob_url`
+  - `raw_url`
+  - `contents_url`
+  - `patch`
+- pull request review objects
+  - `id`
+  - `node_id`
+  - `body`
+  - `state`
+  - `html_url`
+  - `pull_request_url`
+  - `submitted_at`
+  - `commit_id`
+  - `author_association`
+- pull request review comment objects
+  - `pull_request_review_id`
+  - `commit_id`
+  - `original_commit_id`
+  - `diff_hunk`
+  - `path`
+  - `position`
+  - `original_position`
+  - `line`
+  - `original_line`
+  - `start_line`
+  - `original_start_line`
+  - `side`
+  - `start_side`
+  - `in_reply_to_id`
+  - `author_association`
+  - `html_url`
+  - `pull_request_url`
+
+That means the current canonical tables should grow to hold these published GitHub fields before `/v1/github/...` is treated as stable.
+
 ### 2. Git-Shaped Tables
 
 These tables should follow Git's own object model.
@@ -276,7 +327,11 @@ A concrete shape should look roughly like:
 - `git_refs`
   - `repository_id`
   - `ref_name`
-  - `target_sha`
+  - `target_oid`
+  - `target_type`
+  - `peeled_commit_sha`
+  - `is_symbolic`
+  - `symbolic_target`
   - `updated_at`
 
 - `git_commits`
@@ -286,10 +341,13 @@ A concrete shape should look roughly like:
   - `author_name`
   - `author_email`
   - `authored_at`
+  - `authored_timezone_offset`
   - `committer_name`
   - `committer_email`
   - `committed_at`
+  - `committed_timezone_offset`
   - `message`
+  - `message_encoding`
 
 - `git_commit_parents`
   - `repository_id`
@@ -300,10 +358,16 @@ A concrete shape should look roughly like:
 Motivation:
 
 - commits and refs are already defined by Git
+- refs are broader than branch heads and can be symbolic or point at tag objects
 - commit SHA is the stable identity for code state
 - branch names and PR numbers are not stable enough to be the base truth
 
 These tables should be a relational mirror of Git, not a new abstraction layer.
+
+Two further rules matter here:
+
+- do not model a commit as if it stored a built-in diff, because Git stores snapshots plus parent links
+- do not create relational `git_trees` or `git_blobs` tables unless a product query truly needs them, because the bare mirror already stores that object graph
 
 ### 3. Derived Change Index Tables
 
@@ -313,30 +377,36 @@ These tables do not exist in GitHub or Git as first-class queryable entities, bu
 
 Examples:
 
-- `git_commit_files`
-- `git_commit_hunks`
-- `git_commit_line_ranges`
+- `git_commit_parent_files`
+- `git_commit_parent_hunks`
 - `pull_request_heads`
-- `pull_request_change_sets`
+- `pull_request_change_snapshots`
 - `pull_request_change_files`
 - `pull_request_change_hunks`
 - `pull_request_overlap_cache`
 
 A concrete shape should look roughly like:
 
-- `git_commit_files`
+- `git_commit_parent_files`
   - `repository_id`
   - `commit_sha`
+  - `parent_sha`
+  - `parent_index`
   - `path`
   - `previous_path`
   - `status`
+  - `blob_sha`
+  - `previous_blob_sha`
   - `additions`
   - `deletions`
+  - `changes`
   - `patch_text`
 
-- `git_commit_hunks`
+- `git_commit_parent_hunks`
   - `repository_id`
   - `commit_sha`
+  - `parent_sha`
+  - `parent_index`
   - `path`
   - `hunk_index`
   - `old_start`
@@ -344,19 +414,15 @@ A concrete shape should look roughly like:
   - `new_start`
   - `new_count`
   - `diff_hunk`
-
-- `git_commit_line_ranges`
-  - `repository_id`
-  - `commit_sha`
-  - `path`
-  - `side`
-  - `line_range`
+  - `old_line_range`
+  - `new_line_range`
 
 - `pull_request_heads`
   - `repository_id`
   - `pull_request_number`
   - `head_sha`
   - `base_sha`
+  - `merge_base_sha`
   - `updated_at`
 
 - `pull_request_change_files`
@@ -364,23 +430,32 @@ A concrete shape should look roughly like:
   - `pull_request_number`
   - `head_sha`
   - `base_sha`
+  - `merge_base_sha`
   - `path`
   - `previous_path`
   - `status`
+  - `head_blob_sha`
+  - `base_blob_sha`
   - `additions`
   - `deletions`
+  - `changes`
+  - `patch_text`
 
 - `pull_request_change_hunks`
   - `repository_id`
   - `pull_request_number`
   - `head_sha`
   - `base_sha`
+  - `merge_base_sha`
   - `path`
   - `hunk_index`
+  - `diff_hunk`
   - `old_start`
   - `old_count`
   - `new_start`
   - `new_count`
+  - `old_line_range`
+  - `new_line_range`
 
 Motivation:
 
@@ -389,6 +464,11 @@ Motivation:
 - GitHub does not provide a reusable search schema for them either
 - this is the right place to define `ghreplica`-specific storage
 
+The important design constraint is:
+
+- do not introduce a separate `line_ranges` table unless profiling proves the hunk tables are not enough
+- the hunk rows already carry the real overlap boundaries, and Postgres range indexes can live directly on those rows
+
 ### 4. PR-Level Materialized View Tables
 
 PR-level query state should be treated as a materialized view over Git truth.
@@ -396,7 +476,7 @@ PR-level query state should be treated as a materialized view over Git truth.
 Examples:
 
 - `pull_request_heads`
-- `pull_request_change_sets`
+- `pull_request_change_snapshots`
 - `pull_request_change_files`
 - `pull_request_change_hunks`
 
@@ -423,8 +503,8 @@ Recommended pattern:
 
 - `repositories`, `issues`, `pull_requests`
 - `git_refs`, `git_commits`, `git_commit_parents`
-- `git_commit_files`, `git_commit_hunks`, `git_commit_line_ranges`
-- `pull_request_heads`, `pull_request_change_files`, `pull_request_change_hunks`
+- `git_commit_parent_files`, `git_commit_parent_hunks`
+- `pull_request_heads`, `pull_request_change_snapshots`, `pull_request_change_files`, `pull_request_change_hunks`
 
 This keeps the storage model readable:
 

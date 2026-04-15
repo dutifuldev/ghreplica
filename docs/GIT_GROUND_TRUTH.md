@@ -53,12 +53,12 @@ It should store:
 - refs and their current SHAs
 - commits
 - commit parent relationships
-- commit-level changed files
-- parsed diff hunks
-- touched line ranges
+- commit-parent changed files
+- commit-parent diff hunks with old and new line ranges
 - rename links
 - PR-to-head-SHA mappings
 - PR-to-base-SHA mappings
+- PR-to-merge-base-SHA mappings
 - materialized PR-level rolled-up change indexes
 
 Postgres should answer product queries like:
@@ -85,9 +85,15 @@ So the foundational indexed unit should be:
 
 - commit SHA
 
+For change rows, that means:
+
+- commit SHA plus parent edge
+
+This matters because merge commits can have multiple parents, and there is no single built-in "commit diff" object in Git.
+
 From there, `ghreplica` can build:
 
-- the current change set for a PR head
+- the current change snapshot for a PR head
 - the combined touched paths for a PR
 - similarity and overlap features between PRs
 
@@ -99,6 +105,7 @@ That means:
 
 - a PR points to a current head SHA
 - a PR points to a current base SHA
+- a PR points to a current merge base SHA
 - the PR change index is rebuilt or incrementally updated when those SHAs change
 
 This gives two useful levels:
@@ -110,19 +117,19 @@ The PR view is what most product features should query first.
 
 ## Change Index
 
-For each commit, `ghreplica` should derive and store:
+For each commit-parent edge, `ghreplica` should derive and store:
 
 - changed file paths
 - file status: added, modified, removed, renamed
 - previous path for renames
 - patch text or parsed patch metadata
 - hunk boundaries
-- touched line ranges
+- old and new line ranges on those hunks
 - optional tokenized patch features
 
 For each PR, `ghreplica` should derive and store:
 
-- rolled-up changed file paths for the current head/base pair
+- rolled-up changed file paths for the current head/base/merge-base tuple
 - rolled-up touched line ranges
 - current diff statistics
 - state such as open, closed, merged, draft
