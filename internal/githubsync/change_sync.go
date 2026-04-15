@@ -62,19 +62,19 @@ func NewChangeSyncWorker(db *gorm.DB, service *Service, pollInterval, webhookFet
 		webhookFetchDebounce = 3 * time.Second
 	}
 	if repoMinFetchInterval <= 0 {
-		repoMinFetchInterval = 15 * time.Second
+		repoMinFetchInterval = time.Minute
 	}
 	if openPRBackfillInterval <= 0 {
-		openPRBackfillInterval = time.Minute
+		openPRBackfillInterval = 5 * time.Second
 	}
 	if leaseTTL <= 0 {
-		leaseTTL = 5 * time.Minute
+		leaseTTL = 15 * time.Minute
 	}
 	if maxRuntime <= 0 {
-		maxRuntime = 30 * time.Second
+		maxRuntime = 3 * time.Minute
 	}
 	if maxPRs <= 0 {
-		maxPRs = 10
+		maxPRs = 25
 	}
 	return &ChangeSyncWorker{
 		db:                     db,
@@ -290,10 +290,10 @@ func (s *Service) BackfillOpenPullRequests(ctx context.Context, owner, repo stri
 		return RepoBackfillResult{}, errors.New("git index service is not configured")
 	}
 	if options.MaxPRs <= 0 {
-		options.MaxPRs = 10
+		options.MaxPRs = 25
 	}
 	if options.MaxRuntime <= 0 {
-		options.MaxRuntime = 30 * time.Second
+		options.MaxRuntime = 3 * time.Minute
 	}
 
 	repository, err := findRepositoryByName(ctx, s.db, owner, repo)

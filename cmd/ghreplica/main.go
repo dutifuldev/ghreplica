@@ -20,6 +20,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
 	"github.com/dutifuldev/ghreplica/internal/refresh"
 	"github.com/dutifuldev/ghreplica/internal/webhooks"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -69,7 +70,7 @@ func runServe(cfg config.Config) error {
 		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
 		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
 	})
-	gitIndex := gitindex.NewService(db, githubClient, cfg.GitMirrorRoot)
+	gitIndex := newGitIndexService(db, githubClient, cfg)
 	githubSync := githubsync.NewService(db, githubClient, gitIndex)
 	webhookIngestor := webhooks.NewService(db, githubSync)
 	worker := refresh.NewWorker(db, githubSync, 2*time.Second)
@@ -157,7 +158,7 @@ func runSync(cfg config.Config, args []string) error {
 		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
 		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
 	})
-	service := githubsync.NewService(db, client, gitindex.NewService(db, client, cfg.GitMirrorRoot))
+	service := githubsync.NewService(db, client, newGitIndexService(db, client, cfg))
 
 	switch rest[0] {
 	case "repo":
@@ -274,9 +275,13 @@ func runBackfill(cfg config.Config, args []string) error {
 		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
 		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
 	})
-	service := githubsync.NewService(db, client, gitindex.NewService(db, client, cfg.GitMirrorRoot))
+	service := githubsync.NewService(db, client, newGitIndexService(db, client, cfg))
 	_, err = service.ConfigureRepoBackfill(context.Background(), owner, repo, *mode, *priority)
 	return err
+}
+
+func newGitIndexService(db *gorm.DB, client *github.Client, cfg config.Config) *gitindex.Service {
+	return gitindex.NewService(db, client, cfg.GitMirrorRoot).WithIndexTimeout(cfg.GitIndexTimeout)
 }
 
 func usageError() error {

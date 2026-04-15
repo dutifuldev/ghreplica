@@ -12,6 +12,7 @@ type Config struct {
 	AppAddr                 string
 	DatabaseURL             string
 	GitMirrorRoot           string
+	GitIndexTimeout         time.Duration
 	GitHubBaseURL           string
 	GitHubToken             string
 	GitHubAppID             string
@@ -33,6 +34,7 @@ func Load() Config {
 		AppAddr:                 getenvDefault("APP_ADDR", "127.0.0.1:8080"),
 		DatabaseURL:             strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		GitMirrorRoot:           getenvDefault("GIT_MIRROR_ROOT", ".data/git-mirrors"),
+		GitIndexTimeout:         durationDefault("GIT_INDEX_TIMEOUT", 5*time.Minute),
 		GitHubBaseURL:           getenvDefault("GITHUB_BASE_URL", "https://api.github.com"),
 		GitHubToken:             strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
 		GitHubAppID:             strings.TrimSpace(os.Getenv("GITHUB_APP_ID")),
@@ -42,11 +44,11 @@ func Load() Config {
 		GitHubWebhookSecret:     strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET")),
 		ChangeSyncPollInterval:  durationDefault("CHANGE_SYNC_POLL_INTERVAL", 5*time.Second),
 		WebhookFetchDebounce:    durationDefault("WEBHOOK_FETCH_DEBOUNCE", 3*time.Second),
-		RepoMinFetchInterval:    durationDefault("REPO_MIN_FETCH_INTERVAL", 15*time.Second),
-		RepoLeaseTTL:            durationDefault("REPO_CHANGE_LEASE_TTL", 5*time.Minute),
-		OpenPRBackfillInterval:  durationDefault("OPEN_PR_BACKFILL_INTERVAL", time.Minute),
-		RepoBackfillMaxRuntime:  durationDefault("REPO_BACKFILL_MAX_RUNTIME", 30*time.Second),
-		RepoBackfillMaxPRs:      intDefault("REPO_BACKFILL_MAX_PRS", 10),
+		RepoMinFetchInterval:    durationDefault("REPO_MIN_FETCH_INTERVAL", time.Minute),
+		RepoLeaseTTL:            durationDefault("REPO_CHANGE_LEASE_TTL", 15*time.Minute),
+		OpenPRBackfillInterval:  durationDefault("OPEN_PR_BACKFILL_INTERVAL", 5*time.Second),
+		RepoBackfillMaxRuntime:  durationDefault("REPO_BACKFILL_MAX_RUNTIME", 3*time.Minute),
+		RepoBackfillMaxPRs:      intDefault("REPO_BACKFILL_MAX_PRS", 25),
 	}
 }
 
