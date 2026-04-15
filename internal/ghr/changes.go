@@ -12,9 +12,46 @@ func newChangesCmd(opts *RootOptions) *cobra.Command {
 		Use:   "changes",
 		Short: "Read normalized git change data from ghreplica",
 	}
+	cmd.AddCommand(newChangesRepoCmd(opts))
 	cmd.AddCommand(newChangesPRCmd(opts))
 	cmd.AddCommand(newChangesCommitCmd(opts))
 	cmd.AddCommand(newChangesCompareCmd(opts))
+	return cmd
+}
+
+func newChangesRepoCmd(opts *RootOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "repo",
+		Short: "Read repository-level change index status",
+	}
+	cmd.AddCommand(newChangesRepoStatusCmd(opts))
+	return cmd
+}
+
+func newChangesRepoStatusCmd(opts *RootOptions) *cobra.Command {
+	var jsonFields string
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show repository change-index status",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			client := clientFor(opts)
+			status, err := client.GetRepoChangeStatus(context.Background(), repo)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(jsonFields) != "" {
+				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
+			}
+			printRepoChangeStatus(cmd.OutOrStdout(), status)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
 	return cmd
 }
 
@@ -23,8 +60,40 @@ func newChangesPRCmd(opts *RootOptions) *cobra.Command {
 		Use:   "pr",
 		Short: "Read indexed pull request change data",
 	}
+	cmd.AddCommand(newChangesPRStatusCmd(opts))
 	cmd.AddCommand(newChangesPRViewCmd(opts))
 	cmd.AddCommand(newChangesPRFilesCmd(opts))
+	return cmd
+}
+
+func newChangesPRStatusCmd(opts *RootOptions) *cobra.Command {
+	var jsonFields string
+	cmd := &cobra.Command{
+		Use:   "status <number>",
+		Short: "Show pull request change-index status",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := resolveRepo("", opts)
+			if err != nil {
+				return err
+			}
+			number, err := resolveNumberArg(args[0])
+			if err != nil {
+				return err
+			}
+			client := clientFor(opts)
+			status, err := client.GetPullRequestChangeStatus(context.Background(), repo, number)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(jsonFields) != "" {
+				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
+			}
+			printPullRequestChangeStatus(cmd.OutOrStdout(), repo, status)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
 	return cmd
 }
 

@@ -314,6 +314,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&PullRequestChangeSnapshot{},
 		&PullRequestChangeFile{},
 		&PullRequestChangeHunk{},
+		&RepoChangeSyncState{},
 		&WebhookDelivery{},
 		&RepositoryRefreshJob{},
 	)

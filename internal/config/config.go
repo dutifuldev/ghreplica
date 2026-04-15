@@ -3,7 +3,9 @@ package config
 import (
 	"errors"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -17,6 +19,13 @@ type Config struct {
 	GitHubAppPrivateKeyPEM  string
 	GitHubAppPrivateKeyPath string
 	GitHubWebhookSecret     string
+	ChangeSyncPollInterval  time.Duration
+	WebhookFetchDebounce    time.Duration
+	RepoMinFetchInterval    time.Duration
+	RepoLeaseTTL            time.Duration
+	OpenPRBackfillInterval  time.Duration
+	RepoBackfillMaxRuntime  time.Duration
+	RepoBackfillMaxPRs      int
 }
 
 func Load() Config {
@@ -31,6 +40,13 @@ func Load() Config {
 		GitHubAppPrivateKeyPEM:  strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_PEM")),
 		GitHubAppPrivateKeyPath: strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH")),
 		GitHubWebhookSecret:     strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET")),
+		ChangeSyncPollInterval:  durationDefault("CHANGE_SYNC_POLL_INTERVAL", 5*time.Second),
+		WebhookFetchDebounce:    durationDefault("WEBHOOK_FETCH_DEBOUNCE", 3*time.Second),
+		RepoMinFetchInterval:    durationDefault("REPO_MIN_FETCH_INTERVAL", 15*time.Second),
+		RepoLeaseTTL:            durationDefault("REPO_CHANGE_LEASE_TTL", 5*time.Minute),
+		OpenPRBackfillInterval:  durationDefault("OPEN_PR_BACKFILL_INTERVAL", time.Minute),
+		RepoBackfillMaxRuntime:  durationDefault("REPO_BACKFILL_MAX_RUNTIME", 30*time.Second),
+		RepoBackfillMaxPRs:      intDefault("REPO_BACKFILL_MAX_PRS", 10),
 	}
 }
 
@@ -58,4 +74,28 @@ func getenvDefault(key, fallback string) string {
 	}
 
 	return value
+}
+
+func durationDefault(key string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func intDefault(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }

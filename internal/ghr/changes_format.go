@@ -9,6 +9,62 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/gitindex"
 )
 
+func printRepoChangeStatus(out io.Writer, status RepoChangeStatusResponse) {
+	fmt.Fprintf(out, "%s change status\n", status.FullName)
+	fmt.Fprintln(out)
+	tw := newTabWriter(out)
+	fmt.Fprintf(tw, "Dirty:\t%t\n", status.Dirty)
+	fmt.Fprintf(tw, "Backfill mode:\t%s\n", status.BackfillMode)
+	fmt.Fprintf(tw, "Priority:\t%d\n", status.BackfillPriority)
+	fmt.Fprintf(tw, "Fetch in progress:\t%t\n", status.FetchInProgress)
+	fmt.Fprintf(tw, "Backfill in progress:\t%t\n", status.BackfillInProgress)
+	fmt.Fprintf(tw, "Open PRs total:\t%d\n", status.OpenPRTotal)
+	fmt.Fprintf(tw, "Open PRs current:\t%d\n", status.OpenPRCurrent)
+	fmt.Fprintf(tw, "Open PRs stale:\t%d\n", status.OpenPRStale)
+	fmt.Fprintf(tw, "Open PRs missing:\t%d\n", status.OpenPRMissing)
+	fmt.Fprintf(tw, "Cursor PR:\t%s\n", intPtrString(status.OpenPRCursorNumber))
+	fmt.Fprintf(tw, "Cursor updated:\t%s\n", humanTimePtr(status.OpenPRCursorUpdatedAt))
+	fmt.Fprintf(tw, "Dirty since:\t%s\n", humanTimePtr(status.DirtySince))
+	fmt.Fprintf(tw, "Last webhook:\t%s\n", humanTimePtr(status.LastWebhookAt))
+	fmt.Fprintf(tw, "Last fetch requested:\t%s\n", humanTimePtr(status.LastRequestedFetchAt))
+	fmt.Fprintf(tw, "Last fetch started:\t%s\n", humanTimePtr(status.LastFetchStartedAt))
+	fmt.Fprintf(tw, "Last fetch finished:\t%s\n", humanTimePtr(status.LastFetchFinishedAt))
+	fmt.Fprintf(tw, "Last successful fetch:\t%s\n", humanTimePtr(status.LastSuccessfulFetchAt))
+	fmt.Fprintf(tw, "Last backfill started:\t%s\n", humanTimePtr(status.LastBackfillStartedAt))
+	fmt.Fprintf(tw, "Last backfill finished:\t%s\n", humanTimePtr(status.LastBackfillFinishedAt))
+	fmt.Fprintf(tw, "Last open PR scan:\t%s\n", humanTimePtr(status.LastOpenPRScanAt))
+	fmt.Fprintf(tw, "Last error:\t%s\n", coalesce(status.LastError, "-"))
+	_ = tw.Flush()
+}
+
+func printPullRequestChangeStatus(out io.Writer, repo string, status PullRequestChangeStatusResponse) {
+	fmt.Fprintf(out, "%s change status\n", formatPullRef(repo, status.PullRequestNumber))
+	fmt.Fprintln(out)
+	tw := newTabWriter(out)
+	fmt.Fprintf(tw, "Indexed:\t%t\n", status.Indexed)
+	fmt.Fprintf(tw, "State:\t%s\n", coalesce(status.State, "-"))
+	fmt.Fprintf(tw, "Draft:\t%t\n", status.Draft)
+	fmt.Fprintf(tw, "Head SHA:\t%s\n", coalesce(status.HeadSHA, "-"))
+	fmt.Fprintf(tw, "Base SHA:\t%s\n", coalesce(status.BaseSHA, "-"))
+	fmt.Fprintf(tw, "Merge base:\t%s\n", coalesce(status.MergeBaseSHA, "-"))
+	fmt.Fprintf(tw, "Base ref:\t%s\n", coalesce(status.BaseRef, "-"))
+	fmt.Fprintf(tw, "Indexed as:\t%s\n", coalesce(status.IndexedAs, "-"))
+	fmt.Fprintf(tw, "Freshness:\t%s\n", coalesce(status.IndexFreshness, "-"))
+	fmt.Fprintf(tw, "Changed files:\t%d\n", status.ChangedFiles)
+	fmt.Fprintf(tw, "Indexed files:\t%d\n", status.IndexedFileCount)
+	fmt.Fprintf(tw, "Path-only files:\t%d\n", status.PathOnlyFileCount)
+	fmt.Fprintf(tw, "Skipped files:\t%d\n", status.SkippedFileCount)
+	fmt.Fprintf(tw, "Hunks:\t%d\n", status.HunkCount)
+	fmt.Fprintf(tw, "Additions:\t%d\n", status.Additions)
+	fmt.Fprintf(tw, "Deletions:\t%d\n", status.Deletions)
+	fmt.Fprintf(tw, "Patch bytes:\t%d\n", status.PatchBytes)
+	fmt.Fprintf(tw, "Backfill in progress:\t%t\n", status.BackfillInProgress)
+	fmt.Fprintf(tw, "Repo dirty:\t%t\n", status.RepoDirty)
+	fmt.Fprintf(tw, "Last indexed:\t%s\n", humanTimePtr(status.LastIndexedAt))
+	fmt.Fprintf(tw, "Last error:\t%s\n", coalesce(status.LastError, "-"))
+	_ = tw.Flush()
+}
+
 func printPullRequestChangeSnapshot(out io.Writer, repo string, snapshot PullRequestChangeSnapshotResponse) {
 	fmt.Fprintf(out, "%s change snapshot\n", formatPullRef(repo, snapshot.PullRequestNumber))
 	fmt.Fprintln(out)
@@ -190,4 +246,11 @@ func intFromMap(m map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+func intPtrString(v *int) string {
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d", *v)
 }

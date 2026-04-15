@@ -45,7 +45,9 @@ Implemented today:
   - pull request reviews
   - pull request review comments
 - `/v1/changes/...`
+  - repo change-index status
   - pull request change snapshots
+  - pull request change-index status
   - pull request file lists
   - commit metadata
   - commit file lists
@@ -84,6 +86,8 @@ ghr issue list -R openclaw/openclaw --state all
 ghr issue view -R openclaw/openclaw 66797 --comments
 ghr pr list -R openclaw/openclaw --state all
 ghr pr view -R openclaw/openclaw 66863 --comments
+ghr changes repo status -R openclaw/openclaw
+ghr changes pr status -R openclaw/openclaw 59883
 ghr changes pr view -R openclaw/openclaw 59883
 ghr changes pr files -R openclaw/openclaw 59883
 ghr changes compare -R openclaw/openclaw main...5a3d3e54d93a03ee6f775d0010d1b1c433b34a23
@@ -113,6 +117,7 @@ Manual sync:
 go run ./cmd/ghreplica sync repo dutifuldev/ghreplica
 go run ./cmd/ghreplica sync issue openclaw/openclaw 66797
 go run ./cmd/ghreplica sync pr openclaw/openclaw 66863
+go run ./cmd/ghreplica backfill repo openclaw/openclaw --mode open_only
 ```
 
 Build the read CLI:
@@ -141,6 +146,7 @@ The current hosted instance runs on GCP with:
 - [GitHub App Event Inventory](docs/GITHUB_APP_EVENTS.md)
 - [Git Ground Truth](docs/GIT_GROUND_TRUTH.md)
 - [2026-04-15 Git Ground Truth Implementation Plan](docs/2026-04-15-git-ground-truth-implementation-plan.md)
+- [2026-04-15 Gradual Index Fill Design](docs/2026-04-15-gradual-index-fill-design.md)
 - [Data Model For PR Triage](docs/DATA_MODEL.md)
 - [GCP Deployment](docs/DEPLOY_GCP.md)
 - [Local Development](docs/LOCAL_DEVELOPMENT.md)

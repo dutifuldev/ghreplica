@@ -611,6 +611,92 @@ A PR snapshot is only current if all of these still match:
 
 If any of them change, the current snapshot must be superseded.
 
+### Index Status API
+
+The change-index layer must expose its own status explicitly.
+
+This is required because a search miss is otherwise ambiguous.
+
+Without status endpoints, clients cannot tell the difference between:
+
+- no overlap exists
+- the relevant PR was never indexed
+- the snapshot exists but is stale
+- the snapshot exists only as `paths_only`
+- the snapshot failed and needs repair
+
+The clean place for this is the change namespace, not the GitHub namespace.
+
+The required routes are:
+
+- `GET /v1/changes/repos/{owner}/{repo}/status`
+- `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}/status`
+
+These endpoints are `ghreplica` product surface, not GitHub compatibility surface.
+
+The repo-level status should report:
+
+- whether the repo has a mirror
+- whether the mirror is healthy
+- last fetch time
+- last successful index time
+- whether a fetch or rebuild is in progress
+- counts of indexed PRs by state:
+  - open
+  - closed
+  - merged
+- counts of snapshots by indexing level:
+  - `full`
+  - `mixed`
+  - `paths_only`
+  - `oversized`
+  - `failed`
+- counts of snapshots by freshness:
+  - `current`
+  - `stale_head_changed`
+  - `stale_base_moved`
+  - `stale_merge_base_changed`
+  - `rebuilding`
+  - `failed`
+- whether repo-wide coverage is complete for the configured target set, for example all open PRs
+
+The PR-level status should report:
+
+- `pull_request_number`
+- `head_sha`
+- `base_sha`
+- `merge_base_sha`
+- `indexed_as`
+- `index_freshness`
+- `indexed_at`
+- `last_attempted_at`
+- whether a rebuild is currently running
+- per-file coarse coverage counts, for example:
+  - `fully_indexed_file_count`
+  - `path_only_file_count`
+  - `skipped_file_count`
+- aggregate diff counts:
+  - `changed_files`
+  - `additions`
+  - `deletions`
+  - `hunk_count`
+- the reason for degraded indexing where relevant, for example:
+  - `patch_too_large`
+  - `line_count_too_large`
+  - `rename_limit_exceeded`
+  - `binary_only`
+
+These endpoints should be cheap reads from the materialized PR snapshot tables and repo-level bookkeeping tables.
+
+They should not trigger indexing work on read.
+
+The primary motivation is operational honesty:
+
+- search results become interpretable
+- CLI output can explain missing matches
+- operators can tell whether a repo needs backfill or repair
+- downstream tools can decide when to trust range-overlap results versus path-only results
+
 ### Worker Concurrency And Safety
 
 The worker design must assume concurrent events.

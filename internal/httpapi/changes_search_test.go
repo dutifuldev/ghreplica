@@ -9,9 +9,11 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/github"
+	"github.com/dutifuldev/ghreplica/internal/githubsync"
 	"github.com/dutifuldev/ghreplica/internal/gitindex"
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
 	"github.com/dutifuldev/ghreplica/internal/testfixtures"
@@ -201,6 +203,69 @@ func TestChangeAndSearchEndpointsUseIndexedGitData(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &byRanges))
 	require.Len(t, byRanges, 2)
 	require.ElementsMatch(t, []any{float64(101), float64(102)}, []any{byRanges[0]["pull_request_number"], byRanges[1]["pull_request_number"]})
+}
+
+func TestChangeStatusEndpoints(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	repo, pulls := seedRepositoryAndPullRequests(t, db, fixture)
+	indexer := gitindex.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}), filepath.Join(t.TempDir(), "mirrors"))
+	require.NoError(t, indexer.IndexPullRequest(ctx, "acme", "widgets", repo, pulls[101]))
+
+	now := time.Now().UTC()
+	cursorNumber := 102
+	cursorUpdatedAt := now.Add(-time.Minute)
+	require.NoError(t, db.Create(&database.RepoChangeSyncState{
+		RepositoryID:           repo.ID,
+		Dirty:                  true,
+		DirtySince:             &now,
+		LastWebhookAt:          &now,
+		LastRequestedFetchAt:   &now,
+		LastFetchStartedAt:     &now,
+		LastFetchFinishedAt:    &now,
+		LastSuccessfulFetchAt:  &now,
+		LastBackfillStartedAt:  &now,
+		LastBackfillFinishedAt: &now,
+		LastOpenPRScanAt:       &now,
+		OpenPRTotal:            3,
+		OpenPRCurrent:          1,
+		OpenPRStale:            1,
+		OpenPRCursorNumber:     &cursorNumber,
+		OpenPRCursorUpdatedAt:  &cursorUpdatedAt,
+		BackfillMode:           "open_only",
+		BackfillPriority:       5,
+	}).Error)
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}), indexer)
+	server := httpapi.NewServer(db, httpapi.Options{ChangeStatus: service})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/changes/repos/acme/widgets/status", nil)
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var repoStatus map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &repoStatus))
+	require.Equal(t, "acme/widgets", repoStatus["full_name"])
+	require.EqualValues(t, 3, repoStatus["open_pr_total"])
+	require.EqualValues(t, 1, repoStatus["open_pr_current"])
+	require.EqualValues(t, 1, repoStatus["open_pr_stale"])
+	require.EqualValues(t, 1, repoStatus["open_pr_missing"])
+	require.Equal(t, "open_only", repoStatus["backfill_mode"])
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/changes/repos/acme/widgets/pulls/101/status", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var prStatus map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &prStatus))
+	require.EqualValues(t, 101, prStatus["pull_request_number"])
+	require.Equal(t, true, prStatus["indexed"])
+	require.Equal(t, "current", prStatus["index_freshness"])
+	require.EqualValues(t, 2, prStatus["changed_files"])
 }
 
 func seedRepositoryAndPullRequests(t *testing.T, db *gorm.DB, fixture testfixtures.LocalPullRepo) (database.Repository, map[int]database.PullRequest) {

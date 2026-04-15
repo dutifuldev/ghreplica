@@ -81,6 +81,38 @@ type searchByRangesRequest struct {
 	Limit  int           `json:"limit"`
 }
 
+func (s *Server) handleGetRepoChangeStatus(c echo.Context) error {
+	if s.changeStatus == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "Change status is not configured"})
+	}
+	status, err := s.changeStatus.GetRepoChangeStatus(c.Request().Context(), c.Param("owner"), c.Param("repo"))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+		return err
+	}
+	return c.JSON(http.StatusOK, status)
+}
+
+func (s *Server) handleGetPullRequestChangeStatus(c echo.Context) error {
+	if s.changeStatus == nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "Change status is not configured"})
+	}
+	number := parsePositiveInt(c.Param("number"), 0)
+	if number <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid pull request number"})
+	}
+	status, err := s.changeStatus.GetPullRequestChangeStatus(c.Request().Context(), c.Param("owner"), c.Param("repo"), number)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+		return err
+	}
+	return c.JSON(http.StatusOK, status)
+}
+
 func (s *Server) handleGetPullRequestChangeSnapshot(c echo.Context) error {
 	repo, snapshot, err := s.loadSnapshot(c)
 	if err != nil {

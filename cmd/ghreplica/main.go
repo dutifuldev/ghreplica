@@ -41,6 +41,8 @@ func run(args []string) error {
 		return runServe(cfg)
 	case "migrate":
 		return runMigrate(cfg, args[1:])
+	case "backfill":
+		return runBackfill(cfg, args[1:])
 	case "refresh":
 		return runRefresh(cfg, args[1:])
 	case "sync":
@@ -71,10 +73,22 @@ func runServe(cfg config.Config) error {
 	githubSync := githubsync.NewService(db, githubClient, gitIndex)
 	webhookIngestor := webhooks.NewService(db, githubSync)
 	worker := refresh.NewWorker(db, githubSync, 2*time.Second)
+	changeSyncWorker := githubsync.NewChangeSyncWorker(
+		db,
+		githubSync,
+		cfg.ChangeSyncPollInterval,
+		cfg.WebhookFetchDebounce,
+		cfg.RepoMinFetchInterval,
+		cfg.OpenPRBackfillInterval,
+		cfg.RepoLeaseTTL,
+		cfg.RepoBackfillMaxRuntime,
+		cfg.RepoBackfillMaxPRs,
+	)
 
 	server := httpapi.NewServer(db, httpapi.Options{
 		GitHubWebhookSecret: cfg.GitHubWebhookSecret,
 		WebhookIngestor:     webhookIngestor,
+		ChangeStatus:        githubSync,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -83,6 +97,12 @@ func runServe(cfg config.Config) error {
 	go func() {
 		if err := worker.Start(ctx); err != nil && ctx.Err() == nil {
 			slog.Error("refresh worker stopped", "error", err)
+			stop()
+		}
+	}()
+	go func() {
+		if err := changeSyncWorker.Start(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("change sync worker stopped", "error", err)
 			stop()
 		}
 	}()
@@ -213,10 +233,49 @@ func runRefresh(cfg config.Config, args []string) error {
 	})
 }
 
+func runBackfill(cfg config.Config, args []string) error {
+	backfillFlags := flag.NewFlagSet("backfill", flag.ContinueOnError)
+	mode := backfillFlags.String("mode", "open_only", "backfill mode")
+	priority := backfillFlags.Int("priority", 0, "backfill priority")
+	if err := backfillFlags.Parse(args); err != nil {
+		return err
+	}
+
+	rest := backfillFlags.Args()
+	if len(rest) != 2 || rest[0] != "repo" {
+		return errors.New("usage: ghreplica backfill repo <owner>/<repo> [--mode open_only] [--priority N]")
+	}
+
+	owner, repo, err := config.ParseFullName(rest[1])
+	if err != nil {
+		return err
+	}
+	if err := cfg.ValidateDatabase(); err != nil {
+		return err
+	}
+
+	db, err := database.Open(cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+
+	client := github.NewClient(cfg.GitHubBaseURL, github.AuthConfig{
+		Token:          cfg.GitHubToken,
+		AppID:          cfg.GitHubAppID,
+		InstallationID: cfg.GitHubInstallationID,
+		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
+		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
+	})
+	service := githubsync.NewService(db, client, gitindex.NewService(db, client, cfg.GitMirrorRoot))
+	_, err = service.ConfigureRepoBackfill(context.Background(), owner, repo, *mode, *priority)
+	return err
+}
+
 func usageError() error {
 	fmt.Fprintf(os.Stderr, "usage:\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica serve\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica migrate up\n")
+	fmt.Fprintf(os.Stderr, "  ghreplica backfill repo <owner>/<repo> [--mode open_only] [--priority N]\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica refresh repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica sync repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica sync issue <owner>/<repo> <number>\n")

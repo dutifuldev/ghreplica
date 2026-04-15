@@ -63,6 +63,8 @@ Current command shape:
 - `ghr pr comments`
 - `ghr repo status`
 - `ghr repo view`
+- `ghr changes repo status`
+- `ghr changes pr status`
 - `ghr changes pr view`
 - `ghr changes pr files`
 - `ghr changes commit view`
@@ -86,6 +88,8 @@ ghr pr list -R openclaw/openclaw --state all
 ghr pr view -R openclaw/openclaw 66863 --comments
 ghr pr reviews -R openclaw/openclaw 66795
 ghr pr comments -R openclaw/openclaw 66795
+ghr changes repo status -R openclaw/openclaw
+ghr changes pr status -R openclaw/openclaw 59883
 ghr changes pr view -R openclaw/openclaw 59883
 ghr changes pr files -R openclaw/openclaw 59883
 ghr changes commit view -R openclaw/openclaw 5a3d3e54d93a03ee6f775d0010d1b1c433b34a23
@@ -131,6 +135,10 @@ That keeps GitHub-shaped reads separate from normalized git-change reads and `gh
 
 ### Git change surface
 
+- `ghr changes repo status -R <owner>/<repo>`
+  - `GET /v1/changes/repos/{owner}/{repo}/status`
+- `ghr changes pr status -R <owner>/<repo> <number>`
+  - `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}/status`
 - `ghr changes pr view -R <owner>/<repo> <number>`
   - `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}`
 - `ghr changes pr files -R <owner>/<repo> <number>`
@@ -163,6 +171,16 @@ That means surfacing fields like:
 - `matched_ranges`
 - `indexed_as`
 - `index_freshness`
+
+The `changes ... status` commands should surface indexing truth directly, including:
+
+- `indexed_as`
+- `index_freshness`
+- `indexed_at`
+- `head_sha`
+- `base_sha`
+- `merge_base_sha`
+- coverage counts that explain whether range-overlap search is trustworthy for that PR or repo
 
 ## Compatibility Expectations
 
