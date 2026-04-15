@@ -224,6 +224,214 @@ Important indexing requirements:
 - repository plus PR number
 - GiST indexes for line-range overlap
 
+## Concrete Schema Rules
+
+The schema should follow one simple rule:
+
+- do not invent schemas where GitHub already defines one
+- do not invent schemas where Git already defines one
+- only define custom schema for derived query and search data
+
+This keeps the storage model defensible and easy to reason about.
+
+### 1. GitHub-Shaped Tables
+
+These tables should stay close to GitHub's resource model.
+
+Examples:
+
+- `repositories`
+- `users`
+- `issues`
+- `pull_requests`
+- `issue_comments`
+- `pull_request_reviews`
+- `pull_request_review_comments`
+
+Motivation:
+
+- these objects already have an external contract
+- clients already expect GitHub-like shapes and identities
+- `ghreplica` should not create a second invented model for them
+
+So for these tables:
+
+- keep GitHub IDs
+- keep GitHub field names where practical
+- preserve GitHub relationships such as issue-to-PR linkage
+- preserve URLs, state fields, and timestamps in GitHub terms
+
+### 2. Git-Shaped Tables
+
+These tables should follow Git's own object model.
+
+Examples:
+
+- `git_refs`
+- `git_commits`
+- `git_commit_parents`
+
+A concrete shape should look roughly like:
+
+- `git_refs`
+  - `repository_id`
+  - `ref_name`
+  - `target_sha`
+  - `updated_at`
+
+- `git_commits`
+  - `repository_id`
+  - `sha`
+  - `tree_sha`
+  - `author_name`
+  - `author_email`
+  - `authored_at`
+  - `committer_name`
+  - `committer_email`
+  - `committed_at`
+  - `message`
+
+- `git_commit_parents`
+  - `repository_id`
+  - `commit_sha`
+  - `parent_sha`
+  - `parent_index`
+
+Motivation:
+
+- commits and refs are already defined by Git
+- commit SHA is the stable identity for code state
+- branch names and PR numbers are not stable enough to be the base truth
+
+These tables should be a relational mirror of Git, not a new abstraction layer.
+
+### 3. Derived Change Index Tables
+
+This is where `ghreplica` should define its own schema.
+
+These tables do not exist in GitHub or Git as first-class queryable entities, but they are needed for overlap and search features.
+
+Examples:
+
+- `git_commit_files`
+- `git_commit_hunks`
+- `git_commit_line_ranges`
+- `pull_request_heads`
+- `pull_request_change_sets`
+- `pull_request_change_files`
+- `pull_request_change_hunks`
+- `pull_request_overlap_cache`
+
+A concrete shape should look roughly like:
+
+- `git_commit_files`
+  - `repository_id`
+  - `commit_sha`
+  - `path`
+  - `previous_path`
+  - `status`
+  - `additions`
+  - `deletions`
+  - `patch_text`
+
+- `git_commit_hunks`
+  - `repository_id`
+  - `commit_sha`
+  - `path`
+  - `hunk_index`
+  - `old_start`
+  - `old_count`
+  - `new_start`
+  - `new_count`
+  - `diff_hunk`
+
+- `git_commit_line_ranges`
+  - `repository_id`
+  - `commit_sha`
+  - `path`
+  - `side`
+  - `line_range`
+
+- `pull_request_heads`
+  - `repository_id`
+  - `pull_request_number`
+  - `head_sha`
+  - `base_sha`
+  - `updated_at`
+
+- `pull_request_change_files`
+  - `repository_id`
+  - `pull_request_number`
+  - `head_sha`
+  - `base_sha`
+  - `path`
+  - `previous_path`
+  - `status`
+  - `additions`
+  - `deletions`
+
+- `pull_request_change_hunks`
+  - `repository_id`
+  - `pull_request_number`
+  - `head_sha`
+  - `base_sha`
+  - `path`
+  - `hunk_index`
+  - `old_start`
+  - `old_count`
+  - `new_start`
+  - `new_count`
+
+Motivation:
+
+- these are the actual query surfaces for file and range overlap
+- Git itself does not provide a relational query model for these concepts
+- GitHub does not provide a reusable search schema for them either
+- this is the right place to define `ghreplica`-specific storage
+
+### 4. PR-Level Materialized View Tables
+
+PR-level query state should be treated as a materialized view over Git truth.
+
+Examples:
+
+- `pull_request_heads`
+- `pull_request_change_sets`
+- `pull_request_change_files`
+- `pull_request_change_hunks`
+
+Motivation:
+
+- product queries are often phrased in PR terms
+- commits are the stable truth, but PRs are the main user-facing query object
+- force-push and rebase support requires current PR state to be rebuilt from current head/base SHAs
+
+The rule here is:
+
+- commit-level tables are the durable raw layer
+- PR-level tables are the current rolled-up layer
+
+### 5. Naming Guidance
+
+Use naming that makes the layer obvious:
+
+- GitHub resources: plain names or `github_*` only if needed for clarity
+- Git truth: `git_*`
+- derived index/search tables: `change_*`, `overlap_*`, or PR-specific names
+
+Recommended pattern:
+
+- `repositories`, `issues`, `pull_requests`
+- `git_refs`, `git_commits`, `git_commit_parents`
+- `git_commit_files`, `git_commit_hunks`, `git_commit_line_ranges`
+- `pull_request_heads`, `pull_request_change_files`, `pull_request_change_hunks`
+
+This keeps the storage model readable:
+
+- what came from GitHub
+- what came from Git
+- what `ghreplica` derived for search
+
 ## Worker Responsibilities
 
 The git/index worker should do all of the following:
