@@ -25,7 +25,7 @@ const (
 	indexedAsOversized = "oversized"
 	indexedAsFailed    = "failed"
 
-	defaultIndexTimeout = 2 * time.Minute
+	defaultIndexTimeout = 5 * time.Minute
 
 	freshnessCurrent          = "current"
 	freshnessStaleHeadChanged = "stale_head_changed"
@@ -54,6 +54,13 @@ func NewService(db *gorm.DB, githubClient *gh.Client, mirrorRoot string) *Servic
 		gitBin:       "git",
 		indexTimeout: defaultIndexTimeout,
 	}
+}
+
+func (s *Service) WithIndexTimeout(timeout time.Duration) *Service {
+	if timeout > 0 {
+		s.indexTimeout = timeout
+	}
+	return s
 }
 
 func (s *Service) IndexPullRequest(ctx context.Context, owner, repo string, repository database.Repository, pull database.PullRequest) error {
