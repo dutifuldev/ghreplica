@@ -9,7 +9,7 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/ghreplica ./cmd/ghreplica
 
-FROM node:22-alpine AS astgrep
+FROM node:22-bookworm-slim AS astgrep
 
 WORKDIR /opt/ast-grep
 
@@ -17,10 +17,15 @@ RUN npm init -y >/dev/null 2>&1 \
     && npm install @ast-grep/cli@0.42.1 >/dev/null 2>&1 \
     && cp node_modules/@ast-grep/cli/ast-grep /out-ast-grep
 
-FROM alpine:3.22
+FROM debian:bookworm-slim
 
-RUN addgroup -S ghreplica && adduser -S -G ghreplica ghreplica \
-    && apk add --no-cache ca-certificates tzdata git
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN groupadd --system ghreplica \
+    && useradd --system --gid ghreplica --home-dir /app ghreplica \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata git \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
