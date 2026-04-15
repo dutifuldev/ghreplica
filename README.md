@@ -1,6 +1,10 @@
-# ghreplica
+<p align="center">
+  <img src="assets/ghreplica-logo.svg" alt="ghreplica logo" width="180">
+</p>
 
-`ghreplica` is a durable GitHub mirror for tooling.
+<h1 align="center">ghreplica</h1>
+
+<p align="center">Durable GitHub mirror for tooling.</p>
 
 It keeps GitHub-shaped repository data in local storage, uses Git as ground truth for change indexing, and serves a stable read API and CLI so downstream tools do not need to build their own webhook handlers, crawlers, and caches.
 
@@ -118,6 +122,29 @@ The current runtime model has a few requirements that matter in practice.
 - the mounted git-mirror directory must be owned by the runtime user
 
 These are not theoretical details. We already hit the private-key readability and mirror-directory ownership problems in production. See [GCP Deployment](docs/DEPLOY_GCP.md) for the concrete deployment steps and the exact fixes.
+
+## Deployment
+
+If you want to run `ghreplica` yourself, think of deployment as standing up one service plus its supporting state, not as installing a single binary and being done.
+
+At minimum you need:
+
+- a Postgres database
+- a writable Git mirror root
+- a GitHub App installation for upstream auth
+- a webhook endpoint that GitHub can reach
+- `ast-grep` in the runtime image if you want structural search
+
+The basic shape is:
+
+1. create and configure the database
+2. point `ghreplica` at a writable mirror directory
+3. provide GitHub App credentials and webhook secret
+4. run migrations
+5. start the API
+6. point GitHub webhooks at `/webhooks/github`
+
+For the currently supported production setup, use [GCP Deployment](docs/DEPLOY_GCP.md). That document covers the Docker Compose deployment, migrations, TLS, and the runtime permission issues that matter in practice.
 
 ## Docs
 
