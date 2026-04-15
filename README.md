@@ -96,6 +96,7 @@ So for normal use you do not need to pass `--base-url`.
 ```bash
 make db-up
 make migrate
+export GIT_MIRROR_ROOT=.data/git-mirrors
 make serve
 ```
 

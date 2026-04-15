@@ -31,6 +31,33 @@ func TestChangeAndSearchEndpointsUseIndexedGitData(t *testing.T) {
 	for _, pull := range pulls {
 		require.NoError(t, indexer.IndexPullRequest(ctx, "acme", "widgets", repo, pull))
 	}
+	extraSnapshot := database.PullRequestChangeSnapshot{
+		RepositoryID:      repo.ID,
+		PullRequestID:     pulls[103].IssueID,
+		PullRequestNumber: 104,
+		HeadSHA:           "paths-only-head",
+		BaseSHA:           fixture.BaseSHA,
+		MergeBaseSHA:      fixture.BaseSHA,
+		BaseRef:           "main",
+		State:             "open",
+		IndexedAs:         "paths_only",
+		IndexFreshness:    "current",
+		PathCount:         1,
+		IndexedFileCount:  1,
+	}
+	require.NoError(t, db.Create(&extraSnapshot).Error)
+	require.NoError(t, db.Create(&database.PullRequestChangeFile{
+		SnapshotID:        extraSnapshot.ID,
+		RepositoryID:      repo.ID,
+		PullRequestNumber: 104,
+		HeadSHA:           "paths-only-head",
+		BaseSHA:           fixture.BaseSHA,
+		MergeBaseSHA:      fixture.BaseSHA,
+		Path:              "app/service.go",
+		Status:            "modified",
+		FileKind:          "text",
+		IndexedAs:         "paths_only",
+	}).Error)
 
 	server := httpapi.NewServer(db, httpapi.Options{})
 
@@ -87,10 +114,8 @@ func TestChangeAndSearchEndpointsUseIndexedGitData(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	var related []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &related))
-	require.Len(t, related, 1)
-	require.EqualValues(t, 102, related[0]["pull_request_number"])
-	require.Equal(t, "open", related[0]["state"])
-	require.Equal(t, "full", related[0]["indexed_as"])
+	require.Len(t, related, 2)
+	require.ElementsMatch(t, []any{float64(102), float64(104)}, []any{related[0]["pull_request_number"], related[1]["pull_request_number"]})
 
 	req = httptest.NewRequest(http.MethodGet, "/v1/search/repos/acme/widgets/pulls/101/related?mode=range_overlap&state=all", nil)
 	rec = httptest.NewRecorder()
@@ -109,8 +134,8 @@ func TestChangeAndSearchEndpointsUseIndexedGitData(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	var byPaths []map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &byPaths))
-	require.Len(t, byPaths, 2)
-	require.ElementsMatch(t, []any{float64(101), float64(102)}, []any{byPaths[0]["pull_request_number"], byPaths[1]["pull_request_number"]})
+	require.Len(t, byPaths, 3)
+	require.ElementsMatch(t, []any{float64(101), float64(102), float64(104)}, []any{byPaths[0]["pull_request_number"], byPaths[1]["pull_request_number"], byPaths[2]["pull_request_number"]})
 
 	body = bytes.NewBufferString(`{"paths":["docs/readme.md"],"state":"all","limit":10}`)
 	req = httptest.NewRequest(http.MethodPost, "/v1/search/repos/acme/widgets/pulls/by-paths", body)

@@ -42,7 +42,7 @@ type Service struct {
 
 func NewService(db *gorm.DB, githubClient *gh.Client, mirrorRoot string) *Service {
 	if strings.TrimSpace(mirrorRoot) == "" {
-		mirrorRoot = "/app/data/git-mirrors"
+		mirrorRoot = ".data/git-mirrors"
 	}
 	return &Service{
 		db:         db,
@@ -62,21 +62,21 @@ func (s *Service) IndexPullRequest(ctx context.Context, owner, repo string, repo
 
 	return s.withRepoLock(ctx, owner, repo, func() error {
 		if err := s.refreshAuthHeader(ctx); err != nil {
-			return err
+			return s.markSnapshotFailed(ctx, repository.ID, pull, "", err)
 		}
 
 		remoteURL := repositoryGitURL(repository.HTMLURL)
 		mirrorPath, err := s.ensureMirror(ctx, owner, repo, remoteURL)
 		if err != nil {
-			return err
+			return s.markSnapshotFailed(ctx, repository.ID, pull, "", err)
 		}
 		if err := s.syncRefs(ctx, repository.ID, mirrorPath, pull.BaseRef, pull.Number); err != nil {
-			return err
+			return s.markSnapshotFailed(ctx, repository.ID, pull, "", err)
 		}
 
 		mergeBase, err := s.mergeBase(ctx, mirrorPath, pull.BaseSHA, pull.HeadSHA)
 		if err != nil {
-			return err
+			return s.markSnapshotFailed(ctx, repository.ID, pull, "", err)
 		}
 
 		snapshotRows, hunkRows, snapshot, commitRows, err := s.buildPullRequestIndex(ctx, mirrorPath, repository.ID, pull, mergeBase)
@@ -701,19 +701,35 @@ func upsertCommitBundle(tx *gorm.DB, bundle commitBundle) error {
 
 func (s *Service) markSnapshotFailed(ctx context.Context, repositoryID uint, pull database.PullRequest, mergeBase string, reason error) error {
 	now := time.Now().UTC()
-	return upsertSnapshot(s.db.WithContext(ctx), database.PullRequestChangeSnapshot{
-		RepositoryID:      repositoryID,
-		PullRequestID:     pull.IssueID,
-		PullRequestNumber: pull.Number,
-		HeadSHA:           pull.HeadSHA,
-		BaseSHA:           pull.BaseSHA,
-		MergeBaseSHA:      mergeBase,
-		BaseRef:           normalizeBaseRef(pull.BaseRef),
-		State:             pull.State,
-		Draft:             pull.Draft,
-		IndexedAs:         indexedAsFailed,
-		IndexFreshness:    freshnessFailed,
-		LastIndexedAt:     &now,
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := upsertSnapshot(tx, database.PullRequestChangeSnapshot{
+			RepositoryID:      repositoryID,
+			PullRequestID:     pull.IssueID,
+			PullRequestNumber: pull.Number,
+			HeadSHA:           pull.HeadSHA,
+			BaseSHA:           pull.BaseSHA,
+			MergeBaseSHA:      mergeBase,
+			BaseRef:           normalizeBaseRef(pull.BaseRef),
+			State:             pull.State,
+			Draft:             pull.Draft,
+			IndexedAs:         indexedAsFailed,
+			IndexFreshness:    freshnessFailed,
+			LastIndexedAt:     &now,
+		}); err != nil {
+			return err
+		}
+
+		var stored database.PullRequestChangeSnapshot
+		if err := tx.Where("repository_id = ? AND pull_request_number = ?", repositoryID, pull.Number).First(&stored).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("snapshot_id = ?", stored.ID).Delete(&database.PullRequestChangeHunk{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("snapshot_id = ?", stored.ID).Delete(&database.PullRequestChangeFile{}).Error; err != nil {
+			return err
+		}
+		return nil
 	})
 }
 

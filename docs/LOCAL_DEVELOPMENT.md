@@ -20,11 +20,13 @@ Copy `.env.example` into your shell environment:
 ```bash
 export APP_ADDR=127.0.0.1:8080
 export DATABASE_URL='postgres://ghreplica:ghreplica@127.0.0.1:54329/ghreplica?sslmode=disable'
+export GIT_MIRROR_ROOT='.data/git-mirrors'
 export GITHUB_TOKEN="$(gh auth token)"
 export GITHUB_WEBHOOK_SECRET='replace-this-with-a-long-random-secret'
 ```
 
 `APP_ADDR` defaults to `127.0.0.1:8080`, so the API stays local unless you override it.
+`GIT_MIRROR_ROOT` defaults to `.data/git-mirrors`, which is writable in a normal host checkout and ignored by git.
 
 If you want to use a GitHub App instead of a PAT, set:
 

@@ -584,10 +584,7 @@ func (s *Server) searchRelated(ctx context.Context, repositoryID uint, source da
 		return nil, err
 	}
 	if len(sourceHunks) == 0 {
-		if len(candidates) > limit {
-			return candidates[:limit], nil
-		}
-		return candidates, nil
+		return []gitindex.SearchMatch{}, nil
 	}
 
 	candidateNums := make([]int, 0, len(candidates))
@@ -644,6 +641,9 @@ func (s *Server) searchRelated(ctx context.Context, repositoryID uint, source da
 	}
 	final := make([]gitindex.SearchMatch, 0, len(matchByPR))
 	for _, match := range matchByPR {
+		if match.OverlappingHunks == 0 {
+			continue
+		}
 		final = append(final, match)
 	}
 	sort.SliceStable(final, func(i, j int) bool {

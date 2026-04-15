@@ -133,6 +133,9 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 		if err := s.upsertPullRequest(ctx, canonicalRepo.ID, detail); err != nil {
 			return err
 		}
+		if err := s.SyncPullRequestIndex(ctx, owner, repo, canonicalRepo.ID, detail); err != nil {
+			return err
+		}
 	}
 
 	issueComments, err := s.github.ListIssueComments(ctx, owner, repo)
