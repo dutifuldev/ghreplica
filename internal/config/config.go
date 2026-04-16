@@ -2,7 +2,10 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +64,82 @@ func (c Config) ValidateDatabase() error {
 		return errors.New("DATABASE_URL is required")
 	}
 
+	return nil
+}
+
+func (c Config) ValidateServeRuntime() error {
+	if err := c.validateGitMirrorRoot(); err != nil {
+		return err
+	}
+	if err := c.validateASTGrepBinary(); err != nil {
+		return err
+	}
+	if err := c.validateGitHubAppPrivateKey(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c Config) validateGitMirrorRoot() error {
+	root := strings.TrimSpace(c.GitMirrorRoot)
+	if root == "" {
+		return errors.New("GIT_MIRROR_ROOT is required")
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("GIT_MIRROR_ROOT %q is not usable: %w", root, err)
+	}
+
+	info, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("GIT_MIRROR_ROOT %q is not readable: %w", root, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("GIT_MIRROR_ROOT %q is not a directory", root)
+	}
+
+	probe, err := os.CreateTemp(root, ".ghreplica-write-check-*")
+	if err != nil {
+		return fmt.Errorf("GIT_MIRROR_ROOT %q is not writable: %w", root, err)
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		return fmt.Errorf("GIT_MIRROR_ROOT %q write probe failed: %w", root, err)
+	}
+	if err := os.Remove(probePath); err != nil {
+		return fmt.Errorf("GIT_MIRROR_ROOT %q cleanup failed: %w", root, err)
+	}
+	return nil
+}
+
+func (c Config) validateASTGrepBinary() error {
+	bin := strings.TrimSpace(c.ASTGrepBin)
+	if bin == "" {
+		return errors.New("AST_GREP_BIN is required")
+	}
+	if _, err := exec.LookPath(bin); err != nil {
+		return fmt.Errorf("ast-grep binary %q is not available: %w", bin, err)
+	}
+	return nil
+}
+
+func (c Config) validateGitHubAppPrivateKey() error {
+	if strings.TrimSpace(c.GitHubAppPrivateKeyPEM) != "" {
+		return nil
+	}
+
+	path := strings.TrimSpace(c.GitHubAppPrivateKeyPath)
+	if path == "" {
+		return nil
+	}
+
+	cleanPath := filepath.Clean(path)
+	body, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return fmt.Errorf("GITHUB_APP_PRIVATE_KEY_PATH %q is not readable: %w", cleanPath, err)
+	}
+	if strings.TrimSpace(string(body)) == "" {
+		return fmt.Errorf("GITHUB_APP_PRIVATE_KEY_PATH %q is empty", cleanPath)
+	}
 	return nil
 }
 

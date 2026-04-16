@@ -22,7 +22,7 @@ This repo also ships a local skill for Codex-style agents at [skills/ghreplica/S
 If you want an agent to immediately understand `ghreplica`, its API surfaces, and the `ghr` CLI, give the agent this exact instruction:
 
 ```text
-Install the `ghreplica` skill from `/home/bob/repos/ghreplica/skills/ghreplica/SKILL.md`, then use it for work involving the ghreplica API, the `ghr` CLI, mirrored GitHub reads, git-change inspection, overlap search, mirrored text search, or structural code search.
+Install the `ghreplica` skill from `/home/bob/repos/ghreplica/skills/ghreplica/SKILL.md`. Then build the CLI with `cd /home/bob/repos/ghreplica && go build -o /tmp/ghr ./cmd/ghr`. After that, use the skill for work involving the ghreplica API, the `ghr` CLI, mirrored GitHub reads, git-change inspection, overlap search, mirrored text search, or structural code search.
 ```
 
 That is enough for an agent that already knows how to install repo-local skills.
@@ -119,6 +119,15 @@ go build ./cmd/ghr
 
 The sync commands are for targeted ingestion and repair. `sync repo` mirrors the repo-level data we support. `sync issue` and `sync pr` are useful when you want one object and its related discussion right away. `backfill repo` is for bounded repo coverage work. `search-index repo` rebuilds the mirrored text-search corpus for a repo.
 
+If you only want the CLI locally, build it directly:
+
+```bash
+cd /home/bob/repos/ghreplica
+go build -o /tmp/ghr ./cmd/ghr
+```
+
+That gives you a local `ghr` binary without needing to deploy the whole service.
+
 If you want to sanity-check a local instance quickly, these endpoints are usually enough:
 
 - `GET http://127.0.0.1:8080/healthz`
@@ -134,6 +143,24 @@ The current runtime model has a few requirements that matter in practice.
 - the mounted git-mirror directory must be owned by the runtime user
 
 These are not theoretical details. We already hit the private-key readability and mirror-directory ownership problems in production. See [GCP Deployment](docs/DEPLOY_GCP.md) for the concrete deployment steps and the exact fixes.
+
+## Local Build And Install
+
+If you want to use the CLI locally without running the full service, build `ghr` from this repo:
+
+```bash
+cd /home/bob/repos/ghreplica
+go build -o /tmp/ghr ./cmd/ghr
+```
+
+You can then run commands like:
+
+```bash
+/tmp/ghr repo view openclaw/openclaw
+/tmp/ghr search mentions -R openclaw/openclaw --query "acp" --mode fts --scope pull_requests --state all
+```
+
+This is the simplest local install path when you only need the client.
 
 ## Deployment
 

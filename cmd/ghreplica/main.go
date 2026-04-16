@@ -60,6 +60,9 @@ func runServe(cfg config.Config) error {
 	if err := cfg.ValidateDatabase(); err != nil {
 		return err
 	}
+	if err := cfg.ValidateServeRuntime(); err != nil {
+		return err
+	}
 
 	db, err := database.Open(cfg.DatabaseURL)
 	if err != nil {
