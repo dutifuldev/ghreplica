@@ -192,19 +192,16 @@ func (w *Worker) resolveJobLocator(ctx context.Context, job database.RepositoryR
 		}
 	}
 
-	if job.RepositoryID != nil {
-		var repo database.Repository
-		err := w.db.WithContext(ctx).First(&repo, *job.RepositoryID).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", "", err
+	repo, err := resolveRepositoryForJob(ctx, w.db, job)
+	if err != nil {
+		return "", "", err
+	}
+	if repo != nil {
+		if strings.TrimSpace(repo.OwnerLogin) != "" {
+			owner = strings.TrimSpace(repo.OwnerLogin)
 		}
-		if err == nil {
-			if strings.TrimSpace(repo.OwnerLogin) != "" {
-				owner = strings.TrimSpace(repo.OwnerLogin)
-			}
-			if strings.TrimSpace(repo.Name) != "" {
-				name = strings.TrimSpace(repo.Name)
-			}
+		if strings.TrimSpace(repo.Name) != "" {
+			name = strings.TrimSpace(repo.Name)
 		}
 	}
 
@@ -587,6 +584,17 @@ func refreshJobIdentityCondition(db *gorm.DB, tracked *database.TrackedRepositor
 }
 
 func resolveRepositoryForRefresh(ctx context.Context, db *gorm.DB, tracked *database.TrackedRepository, fullName string) (*database.Repository, error) {
+	if strings.TrimSpace(fullName) != "" {
+		var repository database.Repository
+		err := db.WithContext(ctx).Preload("Owner").Where("full_name = ?", fullName).First(&repository).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			return &repository, nil
+		}
+	}
+
 	if tracked != nil && tracked.RepositoryID != nil {
 		var repository database.Repository
 		err := db.WithContext(ctx).Preload("Owner").First(&repository, *tracked.RepositoryID).Error
@@ -598,22 +606,21 @@ func resolveRepositoryForRefresh(ctx context.Context, db *gorm.DB, tracked *data
 		}
 	}
 
-	if strings.TrimSpace(fullName) == "" {
-		return nil, nil
-	}
-
-	var repository database.Repository
-	err := db.WithContext(ctx).Preload("Owner").Where("full_name = ?", fullName).First(&repository).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &repository, nil
+	return nil, nil
 }
 
 func resolveRepositoryForJob(ctx context.Context, db *gorm.DB, job database.RepositoryRefreshJob) (*database.Repository, error) {
+	if strings.TrimSpace(job.FullName) != "" {
+		var repository database.Repository
+		err := db.WithContext(ctx).Preload("Owner").Where("full_name = ?", job.FullName).First(&repository).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			return &repository, nil
+		}
+	}
+
 	if job.RepositoryID != nil {
 		var repository database.Repository
 		err := db.WithContext(ctx).Preload("Owner").First(&repository, *job.RepositoryID).Error
@@ -625,19 +632,7 @@ func resolveRepositoryForJob(ctx context.Context, db *gorm.DB, job database.Repo
 		}
 	}
 
-	if strings.TrimSpace(job.FullName) == "" {
-		return nil, nil
-	}
-
-	var repository database.Repository
-	err := db.WithContext(ctx).Preload("Owner").Where("full_name = ?", job.FullName).First(&repository).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &repository, nil
+	return nil, nil
 }
 
 func CompletenessUpdatesForEvent(event string) map[string]any {

@@ -384,14 +384,6 @@ func (s *Service) updateTrackedRepositoryAfterTargetedSync(ctx context.Context, 
 }
 
 func (s *Service) upsertTrackedRepository(ctx context.Context, model database.TrackedRepository, extraUpdates ...map[string]any) error {
-	existing, err := refresh.ResolveTrackedRepository(ctx, s.db, model.RepositoryID, model.FullName)
-	if err != nil {
-		return err
-	}
-	if existing == nil {
-		return s.db.WithContext(ctx).Create(&model).Error
-	}
-
 	updates := map[string]any{
 		"owner":                      model.Owner,
 		"name":                       model.Name,
@@ -427,6 +419,17 @@ func (s *Service) upsertTrackedRepository(ctx context.Context, model database.Tr
 		for key, value := range extra {
 			updates[key] = value
 		}
+	}
+
+	existing, err := refresh.ResolveTrackedRepository(ctx, s.db, model.RepositoryID, model.FullName)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "full_name"}},
+			DoUpdates: clause.Assignments(updates),
+		}).Create(&model).Error
 	}
 
 	return s.db.WithContext(ctx).Model(&database.TrackedRepository{}).
