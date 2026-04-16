@@ -33,6 +33,51 @@
 
 - `POST /v1/github-ext/repos/{owner}/{repo}/objects/batch`
 
+Batch object-read request shape:
+
+```json
+{
+  "objects": [
+    { "type": "pull_request", "number": 24 },
+    { "type": "issue", "number": 11 }
+  ]
+}
+```
+
+Batch object-read response shape:
+
+```json
+{
+  "results": [
+    {
+      "type": "pull_request",
+      "number": 24,
+      "found": true,
+      "object": {
+        "...": "stored GitHub-shaped payload"
+      }
+    },
+    {
+      "type": "issue",
+      "number": 11,
+      "found": false
+    }
+  ]
+}
+```
+
+Current batch object-read rules:
+
+- supported types:
+  - `pull_request`
+  - `issue`
+- reads from the mirror only
+- preserves request order
+- returns one result per input object
+- reports misses with `found: false`
+- rejects malformed input with `400 Bad Request`
+- currently caps requests at `100` objects per call
+
 ## Change Endpoints
 
 - `GET /v1/changes/repos/{owner}/{repo}/mirror-status`
@@ -145,3 +190,4 @@ See [CLI](./CLI.md) for the command mapping and examples.
 - unsupported endpoints should be treated as out of scope until explicitly added here
 - text-search endpoints stay under `/v1/search/...`, not `/v1/github/...`
 - structural `ast-grep` search also stays under `/v1/search/...` because it is a derived Git-mirror feature, not a GitHub-native resource
+- `POST /v1/github-ext/repos/{owner}/{repo}/objects/batch` is an explicit extension endpoint; the endpoint shape is `ghreplica`-specific, but any returned `object` payload is still the stored GitHub-shaped resource

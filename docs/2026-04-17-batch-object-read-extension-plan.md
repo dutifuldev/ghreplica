@@ -1,12 +1,16 @@
 ---
 title: Batch Object Read Extension Plan
 date: 2026-04-17
-status: proposed
+status: implemented
 ---
 
 # 2026-04-17 Batch Object Read Extension Plan
 
 This document describes how `ghreplica` should expose a production-ready batch object read endpoint for downstream tools such as `PRtags`.
+
+This plan has now been implemented on the live `ghreplica` service as:
+
+- `POST /v1/github-ext/repos/:owner/:repo/objects/batch`
 
 The core need is simple: downstream systems often already know a small set of GitHub object references and need to resolve them efficiently to the stored GitHub-shaped payloads. Doing that through one request per object is wasteful. At the same time, `ghreplica` should not pretend GitHub already has a matching batch API when it does not.
 

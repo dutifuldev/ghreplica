@@ -89,6 +89,26 @@ curl -fsS https://ghreplica.dutiful.dev/v1/github/repos/openclaw/openclaw/issues
 curl -fsS https://ghreplica.dutiful.dev/v1/github/repos/openclaw/openclaw/pulls/66863 | jq
 ```
 
+### Extension Batch Reads
+
+The `github-ext` surface is for explicit tooling extensions that still return mirrored GitHub-shaped objects.
+
+From the API:
+
+```bash
+curl -fsS https://ghreplica.dutiful.dev/v1/github-ext/repos/dutifuldev/ghreplica/objects/batch \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "objects": [
+      {"type": "issue", "number": 24},
+      {"type": "pull_request", "number": 24},
+      {"type": "pull_request", "number": 999999}
+    ]
+  }' | jq
+```
+
+This endpoint reads from the local mirror only, preserves request order, and returns one result per requested object with `found: false` for misses. It is the intended efficient read path for downstream tools such as `PRtags`.
+
 ### ghreplica-Only Features
 
 These are the derived capabilities layered on top of the mirror and local Git indexes.
