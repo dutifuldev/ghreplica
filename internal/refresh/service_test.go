@@ -226,6 +226,65 @@ func TestEnqueueRepositoryRefreshDeduplicatesJobsAcrossRepositoryIDBackfill(t *t
 	require.Equal(t, tracked.ID, *jobs[0].TrackedRepositoryID)
 }
 
+func TestWorkerUsesCurrentRepositoryLocatorForRenamedJob(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	repo := &database.Repository{
+		GitHubID:   101,
+		OwnerLogin: "acme",
+		Name:       "widgets-renamed",
+		FullName:   "acme/widgets-renamed",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(repo).Error)
+
+	tracked := &database.TrackedRepository{
+		Owner:        "acme",
+		Name:         "widgets-renamed",
+		FullName:     "acme/widgets-renamed",
+		RepositoryID: &repo.ID,
+		SyncMode:     "webhook_only",
+		Enabled:      true,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(tracked).Error)
+
+	now := time.Now().UTC()
+	require.NoError(t, db.WithContext(ctx).Create(&database.RepositoryRefreshJob{
+		TrackedRepositoryID: &tracked.ID,
+		RepositoryID:        &repo.ID,
+		JobType:             refresh.JobTypeBootstrapRepository,
+		Owner:               "acme",
+		Name:                "widgets",
+		FullName:            "acme/widgets",
+		Source:              "manual",
+		Status:              "pending",
+		MaxAttempts:         3,
+		RequestedAt:         now,
+		NextAttemptAt:       &now,
+	}).Error)
+
+	var calledOwner string
+	var calledRepo string
+	worker := refresh.NewWorker(db, bootstrapperFunc(func(ctx context.Context, owner, repo string) error {
+		calledOwner = owner
+		calledRepo = repo
+		return nil
+	}), time.Millisecond)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, "acme", calledOwner)
+	require.Equal(t, "widgets-renamed", calledRepo)
+
+	var job database.RepositoryRefreshJob
+	require.NoError(t, db.WithContext(ctx).First(&job).Error)
+	require.Equal(t, "succeeded", job.Status)
+}
+
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 	return "sqlite://file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"

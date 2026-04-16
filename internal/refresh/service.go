@@ -159,12 +159,60 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	err = w.bootstrapper.BootstrapRepository(ctx, job.Owner, job.Name)
+	owner, name, err := w.resolveJobLocator(ctx, job)
+	if err != nil {
+		return true, w.markFailed(ctx, job.ID, err)
+	}
+
+	err = w.bootstrapper.BootstrapRepository(ctx, owner, name)
 	if err != nil {
 		return true, w.markFailed(ctx, job.ID, err)
 	}
 
 	return true, w.markSucceeded(ctx, job)
+}
+
+func (w *Worker) resolveJobLocator(ctx context.Context, job database.RepositoryRefreshJob) (string, string, error) {
+	owner := strings.TrimSpace(job.Owner)
+	name := strings.TrimSpace(job.Name)
+
+	if job.TrackedRepositoryID != nil {
+		var tracked database.TrackedRepository
+		err := w.db.WithContext(ctx).First(&tracked, *job.TrackedRepositoryID).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", "", err
+		}
+		if err == nil {
+			if strings.TrimSpace(tracked.Owner) != "" {
+				owner = strings.TrimSpace(tracked.Owner)
+			}
+			if strings.TrimSpace(tracked.Name) != "" {
+				name = strings.TrimSpace(tracked.Name)
+			}
+		}
+	}
+
+	if job.RepositoryID != nil {
+		var repo database.Repository
+		err := w.db.WithContext(ctx).First(&repo, *job.RepositoryID).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", "", err
+		}
+		if err == nil {
+			if strings.TrimSpace(repo.OwnerLogin) != "" {
+				owner = strings.TrimSpace(repo.OwnerLogin)
+			}
+			if strings.TrimSpace(repo.Name) != "" {
+				name = strings.TrimSpace(repo.Name)
+			}
+		}
+	}
+
+	if owner == "" || name == "" {
+		return "", "", errors.New("refresh job is missing a repository locator")
+	}
+
+	return owner, name, nil
 }
 
 func (w *Worker) claimNextJob(ctx context.Context) (database.RepositoryRefreshJob, bool, error) {
