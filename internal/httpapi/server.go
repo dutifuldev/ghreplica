@@ -114,6 +114,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/v1/github/repos/:owner/:repo/pulls/:number", s.handleGetPullRequest)
 	s.echo.GET("/v1/github/repos/:owner/:repo/pulls/:number/reviews", s.handleListPullRequestReviews)
 	s.echo.GET("/v1/github/repos/:owner/:repo/pulls/:number/comments", s.handleListPullRequestReviewComments)
+	s.echo.POST("/v1/github-ext/repos/:owner/:repo/objects/batch", s.handleBatchReadObjects)
 	s.echo.GET("/v1/changes/repos/:owner/:repo/mirror-status", s.handleGetMirrorStatus)
 	s.echo.GET("/v1/changes/repos/:owner/:repo/pulls/:number", s.handleGetPullRequestChangeSnapshot)
 	s.echo.GET("/v1/changes/repos/:owner/:repo/pulls/:number/files", s.handleListPullRequestChangeFiles)

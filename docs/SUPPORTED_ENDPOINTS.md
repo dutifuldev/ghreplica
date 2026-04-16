@@ -14,6 +14,7 @@
 `ghreplica` now serves a versioned split between:
 
 - `/v1/github/...` for GitHub-compatible mirrored resources
+- `/v1/github-ext/...` for explicit mirror-backed extensions that do not exist on GitHub itself
 - `/v1/changes/...` for normalized Git-backed change data
 - `/v1/search/...` for overlap and related-change queries
 
@@ -27,6 +28,10 @@
 - `GET /v1/github/repos/{owner}/{repo}/pulls/{number}`
 - `GET /v1/github/repos/{owner}/{repo}/pulls/{number}/reviews`
 - `GET /v1/github/repos/{owner}/{repo}/pulls/{number}/comments`
+
+## GitHub Extension Endpoints
+
+- `POST /v1/github-ext/repos/{owner}/{repo}/objects/batch`
 
 ## Change Endpoints
 
