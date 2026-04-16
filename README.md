@@ -8,6 +8,8 @@
 
 ghreplica keeps GitHub-shaped repository data in server-side storage, uses Git as ground truth for change indexing, and serves a stable read API and CLI so downstream tools do not need to build their own webhook handlers, crawlers, and caches.
 
+`ghreplica` is intentionally unopinionated. Where GitHub already defines the resource shape and semantics, `ghreplica` tries to preserve them, and the extra features it adds do not require downstream tools to adopt a `ghreplica`-specific workflow or data model.
+
 On top of its GitHub-compatible read surface, `ghreplica` also adds derived functionality for tooling:
 
 - mirror status so clients can inspect freshness, completeness, and indexing state instead of assuming the mirror is fully up to date
