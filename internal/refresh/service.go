@@ -456,12 +456,37 @@ func ResolveTrackedRepository(ctx context.Context, db *gorm.DB, repositoryID *ui
 		return byFullName, nil
 	default:
 		if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			mergedUpdates := mergeTrackedRepositoryRows(*byRepository, *byFullName)
 			if err := tx.Model(&database.RepositoryRefreshJob{}).
 				Where("tracked_repository_id = ?", byFullName.ID).
-				Update("tracked_repository_id", byRepository.ID).Error; err != nil {
+				Updates(map[string]any{
+					"tracked_repository_id": byRepository.ID,
+					"repository_id":         mergedUpdates["repository_id"],
+					"owner":                 mergedUpdates["owner"],
+					"name":                  mergedUpdates["name"],
+					"full_name":             mergedUpdates["full_name"],
+				}).Error; err != nil {
 				return err
 			}
-			return tx.Delete(&database.TrackedRepository{}, byFullName.ID).Error
+			if err := tx.Delete(&database.TrackedRepository{}, byFullName.ID).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&database.TrackedRepository{}).
+				Where("id = ?", byRepository.ID).
+				Updates(mergedUpdates).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&database.RepositoryRefreshJob{}).
+				Where("tracked_repository_id = ?", byRepository.ID).
+				Updates(map[string]any{
+					"repository_id": mergedUpdates["repository_id"],
+					"owner":         mergedUpdates["owner"],
+					"name":          mergedUpdates["name"],
+					"full_name":     mergedUpdates["full_name"],
+				}).Error; err != nil {
+				return err
+			}
+			return nil
 		}); err != nil {
 			return nil, err
 		}
@@ -472,6 +497,74 @@ func ResolveTrackedRepository(ctx context.Context, db *gorm.DB, repositoryID *ui
 		}
 		return &stored, nil
 	}
+}
+
+func mergeTrackedRepositoryRows(stable, current database.TrackedRepository) map[string]any {
+	repositoryID := stable.RepositoryID
+	if repositoryID == nil {
+		repositoryID = current.RepositoryID
+	}
+
+	return map[string]any{
+		"owner":                      firstNonEmpty(current.Owner, stable.Owner),
+		"name":                       firstNonEmpty(current.Name, stable.Name),
+		"full_name":                  firstNonEmpty(current.FullName, stable.FullName),
+		"repository_id":              repositoryID,
+		"sync_mode":                  firstNonEmpty(stable.SyncMode, current.SyncMode),
+		"webhook_projection_enabled": stable.WebhookProjectionEnabled,
+		"allow_manual_backfill":      stable.AllowManualBackfill,
+		"enabled":                    stable.Enabled,
+		"issues_completeness":        mergeCompleteness(stable.IssuesCompleteness, current.IssuesCompleteness),
+		"pulls_completeness":         mergeCompleteness(stable.PullsCompleteness, current.PullsCompleteness),
+		"comments_completeness":      mergeCompleteness(stable.CommentsCompleteness, current.CommentsCompleteness),
+		"reviews_completeness":       mergeCompleteness(stable.ReviewsCompleteness, current.ReviewsCompleteness),
+		"last_bootstrap_at":          laterTime(stable.LastBootstrapAt, current.LastBootstrapAt),
+		"last_crawl_at":              laterTime(stable.LastCrawlAt, current.LastCrawlAt),
+		"last_webhook_at":            laterTime(stable.LastWebhookAt, current.LastWebhookAt),
+	}
+}
+
+func mergeCompleteness(stable, current string) string {
+	if completenessRank(current) > completenessRank(stable) {
+		return current
+	}
+	return stable
+}
+
+func completenessRank(value string) int {
+	switch strings.TrimSpace(value) {
+	case completenessBackfilled:
+		return 3
+	case completenessSparse:
+		return 2
+	case completenessEmpty:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func laterTime(stable, current *time.Time) *time.Time {
+	switch {
+	case stable == nil:
+		return current
+	case current == nil:
+		return stable
+	case current.After(*stable):
+		return current
+	default:
+		return stable
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func refreshJobIdentityCondition(db *gorm.DB, tracked *database.TrackedRepository, repository *database.Repository, fullName string) *gorm.DB {

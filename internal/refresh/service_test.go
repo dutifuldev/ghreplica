@@ -140,20 +140,27 @@ func TestResolveTrackedRepositoryPrefersRepositoryIDAcrossRename(t *testing.T) {
 	}
 	require.NoError(t, db.WithContext(ctx).Create(repo).Error)
 
+	stableWebhookAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	stable := &database.TrackedRepository{
-		Owner:        "acme",
-		Name:         "widgets",
-		FullName:     "acme/widgets",
-		RepositoryID: &repo.ID,
-		SyncMode:     "webhook_only",
+		Owner:         "acme",
+		Name:          "widgets",
+		FullName:      "acme/widgets",
+		RepositoryID:  &repo.ID,
+		SyncMode:      "webhook_only",
+		Enabled:       true,
+		LastWebhookAt: &stableWebhookAt,
 	}
 	require.NoError(t, db.WithContext(ctx).Create(stable).Error)
 
+	currentWebhookAt := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	duplicate := &database.TrackedRepository{
-		Owner:    "acme",
-		Name:     "widgets-renamed",
-		FullName: "acme/widgets-renamed",
-		SyncMode: "webhook_only",
+		Owner:                "acme",
+		Name:                 "widgets-renamed",
+		FullName:             "acme/widgets-renamed",
+		SyncMode:             "manual_backfill",
+		IssuesCompleteness:   "sparse",
+		CommentsCompleteness: "backfilled",
+		LastWebhookAt:        &currentWebhookAt,
 	}
 	require.NoError(t, db.WithContext(ctx).Create(duplicate).Error)
 
@@ -171,15 +178,27 @@ func TestResolveTrackedRepositoryPrefersRepositoryIDAcrossRename(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resolved)
 	require.Equal(t, stable.ID, resolved.ID)
+	require.Equal(t, "acme/widgets-renamed", resolved.FullName)
+	require.Equal(t, "widgets-renamed", resolved.Name)
+	require.Equal(t, "webhook_only", resolved.SyncMode)
+	require.Equal(t, "sparse", resolved.IssuesCompleteness)
+	require.Equal(t, "backfilled", resolved.CommentsCompleteness)
+	require.NotNil(t, resolved.LastWebhookAt)
+	require.Equal(t, currentWebhookAt, resolved.LastWebhookAt.UTC())
 
 	var trackedRows []database.TrackedRepository
 	require.NoError(t, db.WithContext(ctx).Order("id ASC").Find(&trackedRows).Error)
 	require.Len(t, trackedRows, 1)
+	require.Equal(t, "acme/widgets-renamed", trackedRows[0].FullName)
+	require.Equal(t, "widgets-renamed", trackedRows[0].Name)
 
 	var job database.RepositoryRefreshJob
 	require.NoError(t, db.WithContext(ctx).First(&job).Error)
 	require.NotNil(t, job.TrackedRepositoryID)
 	require.Equal(t, stable.ID, *job.TrackedRepositoryID)
+	require.Equal(t, repo.ID, *job.RepositoryID)
+	require.Equal(t, "acme/widgets-renamed", job.FullName)
+	require.Equal(t, "widgets-renamed", job.Name)
 }
 
 func TestEnqueueRepositoryRefreshDeduplicatesJobsAcrossRepositoryIDBackfill(t *testing.T) {
