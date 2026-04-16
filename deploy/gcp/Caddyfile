@@ -1,3 +1,7 @@
 ghreplica.dutiful.dev {
     reverse_proxy ghreplica:8080
 }
+
+prtags.dutiful.dev {
+    reverse_proxy prtags:8081
+}
