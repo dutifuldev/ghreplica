@@ -13,6 +13,7 @@ ghreplica keeps GitHub-shaped repository data in server-side storage, uses Git a
 On top of its GitHub-compatible read surface, `ghreplica` also adds derived functionality for tooling:
 
 - mirror status so clients can inspect freshness, completeness, and indexing state instead of assuming the mirror is fully up to date
+- explicit extension endpoints for efficient mirror-backed batch reads that GitHub itself does not provide
 - Git-backed change inspection for pull requests, commits, and compares using the local Git mirror as ground truth
 - related PR and overlap search to find changes that touched the same files or overlapping hunks
 - mirrored text search across issues, pull requests, comments, reviews, and review comments
@@ -49,18 +50,20 @@ That is enough for your agent if it already knows how to install repo-local skil
 
 ## API Surfaces
 
-`ghreplica` has three read surfaces:
+`ghreplica` has four read surfaces:
 
 - `/v1/github/...`
   - GitHub-compatible mirrored resources
+- `/v1/github-ext/...`
+  - explicit mirror-backed extensions over GitHub-native data
 - `/v1/changes/...`
   - normalized Git-backed change data
 - `/v1/search/...`
   - derived search features over mirrored data and the Git mirror
 
-These three surfaces exist for different reasons. `/v1/github/...` is the compatibility surface for GitHub-native resources like repositories, issues, pull requests, reviews, and comments. `/v1/changes/...` is the normalized Git-backed surface for things that GitHub does not present in exactly the form we want for tooling, such as indexed pull request snapshots, commit file lists, compare results, and mirror status. `/v1/search/...` is where the higher-level derived features live, such as overlap search, mirrored text search, and structural code search.
+These four surfaces exist for different reasons. `/v1/github/...` is the compatibility surface for GitHub-native resources like repositories, issues, pull requests, reviews, and comments. `/v1/github-ext/...` is for explicit tooling extensions that still return mirrored GitHub-shaped objects but do not pretend GitHub already has the same endpoint shape. `/v1/changes/...` is the normalized Git-backed surface for things that GitHub does not present in exactly the form we want for tooling, such as indexed pull request snapshots, commit file lists, compare results, and mirror status. `/v1/search/...` is where the higher-level derived features live, such as overlap search, mirrored text search, and structural code search.
 
-In practice, the current product already covers a meaningful slice of real workflows: repository, issue, pull request, review, and comment reads; repo mirror status; pull request and commit change snapshots; compare for indexed base and head pairs; related PR search by shared paths or overlapping hunks; text search across PRs, issues, comments, reviews, and review comments; and structural code search with `ast-grep`.
+In practice, the current product already covers a meaningful slice of real workflows: repository, issue, pull request, review, and comment reads; mirror-backed batch object resolution; repo mirror status; pull request and commit change snapshots; compare for indexed base and head pairs; related PR search by shared paths or overlapping hunks; text search across PRs, issues, comments, reviews, and review comments; and structural code search with `ast-grep`.
 
 ## Quick Examples
 

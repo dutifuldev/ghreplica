@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -300,6 +301,91 @@ func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &issueComments))
 	require.Len(t, issueComments, 1)
 	require.Equal(t, "kpiyush88", issueComments[0]["user"].(map[string]any)["login"])
+}
+
+func TestGitHubExtensionBatchReadObjects(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	githubServer := httptest.NewServer(testfixtures.NewOpenClawGitHubHandler(t))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	require.NoError(t, service.SyncIssue(ctx, "openclaw", "openclaw", 66797))
+	require.NoError(t, service.SyncPullRequest(ctx, "openclaw", "openclaw", 66863))
+
+	server := httpapi.NewServer(db, httpapi.Options{})
+
+	body := []byte(`{
+		"objects": [
+			{"type": "issue", "number": 66797},
+			{"type": "pull_request", "number": 66863},
+			{"type": "pull_request", "number": 999999},
+			{"type": "issue", "number": 66797}
+		]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/github-ext/repos/openclaw/openclaw/objects/batch", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var payload struct {
+		Results []map[string]any `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	require.Len(t, payload.Results, 4)
+
+	require.Equal(t, "issue", payload.Results[0]["type"])
+	require.EqualValues(t, 66797, payload.Results[0]["number"])
+	require.Equal(t, true, payload.Results[0]["found"])
+	require.EqualValues(t, 66797, payload.Results[0]["object"].(map[string]any)["number"])
+
+	require.Equal(t, "pull_request", payload.Results[1]["type"])
+	require.EqualValues(t, 66863, payload.Results[1]["number"])
+	require.Equal(t, true, payload.Results[1]["found"])
+	require.EqualValues(t, 66863, payload.Results[1]["object"].(map[string]any)["number"])
+
+	require.Equal(t, "pull_request", payload.Results[2]["type"])
+	require.EqualValues(t, 999999, payload.Results[2]["number"])
+	require.Equal(t, false, payload.Results[2]["found"])
+	_, ok := payload.Results[2]["object"]
+	require.False(t, ok)
+
+	require.Equal(t, "issue", payload.Results[3]["type"])
+	require.EqualValues(t, 66797, payload.Results[3]["number"])
+	require.Equal(t, true, payload.Results[3]["found"])
+	require.EqualValues(t, 66797, payload.Results[3]["object"].(map[string]any)["number"])
+}
+
+func TestGitHubExtensionBatchReadObjectsRejectsInvalidInput(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	githubServer := httptest.NewServer(testfixtures.NewOpenClawGitHubHandler(t))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	require.NoError(t, service.SyncIssue(ctx, "openclaw", "openclaw", 66797))
+
+	server := httpapi.NewServer(db, httpapi.Options{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/github-ext/repos/openclaw/openclaw/objects/batch", bytes.NewReader([]byte(`{
+		"objects": [{"type": "commit", "number": 1}]
+	}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"message":"Unsupported object type"}`, rec.Body.String())
 }
 
 func testDatabaseURL(t *testing.T) string {
