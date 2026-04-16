@@ -19,13 +19,15 @@ Current public instance:
 
 This repo also ships a local skill for Codex-style agents at [skills/ghreplica/SKILL.md](skills/ghreplica/SKILL.md).
 
-If you want an agent to immediately understand `ghreplica`, its API surfaces, and the `ghr` CLI, give the agent this exact instruction:
+If you want your agent to immediately understand `ghreplica`, its API surfaces, and the `ghr` CLI, give your agent this exact instruction:
 
 ```text
-Install the `ghreplica` skill from `/home/bob/repos/ghreplica/skills/ghreplica/SKILL.md`. Then build the CLI with `cd /home/bob/repos/ghreplica && go build -o /tmp/ghr ./cmd/ghr`. After that, use the skill for work involving the ghreplica API, the `ghr` CLI, mirrored GitHub reads, git-change inspection, overlap search, mirrored text search, or structural code search.
+Install the `ghreplica` skill from `/home/bob/repos/ghreplica/skills/ghreplica/SKILL.md`.
+Then build the CLI with `cd /home/bob/repos/ghreplica && go build -o /tmp/ghr ./cmd/ghr`.
+After that, use the skill for work involving the ghreplica API, the `ghr` CLI, mirrored GitHub reads, git-change inspection, overlap search, mirrored text search, or structural code search.
 ```
 
-That is enough for an agent that already knows how to install repo-local skills.
+That is enough for your agent if it already knows how to install repo-local skills.
 
 ## Why This Exists
 
