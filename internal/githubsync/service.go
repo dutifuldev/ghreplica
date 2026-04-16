@@ -400,14 +400,28 @@ func (s *Service) upsertTrackedRepository(ctx context.Context, model database.Tr
 		"sync_mode":                  model.SyncMode,
 		"webhook_projection_enabled": model.WebhookProjectionEnabled,
 		"allow_manual_backfill":      model.AllowManualBackfill,
-		"issues_completeness":        model.IssuesCompleteness,
-		"pulls_completeness":         model.PullsCompleteness,
-		"comments_completeness":      model.CommentsCompleteness,
-		"reviews_completeness":       model.ReviewsCompleteness,
 		"enabled":                    model.Enabled,
-		"last_bootstrap_at":          model.LastBootstrapAt,
-		"last_crawl_at":              model.LastCrawlAt,
-		"last_webhook_at":            model.LastWebhookAt,
+	}
+	if model.IssuesCompleteness != "" {
+		updates["issues_completeness"] = model.IssuesCompleteness
+	}
+	if model.PullsCompleteness != "" {
+		updates["pulls_completeness"] = model.PullsCompleteness
+	}
+	if model.CommentsCompleteness != "" {
+		updates["comments_completeness"] = model.CommentsCompleteness
+	}
+	if model.ReviewsCompleteness != "" {
+		updates["reviews_completeness"] = model.ReviewsCompleteness
+	}
+	if model.LastBootstrapAt != nil {
+		updates["last_bootstrap_at"] = model.LastBootstrapAt
+	}
+	if model.LastCrawlAt != nil {
+		updates["last_crawl_at"] = model.LastCrawlAt
+	}
+	if model.LastWebhookAt != nil {
+		updates["last_webhook_at"] = model.LastWebhookAt
 	}
 	for _, extra := range extraUpdates {
 		for key, value := range extra {

@@ -10,6 +10,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/github"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Request struct {
@@ -352,7 +353,21 @@ func UpsertTrackedRepositoryForWebhook(ctx context.Context, db *gorm.DB, owner, 
 	if repositoryID != nil {
 		tracked.RepositoryID = repositoryID
 	}
-	if err := db.WithContext(ctx).Create(&tracked).Error; err != nil {
+
+	assignments := map[string]any{
+		"owner":           owner,
+		"name":            name,
+		"last_webhook_at": seenAt,
+		"updated_at":      seenAt,
+	}
+	if repositoryID != nil {
+		assignments["repository_id"] = *repositoryID
+	}
+
+	if err := db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "full_name"}},
+		DoUpdates: clause.Assignments(assignments),
+	}).Create(&tracked).Error; err != nil {
 		return database.TrackedRepository{}, err
 	}
 
