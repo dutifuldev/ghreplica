@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_repository_refresh_jobs_repository_id_status;
+DROP INDEX IF EXISTS idx_tracked_repositories_repository_id;

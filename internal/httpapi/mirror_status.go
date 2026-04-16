@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
+	"github.com/dutifuldev/ghreplica/internal/refresh"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
@@ -14,46 +15,46 @@ func (s *Server) handleGetMirrorStatus(c echo.Context) error {
 	ctx := c.Request().Context()
 	fullName := c.Param("owner") + "/" + c.Param("repo")
 
-	var tracked database.TrackedRepository
-	err := s.db.WithContext(ctx).Where("full_name = ?", fullName).First(&tracked).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
-
-	var repo database.Repository
-	repoErr := s.db.WithContext(ctx).Preload("Owner").Where("full_name = ?", fullName).First(&repo).Error
+	repo, repoErr := findRepository(ctx, s.db, c.Param("owner"), c.Param("repo"))
 	if repoErr != nil && !errors.Is(repoErr, gorm.ErrRecordNotFound) {
 		return repoErr
-	}
-
-	if errors.Is(err, gorm.ErrRecordNotFound) && errors.Is(repoErr, gorm.ErrRecordNotFound) {
-		return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
 	}
 
 	var repositoryID *uint
 	if repoErr == nil {
 		repositoryID = &repo.ID
-	} else if tracked.RepositoryID != nil {
+	}
+
+	tracked, err := refresh.ResolveTrackedRepository(ctx, s.db, repositoryID, fullName)
+	if err != nil {
+		return err
+	}
+	if tracked == nil && errors.Is(repoErr, gorm.ErrRecordNotFound) {
+		return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+	}
+	if repositoryID == nil && tracked != nil && tracked.RepositoryID != nil {
 		repositoryID = tracked.RepositoryID
 	}
 
 	status := mirrorStatusResponse{
 		FullName:                 fullName,
 		RepositoryPresent:        repoErr == nil,
-		TrackedRepositoryPresent: !errors.Is(err, gorm.ErrRecordNotFound),
-		TrackedRepositoryID:      uintPtr(tracked.ID),
+		TrackedRepositoryPresent: tracked != nil,
+		TrackedRepositoryID:      trackedRepositoryIDPtr(tracked),
 		RepositoryID:             repositoryID,
-		Enabled:                  tracked.Enabled,
-		SyncMode:                 tracked.SyncMode,
-		WebhookProjectionEnabled: tracked.WebhookProjectionEnabled,
-		AllowManualBackfill:      tracked.AllowManualBackfill,
-		IssuesCompleteness:       tracked.IssuesCompleteness,
-		PullsCompleteness:        tracked.PullsCompleteness,
-		CommentsCompleteness:     tracked.CommentsCompleteness,
-		ReviewsCompleteness:      tracked.ReviewsCompleteness,
-		LastBootstrapAt:          utcTimePtr(tracked.LastBootstrapAt),
-		LastCrawlAt:              utcTimePtr(tracked.LastCrawlAt),
-		LastWebhookAt:            utcTimePtr(tracked.LastWebhookAt),
+	}
+	if tracked != nil {
+		status.Enabled = tracked.Enabled
+		status.SyncMode = tracked.SyncMode
+		status.WebhookProjectionEnabled = tracked.WebhookProjectionEnabled
+		status.AllowManualBackfill = tracked.AllowManualBackfill
+		status.IssuesCompleteness = tracked.IssuesCompleteness
+		status.PullsCompleteness = tracked.PullsCompleteness
+		status.CommentsCompleteness = tracked.CommentsCompleteness
+		status.ReviewsCompleteness = tracked.ReviewsCompleteness
+		status.LastBootstrapAt = utcTimePtr(tracked.LastBootstrapAt)
+		status.LastCrawlAt = utcTimePtr(tracked.LastCrawlAt)
+		status.LastWebhookAt = utcTimePtr(tracked.LastWebhookAt)
 	}
 
 	if repositoryID != nil {
@@ -70,6 +71,13 @@ func (s *Server) handleGetMirrorStatus(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, status)
+}
+
+func trackedRepositoryIDPtr(tracked *database.TrackedRepository) *uint {
+	if tracked == nil {
+		return nil
+	}
+	return uintPtr(tracked.ID)
 }
 
 func (s *Server) loadMirrorCounts(ctx context.Context, repositoryID uint) (mirrorCountsResponse, error) {

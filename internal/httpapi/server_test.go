@@ -194,6 +194,51 @@ func TestMirrorStatusEndpoint(t *testing.T) {
 	require.EqualValues(t, 1, counts["pull_request_review_comments"])
 }
 
+func TestMirrorStatusEndpointResolvesTrackedRepositoryAcrossRename(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	repo := &database.Repository{
+		GitHubID:      101,
+		OwnerLogin:    "acme",
+		Name:          "widgets-renamed",
+		FullName:      "acme/widgets-renamed",
+		DefaultBranch: "main",
+		Visibility:    "public",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(repo).Error)
+
+	require.NoError(t, db.WithContext(ctx).Create(&database.TrackedRepository{
+		Owner:                    "acme",
+		Name:                     "widgets",
+		FullName:                 "acme/widgets",
+		RepositoryID:             &repo.ID,
+		SyncMode:                 "webhook_only",
+		WebhookProjectionEnabled: true,
+		AllowManualBackfill:      true,
+		IssuesCompleteness:       "sparse",
+		PullsCompleteness:        "sparse",
+		CommentsCompleteness:     "sparse",
+		ReviewsCompleteness:      "sparse",
+		Enabled:                  true,
+	}).Error)
+
+	server := httpapi.NewServer(db, httpapi.Options{})
+	req := httptest.NewRequest(http.MethodGet, "/v1/changes/repos/acme/widgets-renamed/mirror-status", nil)
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	require.Equal(t, "acme/widgets-renamed", payload["full_name"])
+	require.Equal(t, true, payload["tracked_repository_present"])
+	require.EqualValues(t, repo.ID, payload["repository_id"])
+}
+
 func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 	ctx := context.Background()
 

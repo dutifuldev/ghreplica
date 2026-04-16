@@ -79,7 +79,17 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, h
 	}
 
 	if repoRef != nil {
-		tracked, err := refresh.UpsertTrackedRepositoryForWebhook(ctx, s.db, repoRef.Owner, repoRef.Name, repoRef.FullName, now)
+		existingRepositoryID, err := repositoryIDByRef(ctx, s.db, repoRef)
+		if err != nil {
+			return err
+		}
+
+		var trackedRepositoryID *uint
+		if existingRepositoryID != 0 {
+			trackedRepositoryID = &existingRepositoryID
+		}
+
+		tracked, err := refresh.UpsertTrackedRepositoryForWebhook(ctx, s.db, repoRef.Owner, repoRef.Name, repoRef.FullName, trackedRepositoryID, now)
 		if err != nil {
 			return err
 		}
@@ -89,7 +99,7 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, h
 		}
 		if tracked.Enabled && tracked.WebhookProjectionEnabled {
 			if _, ok := supportedWebhookEvents[event]; ok {
-				repositoryID, err := s.projectEvent(ctx, event, delivery.Action, payload, repoRef.FullName)
+				repositoryID, err := s.projectEvent(ctx, event, delivery.Action, payload, repoRef)
 				if err != nil {
 					return err
 				}
@@ -103,13 +113,12 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, h
 		} else if tracked.RepositoryID != nil {
 			updates["repository_id"] = *tracked.RepositoryID
 		} else {
-			var repository database.Repository
-			err := s.db.WithContext(ctx).Where("full_name = ?", repoRef.FullName).First(&repository).Error
-			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			repositoryID, err := repositoryIDByRef(ctx, s.db, repoRef)
+			if err != nil {
 				return err
 			}
-			if err == nil {
-				updates["repository_id"] = repository.ID
+			if repositoryID != 0 {
+				updates["repository_id"] = repositoryID
 			}
 		}
 
@@ -161,7 +170,7 @@ func (s *Service) updateTrackedRepositoryProjectionState(ctx context.Context, tr
 		Updates(updates).Error
 }
 
-func (s *Service) projectEvent(ctx context.Context, event, action string, payload []byte, fullName string) (uint, error) {
+func (s *Service) projectEvent(ctx context.Context, event, action string, payload []byte, repoRef *repositoryRef) (uint, error) {
 	if s.projector == nil {
 		return 0, nil
 	}
@@ -186,7 +195,7 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 				}
 			}
 		}
-		repositoryID, err := repositoryIDByFullName(ctx, s.db, fullName)
+		repositoryID, err := repositoryIDByRef(ctx, s.db, repoRef)
 		if err == nil && repositoryID != 0 {
 			if marker, ok := s.projector.(repoChangeDirtyMarker); ok {
 				_ = marker.MarkRepositoryChangeDirty(ctx, repositoryID, time.Now().UTC())
@@ -352,17 +361,31 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 		}
 		return repo.ID, nil
 	default:
-		return repositoryIDByFullName(ctx, s.db, fullName)
+		return repositoryIDByRef(ctx, s.db, repoRef)
 	}
 }
 
-func repositoryIDByFullName(ctx context.Context, db *gorm.DB, fullName string) (uint, error) {
-	if strings.TrimSpace(fullName) == "" {
+func repositoryIDByRef(ctx context.Context, db *gorm.DB, repoRef *repositoryRef) (uint, error) {
+	if repoRef == nil {
 		return 0, nil
 	}
 
 	var repository database.Repository
-	err := db.WithContext(ctx).Where("full_name = ?", fullName).First(&repository).Error
+	if repoRef.GitHubID != 0 {
+		err := db.WithContext(ctx).Where("github_id = ?", repoRef.GitHubID).First(&repository).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, err
+		}
+		if err == nil {
+			return repository.ID, nil
+		}
+	}
+
+	if strings.TrimSpace(repoRef.FullName) == "" {
+		return 0, nil
+	}
+
+	err := db.WithContext(ctx).Where("full_name = ?", repoRef.FullName).First(&repository).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return 0, nil
@@ -374,6 +397,7 @@ func repositoryIDByFullName(ctx context.Context, db *gorm.DB, fullName string) (
 }
 
 type repositoryRef struct {
+	GitHubID int64
 	Owner    string
 	Name     string
 	FullName string
@@ -382,6 +406,7 @@ type repositoryRef struct {
 type envelope struct {
 	Action     string `json:"action"`
 	Repository *struct {
+		ID       int64  `json:"id"`
 		Name     string `json:"name"`
 		FullName string `json:"full_name"`
 		Owner    *struct {
@@ -419,6 +444,7 @@ func (s *Service) buildWebhookDelivery(deliveryID, event string, headers http.He
 }
 
 func extractRepository(repository *struct {
+	ID       int64  `json:"id"`
 	Name     string `json:"name"`
 	FullName string `json:"full_name"`
 	Owner    *struct {
@@ -435,7 +461,7 @@ func extractRepository(repository *struct {
 		if err != nil {
 			return nil, err
 		}
-		return &repositoryRef{Owner: owner, Name: name, FullName: fullName}, nil
+		return &repositoryRef{GitHubID: repository.ID, Owner: owner, Name: name, FullName: fullName}, nil
 	}
 
 	if repository.Owner == nil || strings.TrimSpace(repository.Owner.Login) == "" || strings.TrimSpace(repository.Name) == "" {
@@ -443,6 +469,7 @@ func extractRepository(repository *struct {
 	}
 
 	return &repositoryRef{
+		GitHubID: repository.ID,
 		Owner:    strings.TrimSpace(repository.Owner.Login),
 		Name:     strings.TrimSpace(repository.Name),
 		FullName: strings.TrimSpace(repository.Owner.Login) + "/" + strings.TrimSpace(repository.Name),

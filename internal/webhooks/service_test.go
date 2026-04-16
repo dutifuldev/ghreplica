@@ -106,6 +106,51 @@ func TestWebhookIngestionIgnoresUnsupportedEventsForRefreshScheduling(t *testing
 	require.EqualValues(t, 1, tracked)
 }
 
+func TestWebhookIngestionReusesTrackedRepositoryAcrossRenameByRepositoryID(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	repo := &database.Repository{
+		GitHubID:   101,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(repo).Error)
+
+	tracked := &database.TrackedRepository{
+		Owner:        "acme",
+		Name:         "widgets",
+		FullName:     "acme/widgets",
+		RepositoryID: &repo.ID,
+		SyncMode:     "webhook_only",
+		Enabled:      true,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(tracked).Error)
+
+	ingestor := webhooks.NewService(db, nil)
+	err = ingestor.HandleWebhook(
+		ctx,
+		"delivery-rename-unsupported",
+		"workflow_job",
+		http.Header{"X-GitHub-Event": []string{"workflow_job"}},
+		[]byte(`{"repository":{"id":101,"name":"widgets-renamed","full_name":"acme/widgets-renamed","owner":{"login":"acme"}}}`),
+	)
+	require.NoError(t, err)
+
+	var trackedRows []database.TrackedRepository
+	require.NoError(t, db.WithContext(ctx).Order("id ASC").Find(&trackedRows).Error)
+	require.Len(t, trackedRows, 1)
+	require.Equal(t, tracked.ID, trackedRows[0].ID)
+	require.Equal(t, "widgets-renamed", trackedRows[0].Name)
+	require.Equal(t, "acme/widgets-renamed", trackedRows[0].FullName)
+	require.NotNil(t, trackedRows[0].RepositoryID)
+	require.Equal(t, repo.ID, *trackedRows[0].RepositoryID)
+}
+
 func TestWebhookIngestionProjectsIssueCommentPayload(t *testing.T) {
 	ctx := context.Background()
 

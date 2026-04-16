@@ -279,6 +279,65 @@ func TestTargetedSyncIssueAndPullRequest(t *testing.T) {
 	require.EqualValues(t, 1, reviewComments)
 }
 
+func TestSyncIssuePreservesExistingTrackedCompletenessAndTimestamps(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/widgets":
+			writeJSON(t, w, repoFixture())
+		case "/repos/acme/widgets/issues/2":
+			writeJSON(t, w, issuesFixture()[0])
+		case "/repos/acme/widgets/issues/2/comments":
+			writeJSON(t, w, issueCommentsFixture())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	repo, err := service.UpsertRepository(ctx, repoFixture())
+	require.NoError(t, err)
+
+	bootstrapAt := time.Date(2026, 4, 16, 10, 0, 0, 0, time.UTC)
+	crawlAt := bootstrapAt.Add(2 * time.Hour)
+	webhookAt := bootstrapAt.Add(4 * time.Hour)
+	require.NoError(t, db.WithContext(ctx).Create(&database.TrackedRepository{
+		Owner:                    "acme",
+		Name:                     "widgets",
+		FullName:                 "acme/widgets",
+		RepositoryID:             &repo.ID,
+		SyncMode:                 "webhook_only",
+		WebhookProjectionEnabled: true,
+		AllowManualBackfill:      true,
+		IssuesCompleteness:       "sparse",
+		PullsCompleteness:        "backfilled",
+		CommentsCompleteness:     "backfilled",
+		ReviewsCompleteness:      "backfilled",
+		Enabled:                  true,
+		LastBootstrapAt:          &bootstrapAt,
+		LastCrawlAt:              &crawlAt,
+		LastWebhookAt:            &webhookAt,
+	}).Error)
+
+	require.NoError(t, service.SyncIssue(ctx, "acme", "widgets", 2))
+
+	var tracked database.TrackedRepository
+	require.NoError(t, db.WithContext(ctx).Where("repository_id = ?", repo.ID).First(&tracked).Error)
+	require.Equal(t, "sparse", tracked.IssuesCompleteness)
+	require.Equal(t, "backfilled", tracked.PullsCompleteness)
+	require.Equal(t, "sparse", tracked.CommentsCompleteness)
+	require.Equal(t, "backfilled", tracked.ReviewsCompleteness)
+	require.Equal(t, bootstrapAt, tracked.LastBootstrapAt.UTC())
+	require.Equal(t, crawlAt, tracked.LastCrawlAt.UTC())
+	require.Equal(t, webhookAt, tracked.LastWebhookAt.UTC())
+}
+
 func TestTargetedSyncWithRealFixturesPersistsDiscussionData(t *testing.T) {
 	ctx := context.Background()
 
