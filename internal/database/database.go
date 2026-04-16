@@ -23,7 +23,7 @@ type TrackedRepository struct {
 	Owner                    string
 	Name                     string
 	FullName                 string `gorm:"uniqueIndex"`
-	RepositoryID             *uint
+	RepositoryID             *uint  `gorm:"index"`
 	SyncMode                 string
 	WebhookProjectionEnabled bool
 	AllowManualBackfill      bool
@@ -235,7 +235,7 @@ type RepositoryRefreshJob struct {
 	ID                  uint `gorm:"primaryKey"`
 	TrackedRepositoryID *uint
 	TrackedRepository   *TrackedRepository
-	RepositoryID        *uint
+	RepositoryID        *uint `gorm:"index"`
 	Repository          *Repository
 	JobType             string
 	Owner               string `gorm:"index"`

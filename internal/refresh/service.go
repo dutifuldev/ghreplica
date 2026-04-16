@@ -10,7 +10,6 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/github"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type Request struct {
@@ -46,32 +45,36 @@ func (s *Scheduler) EnqueueRepositoryRefresh(ctx context.Context, request Reques
 	}
 
 	now := time.Now().UTC()
-	var existing database.RepositoryRefreshJob
-	err := s.db.WithContext(ctx).
-		Where("full_name = ? AND job_type = ? AND ((status = ?) OR (status = ? AND (lease_expires_at IS NULL OR lease_expires_at > ?)))",
-			request.FullName,
+	tracked, err := ResolveTrackedRepository(ctx, s.db, nil, request.FullName)
+	if err != nil {
+		return err
+	}
+
+	repository, err := resolveRepositoryForRefresh(ctx, s.db, tracked, request.FullName)
+	if err != nil {
+		return err
+	}
+
+	query := s.db.WithContext(ctx).
+		Where("job_type = ? AND ((status = ?) OR (status = ? AND (lease_expires_at IS NULL OR lease_expires_at > ?)))",
 			jobType,
 			"pending",
 			"processing",
 			now,
-		).
-		Order("id ASC").
-		First(&existing).Error
+		)
+	if repository != nil {
+		query = query.Where("repository_id = ?", repository.ID)
+	} else if tracked != nil && tracked.RepositoryID != nil {
+		query = query.Where("repository_id = ?", *tracked.RepositoryID)
+	} else {
+		query = query.Where("full_name = ?", request.FullName)
+	}
+
+	var existing database.RepositoryRefreshJob
+	err = query.Order("id ASC").First(&existing).Error
 	if err == nil {
 		return nil
 	}
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
-
-	var tracked database.TrackedRepository
-	err = s.db.WithContext(ctx).Where("full_name = ?", request.FullName).First(&tracked).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
-
-	var repository database.Repository
-	err = s.db.WithContext(ctx).Where("full_name = ?", request.FullName).First(&repository).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
@@ -88,10 +91,13 @@ func (s *Scheduler) EnqueueRepositoryRefresh(ctx context.Context, request Reques
 		RequestedAt:   now,
 		NextAttemptAt: &now,
 	}
-	if err == nil {
+	if repository != nil {
+		job.Owner = repository.OwnerLogin
+		job.Name = repository.Name
+		job.FullName = repository.FullName
 		job.RepositoryID = &repository.ID
 	}
-	if tracked.ID != 0 {
+	if tracked != nil {
 		job.TrackedRepositoryID = &tracked.ID
 		if tracked.RepositoryID != nil && job.RepositoryID == nil {
 			job.RepositoryID = tracked.RepositoryID
@@ -163,7 +169,7 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		return true, w.markFailed(ctx, job.ID, err)
 	}
 
-	return true, w.markSucceeded(ctx, job.ID, job.FullName)
+	return true, w.markSucceeded(ctx, job)
 }
 
 func (w *Worker) claimNextJob(ctx context.Context) (database.RepositoryRefreshJob, bool, error) {
@@ -204,12 +210,11 @@ func (w *Worker) claimNextJob(ctx context.Context) (database.RepositoryRefreshJo
 	return job, true, nil
 }
 
-func (w *Worker) markSucceeded(ctx context.Context, jobID uint, fullName string) error {
+func (w *Worker) markSucceeded(ctx context.Context, job database.RepositoryRefreshJob) error {
 	now := time.Now().UTC()
 
-	var repository database.Repository
-	err := w.db.WithContext(ctx).Where("full_name = ?", fullName).First(&repository).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	repository, err := resolveRepositoryForJob(ctx, w.db, job)
+	if err != nil {
 		return err
 	}
 
@@ -221,20 +226,34 @@ func (w *Worker) markSucceeded(ctx context.Context, jobID uint, fullName string)
 		"lease_expires_at": nil,
 		"updated_at":       now,
 	}
-	if err == nil {
+	if repository != nil {
 		updates["repository_id"] = repository.ID
+		updates["owner"] = repository.OwnerLogin
+		updates["name"] = repository.Name
+		updates["full_name"] = repository.FullName
 	}
 
 	if err := w.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).
-		Where("id = ?", jobID).
+		Where("id = ?", job.ID).
 		Updates(updates).Error; err != nil {
 		return err
 	}
 
-	if err == nil {
+	if repository != nil {
+		tracked, err := ResolveTrackedRepository(ctx, w.db, &repository.ID, repository.FullName)
+		if err != nil {
+			return err
+		}
+		if tracked == nil {
+			return nil
+		}
+
 		return w.db.WithContext(ctx).Model(&database.TrackedRepository{}).
-			Where("full_name = ?", fullName).
+			Where("id = ?", tracked.ID).
 			Updates(map[string]any{
+				"owner":                      repository.OwnerLogin,
+				"name":                       repository.Name,
+				"full_name":                  repository.FullName,
 				"repository_id":              repository.ID,
 				"sync_mode":                  syncModeManualBackfill,
 				"allow_manual_backfill":      true,
@@ -286,7 +305,36 @@ func (w *Worker) markFailed(ctx context.Context, jobID uint, reason error) error
 		Updates(updates).Error
 }
 
-func UpsertTrackedRepositoryForWebhook(ctx context.Context, db *gorm.DB, owner, name, fullName string, seenAt time.Time) (database.TrackedRepository, error) {
+func UpsertTrackedRepositoryForWebhook(ctx context.Context, db *gorm.DB, owner, name, fullName string, repositoryID *uint, seenAt time.Time) (database.TrackedRepository, error) {
+	existing, err := ResolveTrackedRepository(ctx, db, repositoryID, fullName)
+	if err != nil {
+		return database.TrackedRepository{}, err
+	}
+
+	if existing != nil {
+		updates := map[string]any{
+			"owner":           owner,
+			"name":            name,
+			"full_name":       fullName,
+			"last_webhook_at": seenAt,
+			"updated_at":      seenAt,
+		}
+		if repositoryID != nil {
+			updates["repository_id"] = *repositoryID
+		}
+		if err := db.WithContext(ctx).Model(&database.TrackedRepository{}).
+			Where("id = ?", existing.ID).
+			Updates(updates).Error; err != nil {
+			return database.TrackedRepository{}, err
+		}
+
+		var stored database.TrackedRepository
+		if err := db.WithContext(ctx).First(&stored, existing.ID).Error; err != nil {
+			return database.TrackedRepository{}, err
+		}
+		return stored, nil
+	}
+
 	tracked := database.TrackedRepository{
 		Owner:                    owner,
 		Name:                     name,
@@ -301,21 +349,126 @@ func UpsertTrackedRepositoryForWebhook(ctx context.Context, db *gorm.DB, owner, 
 		Enabled:                  true,
 		LastWebhookAt:            &seenAt,
 	}
-	if err := db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "full_name"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"owner":           owner,
-			"name":            name,
-			"last_webhook_at": seenAt,
-			"updated_at":      seenAt,
-		}),
-	}).Create(&tracked).Error; err != nil {
+	if repositoryID != nil {
+		tracked.RepositoryID = repositoryID
+	}
+	if err := db.WithContext(ctx).Create(&tracked).Error; err != nil {
 		return database.TrackedRepository{}, err
 	}
 
 	var stored database.TrackedRepository
-	err := db.WithContext(ctx).Where("full_name = ?", fullName).First(&stored).Error
+	err = db.WithContext(ctx).First(&stored, tracked.ID).Error
 	return stored, err
+}
+
+func ResolveTrackedRepository(ctx context.Context, db *gorm.DB, repositoryID *uint, fullName string) (*database.TrackedRepository, error) {
+	var (
+		byRepository *database.TrackedRepository
+		byFullName   *database.TrackedRepository
+	)
+
+	if repositoryID != nil {
+		var tracked database.TrackedRepository
+		err := db.WithContext(ctx).Where("repository_id = ?", *repositoryID).Order("id ASC").First(&tracked).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			byRepository = &tracked
+		}
+	}
+
+	fullName = strings.TrimSpace(fullName)
+	if fullName != "" {
+		var tracked database.TrackedRepository
+		err := db.WithContext(ctx).Where("full_name = ?", fullName).First(&tracked).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			byFullName = &tracked
+		}
+	}
+
+	switch {
+	case byRepository == nil && byFullName == nil:
+		return nil, nil
+	case byRepository != nil && (byFullName == nil || byRepository.ID == byFullName.ID):
+		return byRepository, nil
+	case byRepository == nil:
+		return byFullName, nil
+	default:
+		if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&database.RepositoryRefreshJob{}).
+				Where("tracked_repository_id = ?", byFullName.ID).
+				Update("tracked_repository_id", byRepository.ID).Error; err != nil {
+				return err
+			}
+			return tx.Delete(&database.TrackedRepository{}, byFullName.ID).Error
+		}); err != nil {
+			return nil, err
+		}
+
+		var stored database.TrackedRepository
+		if err := db.WithContext(ctx).First(&stored, byRepository.ID).Error; err != nil {
+			return nil, err
+		}
+		return &stored, nil
+	}
+}
+
+func resolveRepositoryForRefresh(ctx context.Context, db *gorm.DB, tracked *database.TrackedRepository, fullName string) (*database.Repository, error) {
+	if tracked != nil && tracked.RepositoryID != nil {
+		var repository database.Repository
+		err := db.WithContext(ctx).Preload("Owner").First(&repository, *tracked.RepositoryID).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			return &repository, nil
+		}
+	}
+
+	if strings.TrimSpace(fullName) == "" {
+		return nil, nil
+	}
+
+	var repository database.Repository
+	err := db.WithContext(ctx).Preload("Owner").Where("full_name = ?", fullName).First(&repository).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &repository, nil
+}
+
+func resolveRepositoryForJob(ctx context.Context, db *gorm.DB, job database.RepositoryRefreshJob) (*database.Repository, error) {
+	if job.RepositoryID != nil {
+		var repository database.Repository
+		err := db.WithContext(ctx).Preload("Owner").First(&repository, *job.RepositoryID).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			return &repository, nil
+		}
+	}
+
+	if strings.TrimSpace(job.FullName) == "" {
+		return nil, nil
+	}
+
+	var repository database.Repository
+	err := db.WithContext(ctx).Preload("Owner").Where("full_name = ?", job.FullName).First(&repository).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &repository, nil
 }
 
 func CompletenessUpdatesForEvent(event string) map[string]any {

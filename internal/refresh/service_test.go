@@ -125,6 +125,63 @@ func TestWorkerSupersedesWebhookRefreshJobsAndRecoversExpiredLeases(t *testing.T
 	require.Nil(t, jobs[1].LeaseExpiresAt)
 }
 
+func TestResolveTrackedRepositoryPrefersRepositoryIDAcrossRename(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	repo := &database.Repository{
+		GitHubID:   101,
+		OwnerLogin: "acme",
+		Name:       "widgets-renamed",
+		FullName:   "acme/widgets-renamed",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(repo).Error)
+
+	stable := &database.TrackedRepository{
+		Owner:        "acme",
+		Name:         "widgets",
+		FullName:     "acme/widgets",
+		RepositoryID: &repo.ID,
+		SyncMode:     "webhook_only",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(stable).Error)
+
+	duplicate := &database.TrackedRepository{
+		Owner:    "acme",
+		Name:     "widgets-renamed",
+		FullName: "acme/widgets-renamed",
+		SyncMode: "webhook_only",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(duplicate).Error)
+
+	require.NoError(t, db.WithContext(ctx).Create(&database.RepositoryRefreshJob{
+		TrackedRepositoryID: &duplicate.ID,
+		RepositoryID:        &repo.ID,
+		JobType:             refresh.JobTypeBootstrapRepository,
+		FullName:            duplicate.FullName,
+		Status:              "pending",
+		MaxAttempts:         3,
+		RequestedAt:         time.Now().UTC(),
+	}).Error)
+
+	resolved, err := refresh.ResolveTrackedRepository(ctx, db, &repo.ID, "acme/widgets-renamed")
+	require.NoError(t, err)
+	require.NotNil(t, resolved)
+	require.Equal(t, stable.ID, resolved.ID)
+
+	var trackedRows []database.TrackedRepository
+	require.NoError(t, db.WithContext(ctx).Order("id ASC").Find(&trackedRows).Error)
+	require.Len(t, trackedRows, 1)
+
+	var job database.RepositoryRefreshJob
+	require.NoError(t, db.WithContext(ctx).First(&job).Error)
+	require.NotNil(t, job.TrackedRepositoryID)
+	require.Equal(t, stable.ID, *job.TrackedRepositoryID)
+}
+
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 	return "sqlite://file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
