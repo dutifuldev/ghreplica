@@ -182,6 +182,50 @@ func TestResolveTrackedRepositoryPrefersRepositoryIDAcrossRename(t *testing.T) {
 	require.Equal(t, stable.ID, *job.TrackedRepositoryID)
 }
 
+func TestEnqueueRepositoryRefreshDeduplicatesJobsAcrossRepositoryIDBackfill(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	tracked := &database.TrackedRepository{
+		Owner:    "acme",
+		Name:     "widgets",
+		FullName: "acme/widgets",
+		SyncMode: "webhook_only",
+		Enabled:  true,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(tracked).Error)
+
+	scheduler := refresh.NewScheduler(db)
+	request := refresh.Request{
+		Owner:    "acme",
+		Name:     "widgets",
+		FullName: "acme/widgets",
+	}
+	require.NoError(t, scheduler.EnqueueRepositoryRefresh(ctx, request))
+
+	repo := &database.Repository{
+		GitHubID:   101,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(repo).Error)
+	require.NoError(t, db.WithContext(ctx).Model(&database.TrackedRepository{}).
+		Where("id = ?", tracked.ID).
+		Update("repository_id", repo.ID).Error)
+
+	require.NoError(t, scheduler.EnqueueRepositoryRefresh(ctx, request))
+
+	var jobs []database.RepositoryRefreshJob
+	require.NoError(t, db.WithContext(ctx).Order("id ASC").Find(&jobs).Error)
+	require.Len(t, jobs, 1)
+	require.NotNil(t, jobs[0].TrackedRepositoryID)
+	require.Equal(t, tracked.ID, *jobs[0].TrackedRepositoryID)
+}
+
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 	return "sqlite://file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"

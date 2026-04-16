@@ -63,13 +63,7 @@ func (s *Scheduler) EnqueueRepositoryRefresh(ctx context.Context, request Reques
 			"processing",
 			now,
 		)
-	if repository != nil {
-		query = query.Where("repository_id = ?", repository.ID)
-	} else if tracked != nil && tracked.RepositoryID != nil {
-		query = query.Where("repository_id = ?", *tracked.RepositoryID)
-	} else {
-		query = query.Where("full_name = ?", request.FullName)
-	}
+	query = query.Where(refreshJobIdentityCondition(s.db.WithContext(ctx), tracked, repository, request.FullName))
 
 	var existing database.RepositoryRefreshJob
 	err = query.Order("id ASC").First(&existing).Error
@@ -430,6 +424,25 @@ func ResolveTrackedRepository(ctx context.Context, db *gorm.DB, repositoryID *ui
 		}
 		return &stored, nil
 	}
+}
+
+func refreshJobIdentityCondition(db *gorm.DB, tracked *database.TrackedRepository, repository *database.Repository, fullName string) *gorm.DB {
+	condition := db.Where("1 = 0")
+	if repository != nil {
+		condition = condition.Or("repository_id = ?", repository.ID)
+	}
+	if tracked != nil {
+		condition = condition.Or("tracked_repository_id = ?", tracked.ID)
+		if tracked.RepositoryID != nil {
+			condition = condition.Or("repository_id = ?", *tracked.RepositoryID)
+		}
+	}
+	fullName = strings.TrimSpace(fullName)
+	if fullName != "" {
+		// Fallback for older jobs that predate stable helper IDs.
+		condition = condition.Or("(repository_id IS NULL AND tracked_repository_id IS NULL AND full_name = ?)", fullName)
+	}
+	return condition
 }
 
 func resolveRepositoryForRefresh(ctx context.Context, db *gorm.DB, tracked *database.TrackedRepository, fullName string) (*database.Repository, error) {
