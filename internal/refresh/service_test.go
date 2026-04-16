@@ -245,6 +245,55 @@ func TestEnqueueRepositoryRefreshDeduplicatesJobsAcrossRepositoryIDBackfill(t *t
 	require.Equal(t, tracked.ID, *jobs[0].TrackedRepositoryID)
 }
 
+func TestEnqueueRepositoryRefreshPrefersCurrentRepositoryForReusedFullName(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	oldRepo := &database.Repository{
+		GitHubID:   101,
+		OwnerLogin: "acme",
+		Name:       "widgets-old",
+		FullName:   "acme/widgets-old",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(oldRepo).Error)
+
+	currentRepo := &database.Repository{
+		GitHubID:   202,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(currentRepo).Error)
+
+	staleTracked := &database.TrackedRepository{
+		Owner:        "acme",
+		Name:         "widgets",
+		FullName:     "acme/widgets",
+		RepositoryID: &oldRepo.ID,
+		SyncMode:     "webhook_only",
+		Enabled:      true,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(staleTracked).Error)
+
+	scheduler := refresh.NewScheduler(db)
+	require.NoError(t, scheduler.EnqueueRepositoryRefresh(ctx, refresh.Request{
+		Owner:    "acme",
+		Name:     "widgets",
+		FullName: "acme/widgets",
+	}))
+
+	var jobs []database.RepositoryRefreshJob
+	require.NoError(t, db.WithContext(ctx).Order("id ASC").Find(&jobs).Error)
+	require.Len(t, jobs, 1)
+	require.NotNil(t, jobs[0].RepositoryID)
+	require.Equal(t, currentRepo.ID, *jobs[0].RepositoryID)
+	require.Equal(t, "acme/widgets", jobs[0].FullName)
+	require.Equal(t, "widgets", jobs[0].Name)
+}
+
 func TestWorkerUsesCurrentRepositoryLocatorForRenamedJob(t *testing.T) {
 	ctx := context.Background()
 
@@ -298,6 +347,73 @@ func TestWorkerUsesCurrentRepositoryLocatorForRenamedJob(t *testing.T) {
 	require.True(t, processed)
 	require.Equal(t, "acme", calledOwner)
 	require.Equal(t, "widgets-renamed", calledRepo)
+
+	var job database.RepositoryRefreshJob
+	require.NoError(t, db.WithContext(ctx).First(&job).Error)
+	require.Equal(t, "succeeded", job.Status)
+}
+
+func TestWorkerPrefersRequestedLocatorWhenFullNameIsReused(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	oldRepo := &database.Repository{
+		GitHubID:   101,
+		OwnerLogin: "acme",
+		Name:       "widgets-old",
+		FullName:   "acme/widgets-old",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(oldRepo).Error)
+
+	currentRepo := &database.Repository{
+		GitHubID:   202,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(currentRepo).Error)
+
+	tracked := &database.TrackedRepository{
+		Owner:        "acme",
+		Name:         "widgets",
+		FullName:     "acme/widgets",
+		RepositoryID: &oldRepo.ID,
+		SyncMode:     "webhook_only",
+		Enabled:      true,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(tracked).Error)
+
+	now := time.Now().UTC()
+	require.NoError(t, db.WithContext(ctx).Create(&database.RepositoryRefreshJob{
+		TrackedRepositoryID: &tracked.ID,
+		RepositoryID:        &oldRepo.ID,
+		JobType:             refresh.JobTypeBootstrapRepository,
+		Owner:               "acme",
+		Name:                "widgets",
+		FullName:            "acme/widgets",
+		Source:              "manual",
+		Status:              "pending",
+		MaxAttempts:         3,
+		RequestedAt:         now,
+		NextAttemptAt:       &now,
+	}).Error)
+
+	var calledOwner string
+	var calledRepo string
+	worker := refresh.NewWorker(db, bootstrapperFunc(func(ctx context.Context, owner, repo string) error {
+		calledOwner = owner
+		calledRepo = repo
+		return nil
+	}), time.Millisecond)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, "acme", calledOwner)
+	require.Equal(t, "widgets", calledRepo)
 
 	var job database.RepositoryRefreshJob
 	require.NoError(t, db.WithContext(ctx).First(&job).Error)
