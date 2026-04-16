@@ -4,9 +4,17 @@
 
 <h1 align="center">ghreplica</h1>
 
-<p align="center">Durable GitHub mirror for tooling.</p>
+<p align="center">Durable self-hostable GitHub mirror with better search and no rate limits</p>
 
-ghreplica keeps GitHub-shaped repository data in local storage, uses Git as ground truth for change indexing, and serves a stable read API and CLI so downstream tools do not need to build their own webhook handlers, crawlers, and caches.
+ghreplica keeps GitHub-shaped repository data in server-side storage, uses Git as ground truth for change indexing, and serves a stable read API and CLI so downstream tools do not need to build their own webhook handlers, crawlers, and caches.
+
+On top of its GitHub-compatible read surface, `ghreplica` also adds derived functionality for tooling:
+
+- mirror status so clients can inspect freshness, completeness, and indexing state instead of assuming the mirror is fully up to date
+- Git-backed change inspection for pull requests, commits, and compares using the local Git mirror as ground truth
+- related PR and overlap search to find changes that touched the same files or overlapping hunks
+- mirrored text search across issues, pull requests, comments, reviews, and review comments
+- structural code search with `ast-grep` against exact mirrored commits or PR heads for reproducible syntax-aware queries
 
 Current ownership note: this project is currently being developed by Onur Solmaz and is expected to move to another organization once it is stable.
 
@@ -14,6 +22,12 @@ Current public instance:
 
 - API: `https://ghreplica.dutiful.dev`
 - CLI: `ghr`
+
+## Why
+
+Most tools that need GitHub data end up rebuilding the same fragile stack. They poll GitHub, keep partial caches of issues and pull requests, handle webhooks inconsistently, and then discover later that they also need search, change overlap, or indexing status. That usually produces systems that are hard to reason about and even harder to trust.
+
+`ghreplica` exists to centralize that work into one explicit system. It mirrors GitHub-shaped data into canonical storage, builds Git-backed change indexes on top of a local mirror, and exposes a read surface that other tools can depend on. The goal is not to pretend that the mirror is magically complete at all times. The goal is to make freshness, completeness, and derived features operationally honest.
 
 ## Agent Skill
 
@@ -24,16 +38,12 @@ If you want your agent to immediately understand `ghreplica`, its API surfaces, 
 ```text
 Install the `ghreplica` skill from `/home/bob/repos/ghreplica/skills/ghreplica/SKILL.md`.
 Then build the CLI with `cd /home/bob/repos/ghreplica && go build -o /tmp/ghr ./cmd/ghr`.
-After that, use the skill for work involving the ghreplica API, the `ghr` CLI, mirrored GitHub reads, git-change inspection, overlap search, mirrored text search, or structural code search.
+After that, use the skill for work involving the ghreplica API, the `ghr` CLI,
+mirrored GitHub reads, git-change inspection, overlap search,
+mirrored text search, or structural code search.
 ```
 
 That is enough for your agent if it already knows how to install repo-local skills.
-
-## Why This Exists
-
-Most tools that need GitHub data end up rebuilding the same fragile stack. They poll GitHub, keep partial caches of issues and pull requests, handle webhooks inconsistently, and then discover later that they also need search, change overlap, or indexing status. That usually produces systems that are hard to reason about and even harder to trust.
-
-`ghreplica` exists to centralize that work into one explicit system. It mirrors GitHub-shaped data into canonical storage, builds Git-backed change indexes on top of a local mirror, and exposes a read surface that other tools can depend on. The goal is not to pretend that the mirror is magically complete at all times. The goal is to make freshness, completeness, and derived features operationally honest.
 
 ## API Surfaces
 
