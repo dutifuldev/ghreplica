@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/ghreplica-logo.svg" alt="ghreplica logo" width="180">
+  <img src="assets/cattopus.svg" alt="ghreplica logo" width="180">
 </p>
 
 <h1 align="center">ghreplica</h1>
@@ -62,32 +62,54 @@ In practice, the current product already covers a meaningful slice of real workf
 
 ## Quick Examples
 
-The fastest way to understand the project is to look at one GitHub-shaped read, one change-index read, and one search query.
+The easiest way to understand the boundary is to separate the GitHub-compatible reads from the extra functionality `ghreplica` adds on top.
+
+### GitHub-Compatible Reads
+
+These are the same kinds of repository, issue, and pull request reads you would normally get from `gh` or the GitHub API.
 
 From the CLI:
 
 ```bash
 ghr repo view openclaw/openclaw
+ghr issue view -R openclaw/openclaw 66797 --comments
 ghr pr view -R openclaw/openclaw 66863 --comments
+```
+
+From the API:
+
+```bash
+curl -fsS https://ghreplica.dutiful.dev/v1/github/repos/openclaw/openclaw | jq
+curl -fsS https://ghreplica.dutiful.dev/v1/github/repos/openclaw/openclaw/issues/66797 | jq
+curl -fsS https://ghreplica.dutiful.dev/v1/github/repos/openclaw/openclaw/pulls/66863 | jq
+```
+
+### ghreplica-Only Features
+
+These are the derived capabilities layered on top of the mirror and local Git indexes.
+
+From the CLI:
+
+```bash
+ghr repo status -R openclaw/openclaw
 ghr changes pr files -R openclaw/openclaw 59883
+ghr search related-prs -R openclaw/openclaw 59883 --mode path_overlap
 ghr search mentions -R openclaw/openclaw --query "acp" --mode fts --scope pull_requests --state all
 ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
 ```
 
-These examples line up with the three API surfaces. `ghr repo view` and `ghr pr view` are GitHub-shaped reads. `ghr changes pr files` asks for the indexed file list for one PR. `ghr search mentions` searches mirrored discussion text for the term `acp`. `ghr search ast-grep` runs structural code search against the PR head and narrows the search to files changed by that PR.
-
-If you want to hit the API directly, the same pattern looks like this:
+From the API:
 
 ```bash
-curl -fsS https://ghreplica.dutiful.dev/v1/github/repos/openclaw/openclaw | jq
 curl -fsS https://ghreplica.dutiful.dev/v1/changes/repos/openclaw/openclaw/mirror-status | jq
-curl -fsS https://ghreplica.dutiful.dev/v1/search/repos/openclaw/openclaw/status | jq
+curl -fsS https://ghreplica.dutiful.dev/v1/changes/repos/openclaw/openclaw/pulls/59883/files | jq
+curl -fsS 'https://ghreplica.dutiful.dev/v1/search/repos/openclaw/openclaw/pulls/59883/related?mode=path_overlap&state=all' | jq
 curl -fsS https://ghreplica.dutiful.dev/v1/search/repos/openclaw/openclaw/mentions \
   -H 'Content-Type: application/json' \
   -d '{"query":"acp","mode":"fts","scopes":["pull_requests"],"state":"all","limit":10,"page":1}' | jq
 ```
 
-The first call asks for a GitHub-compatible repository document. The second asks for `ghreplica`'s own mirror-status view, which is where you can inspect local freshness and completeness signals. The third asks for text-search status, which is useful before trusting an empty text-search result. The last call runs the actual mirrored text search.
+The `/v1/github/...` examples are compatibility reads. The `/v1/changes/...` and `/v1/search/...` examples are the extra `ghreplica` surface for mirror inspection, Git-backed change data, overlap search, mirrored text search, and structural code search.
 
 ## Search
 
