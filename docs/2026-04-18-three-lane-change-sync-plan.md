@@ -158,8 +158,8 @@ What changes is how they are driven and which lane is allowed to update them.
 The worker should prefer work in this order:
 
 1. targeted webhook refresh for exact PRs
-2. periodic inventory scan, only if the inventory is too old or invalid
-3. backlog backfill from the latest usable inventory
+2. backlog backfill from the latest usable inventory
+3. periodic inventory scan, but only if the inventory is too old or invalid to keep reusing
 
 The key rule is:
 
@@ -175,6 +175,10 @@ In plain terms:
 
 The scheduler should define an explicit “inventory fresh enough to reuse” window.
 
+The default production choice should be:
+
+- `OPEN_PR_INVENTORY_MAX_AGE = 10m`
+
 For example:
 
 - if `last_open_pr_scan_at` is within the configured freshness window
@@ -184,6 +188,27 @@ For example:
 The exact default can be tuned later.
 
 The important design rule is that this must be explicit, not inferred indirectly from `dirty=true`.
+
+## Inventory Invalidation
+
+The inventory should only be invalidated when the open-PR set itself may have changed, or when the inventory aged out.
+
+The default production rules should be:
+
+- ordinary PR content changes do not invalidate the inventory
+- webhook events that clearly point to one PR should enqueue targeted PR refresh only
+- events that may change the open-PR set or repo-wide open-PR metadata should invalidate inventory
+
+The production invalidation set should include at least:
+
+- PR opened
+- PR closed
+- PR reopened
+- base branch changed
+- explicit repair or operator-requested rescan
+- inventory age exceeding `OPEN_PR_INVENTORY_MAX_AGE`
+
+This keeps repo-wide scans tied to actual repo-wide drift instead of treating every webhook as a reason to relist the whole repo.
 
 ## Configuration Model
 
@@ -195,14 +220,14 @@ In the three-lane design, the operator-facing knobs should match the real work l
 
 Keep:
 
-- webhook fetch debounce
-- backfill max PRs per pass
-- backfill max runtime per pass
+- `WEBHOOK_REFRESH_DEBOUNCE`
+- `BACKFILL_MAX_PRS_PER_PASS`
+- `BACKFILL_MAX_RUNTIME`
 
 Rename or replace:
 
 - the old repo minimum fetch interval should become an inventory freshness setting
-  - for example `OPEN_PR_INVENTORY_MAX_AGE`
+  - use `OPEN_PR_INVENTORY_MAX_AGE`
   - the real question is whether the current inventory is still fresh enough to reuse
 
 Remove from the operator-facing model:
@@ -219,10 +244,10 @@ Keep internal-only if they still exist:
 
 The clean long-term operator-facing configuration should therefore be shaped around:
 
-- webhook debounce
-- inventory freshness window
-- backfill max PRs per pass
-- backfill max runtime per pass
+- `WEBHOOK_REFRESH_DEBOUNCE`
+- `OPEN_PR_INVENTORY_MAX_AGE`
+- `BACKFILL_MAX_PRS_PER_PASS`
+- `BACKFILL_MAX_RUNTIME`
 
 That is a better mental model and a better production model because it matches the three work lanes directly.
 
@@ -235,6 +260,38 @@ If the webhook tells us which PR changed, it should enqueue targeted PR refresh 
 If the webhook only implies repo-level drift, it may mark the inventory as needing a later scan.
 
 But it should not immediately force the scheduler to redo a full repo-wide inventory pass before backfill can continue.
+
+## Preemption Rule
+
+Targeted webhook refresh work should be urgent, but it should not starve backlog backfill forever.
+
+The default production rule should be:
+
+- process targeted webhook refreshes in bounded bursts
+- after one bounded burst, if backlog still exists and the inventory is still valid, let backfill run one slice
+
+In plain terms:
+
+- urgent PR refresh wins first
+- but it does not get an unlimited right to keep cutting the line
+
+This is the main scheduler behavior that prevents hot repos from repeatedly rescanning or repeatedly prioritizing fresh webhook work while the historical backlog barely moves.
+
+## Lane Ownership
+
+The three lanes should have explicit ownership over repo state.
+
+The default production ownership should be:
+
+- targeted webhook refresh lane owns per-PR urgent refresh work
+- inventory scan lane owns repo-wide open-PR inventory and repo-wide totals
+- backlog backfill lane owns the backfill cursor and coverage progression
+
+All three lanes should share one freshness function so they agree on what counts as:
+
+- `current`
+- `stale`
+- `missing`
 
 ## Status Surface
 
@@ -250,18 +307,27 @@ The scheduler refactor should preserve or improve the existing `/v1/changes/.../
 
 The important thing is that operators can see why the system is choosing its current work.
 
-## Rollout Strategy
+The target status surface should expose these ideas directly rather than forcing operators to infer them from one generic dirty bit.
 
-This should be implemented incrementally.
+## Cutover Strategy
 
-1. keep the current per-PR indexing and freshness model
-2. add explicit lane-aware state and scheduling rules
-3. make webhook work prefer targeted PR refreshes
-4. gate repo-wide inventory scans behind inventory freshness
-5. let backfill continue against fresh enough inventory
+This should be a direct cutover, not a dual-path rollout.
+
+The implementation should:
+
+1. keep the existing per-PR indexing and freshness logic
+2. replace the mixed scheduler with the three-lane scheduler in one pass
+3. replace the old public configuration names with the new lane-shaped names
+4. update the status endpoint and docs at the same time
+5. deploy the new scheduler directly
 6. validate behavior on a hot repo such as `openclaw/openclaw`
 
-This is a scheduler refactor, not a ground-up indexing rewrite.
+The important rule is:
+
+- do not keep legacy scheduler behavior around as a fallback path
+- do not keep the old mixed-model knobs around once the cutover lands
+
+This is still a scheduler refactor, not a ground-up indexing rewrite.
 
 ## Testing
 
