@@ -185,6 +185,47 @@ The exact default can be tuned later.
 
 The important design rule is that this must be explicit, not inferred indirectly from `dirty=true`.
 
+## Configuration Model
+
+The scheduler refactor should simplify the operator-facing configuration.
+
+The current parameters reflect the older mixed model where fetch and backfill keep interrupting each other.
+
+In the three-lane design, the operator-facing knobs should match the real work lanes more directly.
+
+Keep:
+
+- webhook fetch debounce
+- backfill max PRs per pass
+- backfill max runtime per pass
+
+Rename or replace:
+
+- the old repo minimum fetch interval should become an inventory freshness setting
+  - for example `OPEN_PR_INVENTORY_MAX_AGE`
+  - the real question is whether the current inventory is still fresh enough to reuse
+
+Remove from the operator-facing model:
+
+- an explicit open-PR backfill interval between passes
+  - if backlog exists and inventory is still valid, backfill should keep running
+  - the scheduler should not need an artificial pause between backfill passes
+
+Keep internal-only if they still exist:
+
+- low-level poll interval
+- lease TTL
+- heartbeat timings
+
+The clean long-term operator-facing configuration should therefore be shaped around:
+
+- webhook debounce
+- inventory freshness window
+- backfill max PRs per pass
+- backfill max runtime per pass
+
+That is a better mental model and a better production model because it matches the three work lanes directly.
+
 ## Webhook Behavior
 
 A webhook should do two different things depending on what it knows.
