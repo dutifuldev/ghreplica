@@ -152,6 +152,12 @@ Structural code search is for syntax-aware questions over repository contents. U
 
 Webhooks drive freshness. Full backfills are explicit operator actions. Targeted repairs are preferred over whole-repo recrawls. Mirrors can be partial, and the system should be honest about that.
 
+For hot repositories, change sync now runs in three explicit lanes:
+
+- targeted PR refresh from webhook hints
+- periodic open-PR inventory scans
+- backlog backfill from the latest committed inventory generation
+
 That means this project is not trying to pretend it has perfect live parity with GitHub at all times. The goal is reliable, inspectable, bounded mirroring. If something is partially indexed, stale, or still being rebuilt, the system should say so rather than silently acting complete.
 
 ## Local Development

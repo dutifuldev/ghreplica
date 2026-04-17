@@ -122,6 +122,15 @@ The right model is:
 - newer generation is needed
 - backfill continues on the current generation until the switch
 
+The direct-cutover generation commit rule should be strict:
+
+- only commit a newer generation if the scan completed successfully
+- never partially commit a building generation
+- if the scan fails, keep the previous committed generation active
+- leave `inventory_needs_refresh = true`
+- record `last_error`
+- retry with a later inventory scan
+
 ### 3. Backlog Backfill
 
 This lane is for coverage work.
@@ -211,6 +220,13 @@ The default production choice should be:
 
 - `OPEN_PR_INVENTORY_MAX_AGE = 10m`
 
+The direct-cutover default operator-facing values should be:
+
+- `WEBHOOK_REFRESH_DEBOUNCE = 15s`
+- `OPEN_PR_INVENTORY_MAX_AGE = 10m`
+- `BACKFILL_MAX_PRS_PER_PASS = 100`
+- `BACKFILL_MAX_RUNTIME = 5m`
+
 For example:
 
 - if `last_open_pr_scan_at` is within the configured freshness window
@@ -238,9 +254,18 @@ The production refresh trigger set should include at least:
 - PR opened
 - PR closed
 - PR reopened
-- base branch changed
+- PR edited when the base branch changed
 - explicit repair or operator-requested rescan
 - inventory age exceeding `OPEN_PR_INVENTORY_MAX_AGE`
+
+The default direct-cutover rule should explicitly not mark inventory refresh needed for:
+
+- PR synchronize
+- comments
+- reviews
+- labels
+- assignees
+- issue-only events
 
 This keeps repo-wide scans tied to real open-set drift without making the current generation unusable in the meantime.
 
@@ -257,6 +282,12 @@ Keep:
 - `WEBHOOK_REFRESH_DEBOUNCE`
 - `BACKFILL_MAX_PRS_PER_PASS`
 - `BACKFILL_MAX_RUNTIME`
+
+The direct-cutover defaults should be:
+
+- `WEBHOOK_REFRESH_DEBOUNCE = 15s`
+- `BACKFILL_MAX_PRS_PER_PASS = 100`
+- `BACKFILL_MAX_RUNTIME = 5m`
 
 Rename or replace:
 
@@ -304,6 +335,12 @@ The default production rule should be:
 - process targeted webhook refreshes in bounded bursts
 - after one bounded burst, if backlog still exists and the inventory is still valid, let backfill run one slice
 
+The direct-cutover default burst policy should be:
+
+- process up to `50` distinct PR refreshes per burst
+- or spend up to `30s` in targeted refresh work
+- whichever limit is reached first
+
 In plain terms:
 
 - urgent PR refresh wins first
@@ -343,6 +380,24 @@ The important thing is that operators can see why the system is choosing its cur
 
 The target status surface should expose these ideas directly rather than forcing operators to infer them from one generic dirty bit.
 
+The direct-cutover default field set should include:
+
+- `targeted_refresh_pending`
+- `targeted_refresh_running`
+- `inventory_generation_current`
+- `inventory_generation_building`
+- `inventory_needs_refresh`
+- `inventory_last_committed_at`
+- `inventory_scan_running`
+- `backfill_running`
+- `backfill_generation`
+- `backfill_cursor`
+- `open_pr_total`
+- `open_pr_current`
+- `open_pr_stale`
+- `open_pr_missing`
+- `last_error`
+
 ## Cutover Strategy
 
 This should be a direct cutover, not a dual-path rollout.
@@ -373,8 +428,11 @@ The implementation should be validated with targeted tests for:
 - inventory generation switch happening atomically once the new generation is complete
 - inventory scan aging out and becoming eligible again
 - backfill continuing across webhook traffic while inventory is still fresh
+- backfill slice stopping at `100 PRs` or `5m`, whichever happens first
+- targeted refresh burst stopping at `50 PRs` or `30s`, whichever happens first
 - no simultaneous conflicting ownership of the same repo lane
 - status counters remaining consistent while lanes alternate
+- failed inventory generation build leaving the previous committed generation active
 
 The most important real-repo validation target is a hot public repo with a large open-PR backlog.
 

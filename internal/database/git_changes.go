@@ -157,51 +157,73 @@ type PullRequestChangeHunk struct {
 }
 
 type RepoChangeSyncState struct {
-	ID                       uint `gorm:"primaryKey"`
-	RepositoryID             uint `gorm:"uniqueIndex"`
-	Repository               Repository
-	Dirty                    bool `gorm:"index"`
-	DirtySince               *time.Time
-	LastWebhookAt            *time.Time
-	LastRequestedFetchAt     *time.Time
-	LastFetchStartedAt       *time.Time
-	LastFetchFinishedAt      *time.Time
-	LastSuccessfulFetchAt    *time.Time
-	LastBackfillStartedAt    *time.Time
-	LastBackfillFinishedAt   *time.Time
-	LastOpenPRScanAt         *time.Time
-	OpenPRTotal              int
-	OpenPRCurrent            int
-	OpenPRStale              int
-	OpenPRCursorNumber       *int
-	OpenPRCursorUpdatedAt    *time.Time
-	BackfillMode             string `gorm:"index"`
-	BackfillPriority         int
-	FetchLeaseOwnerID        string `gorm:"index"`
-	FetchLeaseStartedAt      *time.Time
-	FetchLeaseHeartbeatAt    *time.Time `gorm:"index"`
-	FetchLeaseUntil          *time.Time `gorm:"index"`
-	BackfillLeaseOwnerID     string     `gorm:"index"`
-	BackfillLeaseStartedAt   *time.Time
-	BackfillLeaseHeartbeatAt *time.Time `gorm:"index"`
-	BackfillLeaseUntil       *time.Time `gorm:"index"`
-	LastError                string
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
+	ID                          uint `gorm:"primaryKey"`
+	RepositoryID                uint `gorm:"uniqueIndex"`
+	Repository                  Repository
+	Dirty                       bool `gorm:"index"`
+	DirtySince                  *time.Time
+	LastWebhookAt               *time.Time
+	LastRequestedFetchAt        *time.Time
+	LastFetchStartedAt          *time.Time
+	LastFetchFinishedAt         *time.Time
+	LastSuccessfulFetchAt       *time.Time
+	LastBackfillStartedAt       *time.Time
+	LastBackfillFinishedAt      *time.Time
+	LastOpenPRScanAt            *time.Time
+	InventoryGenerationCurrent  int
+	InventoryGenerationBuilding *int
+	InventoryLastCommittedAt    *time.Time
+	OpenPRTotal                 int
+	OpenPRCurrent               int
+	OpenPRStale                 int
+	BackfillGeneration          int
+	OpenPRCursorNumber          *int
+	OpenPRCursorUpdatedAt       *time.Time
+	BackfillMode                string `gorm:"index"`
+	BackfillPriority            int
+	FetchLeaseOwnerID           string `gorm:"index"`
+	FetchLeaseStartedAt         *time.Time
+	FetchLeaseHeartbeatAt       *time.Time `gorm:"index"`
+	FetchLeaseUntil             *time.Time `gorm:"index"`
+	BackfillLeaseOwnerID        string     `gorm:"index"`
+	BackfillLeaseStartedAt      *time.Time
+	BackfillLeaseHeartbeatAt    *time.Time `gorm:"index"`
+	BackfillLeaseUntil          *time.Time `gorm:"index"`
+	LastError                   string
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
 }
 
 type RepoOpenPullInventory struct {
 	ID                uint      `gorm:"primaryKey"`
-	RepositoryID      uint      `gorm:"uniqueIndex:idx_repo_open_pull_inventory_repo_pr,priority:1;index:idx_repo_open_pull_inventory_repo_freshness_updated,priority:1"`
-	PullRequestNumber int       `gorm:"uniqueIndex:idx_repo_open_pull_inventory_repo_pr,priority:2;index:idx_repo_open_pull_inventory_repo_freshness_updated,priority:3"`
+	RepositoryID      uint      `gorm:"uniqueIndex:idx_repo_open_pull_inventory_repo_gen_pr,priority:1;index:idx_repo_open_pull_inventory_repo_gen_freshness_updated,priority:1"`
+	Generation        int       `gorm:"uniqueIndex:idx_repo_open_pull_inventory_repo_gen_pr,priority:2;index:idx_repo_open_pull_inventory_repo_gen_freshness_updated,priority:2"`
+	PullRequestNumber int       `gorm:"uniqueIndex:idx_repo_open_pull_inventory_repo_gen_pr,priority:3;index:idx_repo_open_pull_inventory_repo_gen_freshness_updated,priority:4"`
 	GitHubUpdatedAt   time.Time `gorm:"column:github_updated_at"`
 	HeadSHA           string
 	BaseSHA           string
 	BaseRef           string
 	State             string
 	Draft             bool
-	FreshnessState    string `gorm:"index:idx_repo_open_pull_inventory_repo_freshness_updated,priority:2"`
+	FreshnessState    string `gorm:"index:idx_repo_open_pull_inventory_repo_gen_freshness_updated,priority:3"`
 	LastSeenAt        time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type RepoTargetedPullRefresh struct {
+	ID                uint       `gorm:"primaryKey"`
+	RepositoryID      uint       `gorm:"uniqueIndex:idx_repo_targeted_pull_refreshes_repo_pr,priority:1;index:idx_repo_targeted_pull_refreshes_repo_requested,priority:1"`
+	PullRequestNumber int        `gorm:"uniqueIndex:idx_repo_targeted_pull_refreshes_repo_pr,priority:2;index:idx_repo_targeted_pull_refreshes_repo_requested,priority:3"`
+	RequestedAt       *time.Time `gorm:"index:idx_repo_targeted_pull_refreshes_repo_requested,priority:2"`
+	LastWebhookAt     *time.Time
+	LastAttemptedAt   *time.Time
+	LastCompletedAt   *time.Time
+	LeaseOwnerID      string `gorm:"index"`
+	LeaseStartedAt    *time.Time
+	LeaseHeartbeatAt  *time.Time `gorm:"index"`
+	LeaseUntil        *time.Time `gorm:"index"`
+	LastError         string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
