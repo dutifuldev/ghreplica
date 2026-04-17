@@ -85,11 +85,10 @@ func runServe(cfg config.Config) error {
 		githubSync,
 		cfg.ChangeSyncPollInterval,
 		cfg.WebhookFetchDebounce,
-		cfg.RepoMinFetchInterval,
-		cfg.OpenPRBackfillInterval,
+		cfg.OpenPRInventoryMaxAge,
 		cfg.RepoLeaseTTL,
-		cfg.RepoBackfillMaxRuntime,
-		cfg.RepoBackfillMaxPRs,
+		cfg.BackfillMaxRuntime,
+		cfg.BackfillMaxPRsPerPass,
 	)
 
 	server := httpapi.NewServer(db, httpapi.Options{

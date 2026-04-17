@@ -34,8 +34,33 @@ type baseRefStaler interface {
 	MarkBaseRefStale(ctx context.Context, repositoryID uint, ref string) error
 }
 
-type repoChangeDirtyMarker interface {
-	MarkRepositoryChangeDirty(ctx context.Context, repositoryID uint, seenAt time.Time) error
+type repoChangeWebhookRecorder interface {
+	NoteRepositoryWebhook(ctx context.Context, repositoryID uint, seenAt time.Time) error
+	EnqueuePullRequestRefresh(ctx context.Context, repositoryID uint, number int, seenAt time.Time) error
+	MarkInventoryNeedsRefresh(ctx context.Context, repositoryID uint, seenAt time.Time) error
+}
+
+func pullRequestWebhookNeedsInventoryRefresh(action string, payload []byte) bool {
+	switch strings.TrimSpace(action) {
+	case "opened", "closed", "reopened":
+		return true
+	case "edited":
+		var envelope struct {
+			Changes struct {
+				Base *struct {
+					Ref *struct {
+						From string `json:"from"`
+					} `json:"ref"`
+				} `json:"base"`
+			} `json:"changes"`
+		}
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return false
+		}
+		return envelope.Changes.Base != nil && envelope.Changes.Base.Ref != nil && strings.TrimSpace(envelope.Changes.Base.Ref.From) != ""
+	default:
+		return false
+	}
 }
 
 type Service struct {
@@ -187,8 +212,8 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 					repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
 					if err == nil {
 						_ = staler.MarkBaseRefStale(ctx, repo.ID, envelope.Ref)
-						if marker, ok := s.projector.(repoChangeDirtyMarker); ok {
-							_ = marker.MarkRepositoryChangeDirty(ctx, repo.ID, time.Now().UTC())
+						if recorder, ok := s.projector.(repoChangeWebhookRecorder); ok {
+							_ = recorder.NoteRepositoryWebhook(ctx, repo.ID, time.Now().UTC())
 						}
 						return repo.ID, nil
 					}
@@ -197,8 +222,8 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 		}
 		repositoryID, err := repositoryIDByRef(ctx, s.db, repoRef)
 		if err == nil && repositoryID != 0 {
-			if marker, ok := s.projector.(repoChangeDirtyMarker); ok {
-				_ = marker.MarkRepositoryChangeDirty(ctx, repositoryID, time.Now().UTC())
+			if recorder, ok := s.projector.(repoChangeWebhookRecorder); ok {
+				_ = recorder.NoteRepositoryWebhook(ctx, repositoryID, time.Now().UTC())
 			}
 		}
 		return repositoryID, err
@@ -213,8 +238,8 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 		if err != nil {
 			return 0, err
 		}
-		if marker, ok := s.projector.(repoChangeDirtyMarker); ok {
-			_ = marker.MarkRepositoryChangeDirty(ctx, repo.ID, time.Now().UTC())
+		if recorder, ok := s.projector.(repoChangeWebhookRecorder); ok {
+			_ = recorder.NoteRepositoryWebhook(ctx, repo.ID, time.Now().UTC())
 		}
 		return repo.ID, nil
 	case "issues":
@@ -294,17 +319,13 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 		if err := s.projector.UpsertPullRequest(ctx, repo.ID, envelope.PullRequest); err != nil {
 			return 0, err
 		}
-		if indexer, ok := s.projector.(pullRequestIndexer); ok {
-			owner, name, err := splitFullName(envelope.Repository.FullName)
-			if err != nil {
-				return 0, err
+		if recorder, ok := s.projector.(repoChangeWebhookRecorder); ok {
+			seenAt := time.Now().UTC()
+			_ = recorder.NoteRepositoryWebhook(ctx, repo.ID, seenAt)
+			_ = recorder.EnqueuePullRequestRefresh(ctx, repo.ID, envelope.PullRequest.Number, seenAt)
+			if pullRequestWebhookNeedsInventoryRefresh(action, payload) {
+				_ = recorder.MarkInventoryNeedsRefresh(ctx, repo.ID, seenAt)
 			}
-			if err := indexer.SyncPullRequestIndex(ctx, owner, name, repo.ID, envelope.PullRequest); err != nil {
-				return 0, err
-			}
-		}
-		if marker, ok := s.projector.(repoChangeDirtyMarker); ok {
-			_ = marker.MarkRepositoryChangeDirty(ctx, repo.ID, time.Now().UTC())
 		}
 		return repo.ID, nil
 	case "pull_request_review":

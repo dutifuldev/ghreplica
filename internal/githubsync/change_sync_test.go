@@ -45,7 +45,6 @@ func TestChangeSyncWorkerBackfillsOpenPullRequestsGradually(t *testing.T) {
 		time.Millisecond,
 		time.Nanosecond,
 		time.Nanosecond,
-		time.Nanosecond,
 		time.Second,
 		time.Minute,
 		1,
@@ -60,8 +59,9 @@ func TestChangeSyncWorkerBackfillsOpenPullRequestsGradually(t *testing.T) {
 	require.Equal(t, 3, status.OpenPRTotal)
 	require.Equal(t, 0, status.OpenPRCurrent)
 	require.Equal(t, 3, status.OpenPRMissing)
-	require.False(t, status.Dirty)
-	require.Nil(t, status.OpenPRCursorNumber)
+	require.False(t, status.InventoryNeedsRefresh)
+	require.Equal(t, 1, status.InventoryGenerationCurrent)
+	require.Nil(t, status.BackfillCursor)
 	require.Equal(t, 1, server.ListPullCount())
 
 	var inventoryRows int64
@@ -76,8 +76,8 @@ func TestChangeSyncWorkerBackfillsOpenPullRequestsGradually(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, status.OpenPRCurrent)
 	require.Equal(t, 2, status.OpenPRMissing)
-	require.False(t, status.Dirty)
-	require.NotNil(t, status.OpenPRCursorNumber)
+	require.False(t, status.InventoryNeedsRefresh)
+	require.NotNil(t, status.BackfillCursor)
 	require.Equal(t, 1, server.ListPullCount())
 
 	processed, err = worker.RunOnce(ctx)
@@ -88,7 +88,7 @@ func TestChangeSyncWorkerBackfillsOpenPullRequestsGradually(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, status.OpenPRCurrent)
 	require.Equal(t, 1, status.OpenPRMissing)
-	require.False(t, status.Dirty)
+	require.False(t, status.InventoryNeedsRefresh)
 	require.Equal(t, 1, server.ListPullCount())
 
 	processed, err = worker.RunOnce(ctx)
@@ -99,8 +99,8 @@ func TestChangeSyncWorkerBackfillsOpenPullRequestsGradually(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 3, status.OpenPRCurrent)
 	require.Equal(t, 0, status.OpenPRMissing)
-	require.False(t, status.Dirty)
-	require.Nil(t, status.OpenPRCursorNumber)
+	require.False(t, status.InventoryNeedsRefresh)
+	require.Nil(t, status.BackfillCursor)
 	require.Equal(t, 1, server.ListPullCount())
 
 	prStatus, err := service.GetPullRequestChangeStatus(ctx, "acme", "widgets", 101)
@@ -137,7 +137,6 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 		time.Millisecond,
 		time.Nanosecond,
 		time.Hour,
-		time.Nanosecond,
 		time.Second,
 		time.Minute,
 		1,
@@ -149,8 +148,8 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 
 	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
 	require.NoError(t, err)
-	firstFetchStarted := status.LastFetchStartedAt
-	require.NotNil(t, firstFetchStarted)
+	firstInventoryStarted := status.LastInventoryScanStartedAt
+	require.NotNil(t, firstInventoryStarted)
 	require.Equal(t, 1, server.ListPullCount())
 
 	processed, err = worker.RunOnce(ctx)
@@ -163,7 +162,7 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 	require.Equal(t, 1, server.ListPullCount())
 
 	dirtyAt := time.Now().UTC()
-	require.NoError(t, service.MarkRepositoryChangeDirty(ctx, state.RepositoryID, dirtyAt))
+	require.NoError(t, service.MarkInventoryNeedsRefresh(ctx, state.RepositoryID, dirtyAt))
 
 	processed, err = worker.RunOnce(ctx)
 	require.NoError(t, err)
@@ -171,11 +170,61 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 
 	status, err = service.GetRepoChangeStatus(ctx, "acme", "widgets")
 	require.NoError(t, err)
-	require.True(t, status.Dirty)
+	require.True(t, status.InventoryNeedsRefresh)
 	require.Equal(t, 2, status.OpenPRCurrent)
 	require.Equal(t, 1, status.OpenPRMissing)
-	require.Equal(t, firstFetchStarted, status.LastFetchStartedAt)
+	require.Equal(t, firstInventoryStarted, status.LastInventoryScanStartedAt)
 	require.Equal(t, 1, server.ListPullCount())
+}
+
+func TestChangeSyncWorkerProcessesTargetedRefreshWithoutRescanningInventory(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "open_only", 5)
+	require.NoError(t, err)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, 1, server.ListPullCount())
+
+	require.NoError(t, service.EnqueuePullRequestRefresh(ctx, state.RepositoryID, 101, time.Now().UTC()))
+
+	processed, err = worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, 1, server.ListPullCount())
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.False(t, status.TargetedRefreshPending)
+
+	prStatus, err := service.GetPullRequestChangeStatus(ctx, "acme", "widgets", 101)
+	require.NoError(t, err)
+	require.True(t, prStatus.Indexed)
+	require.Equal(t, "current", prStatus.IndexFreshness)
 }
 
 func TestChangeSyncWorkerRunOnceReclaimsStaleFetchLease(t *testing.T) {
@@ -211,7 +260,6 @@ func TestChangeSyncWorkerRunOnceReclaimsStaleFetchLease(t *testing.T) {
 		db,
 		service,
 		time.Millisecond,
-		time.Nanosecond,
 		time.Nanosecond,
 		time.Nanosecond,
 		time.Second,
@@ -266,7 +314,6 @@ func TestChangeSyncWorkerRunOnceDoesNotStealFreshFetchLease(t *testing.T) {
 		time.Millisecond,
 		time.Nanosecond,
 		time.Nanosecond,
-		time.Nanosecond,
 		time.Second,
 		time.Minute,
 		1,
@@ -318,7 +365,6 @@ func TestChangeSyncWorkerStartRecoversStaleLeasesOnStartup(t *testing.T) {
 		db,
 		service,
 		time.Hour,
-		time.Nanosecond,
 		time.Nanosecond,
 		time.Nanosecond,
 		time.Second,

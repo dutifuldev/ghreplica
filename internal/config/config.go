@@ -27,11 +27,10 @@ type Config struct {
 	GitHubWebhookSecret     string
 	ChangeSyncPollInterval  time.Duration
 	WebhookFetchDebounce    time.Duration
-	RepoMinFetchInterval    time.Duration
+	OpenPRInventoryMaxAge   time.Duration
 	RepoLeaseTTL            time.Duration
-	OpenPRBackfillInterval  time.Duration
-	RepoBackfillMaxRuntime  time.Duration
-	RepoBackfillMaxPRs      int
+	BackfillMaxRuntime      time.Duration
+	BackfillMaxPRsPerPass   int
 }
 
 func Load() Config {
@@ -50,12 +49,11 @@ func Load() Config {
 		GitHubAppPrivateKeyPath: strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH")),
 		GitHubWebhookSecret:     strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET")),
 		ChangeSyncPollInterval:  durationDefault("CHANGE_SYNC_POLL_INTERVAL", 5*time.Second),
-		WebhookFetchDebounce:    durationDefault("WEBHOOK_FETCH_DEBOUNCE", 3*time.Second),
-		RepoMinFetchInterval:    durationDefault("REPO_MIN_FETCH_INTERVAL", time.Minute),
+		WebhookFetchDebounce:    durationDefault("WEBHOOK_REFRESH_DEBOUNCE", 15*time.Second),
+		OpenPRInventoryMaxAge:   durationDefault("OPEN_PR_INVENTORY_MAX_AGE", 10*time.Minute),
 		RepoLeaseTTL:            durationDefault("REPO_CHANGE_LEASE_TTL", 15*time.Minute),
-		OpenPRBackfillInterval:  durationDefault("OPEN_PR_BACKFILL_INTERVAL", 5*time.Second),
-		RepoBackfillMaxRuntime:  durationDefault("REPO_BACKFILL_MAX_RUNTIME", 3*time.Minute),
-		RepoBackfillMaxPRs:      intDefault("REPO_BACKFILL_MAX_PRS", 25),
+		BackfillMaxRuntime:      durationDefault("BACKFILL_MAX_RUNTIME", 5*time.Minute),
+		BackfillMaxPRsPerPass:   intDefault("BACKFILL_MAX_PRS_PER_PASS", 100),
 	}
 }
 

@@ -318,6 +318,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&RepoTextSearchState{},
 		&RepoChangeSyncState{},
 		&RepoOpenPullInventory{},
+		&RepoTargetedPullRefresh{},
 		&WebhookDelivery{},
 		&RepositoryRefreshJob{},
 	)

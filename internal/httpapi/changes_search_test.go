@@ -225,31 +225,36 @@ func TestChangeStatusEndpoints(t *testing.T) {
 	fetchExpires := now.Add(45 * time.Second)
 	backfillHeartbeat := now.Add(-10 * time.Second)
 	backfillExpires := now.Add(50 * time.Second)
+	buildingGeneration := 3
 	require.NoError(t, db.Create(&database.RepoChangeSyncState{
-		RepositoryID:             repo.ID,
-		Dirty:                    true,
-		DirtySince:               &now,
-		LastWebhookAt:            &now,
-		LastRequestedFetchAt:     &now,
-		LastFetchStartedAt:       &now,
-		LastFetchFinishedAt:      &now,
-		LastSuccessfulFetchAt:    &now,
-		LastBackfillStartedAt:    &now,
-		LastBackfillFinishedAt:   &now,
-		LastOpenPRScanAt:         &now,
-		OpenPRTotal:              3,
-		OpenPRCurrent:            1,
-		OpenPRStale:              1,
-		OpenPRCursorNumber:       &cursorNumber,
-		OpenPRCursorUpdatedAt:    &cursorUpdatedAt,
-		BackfillMode:             "open_only",
-		BackfillPriority:         5,
-		FetchLeaseOwnerID:        "worker-a",
-		FetchLeaseHeartbeatAt:    &fetchHeartbeat,
-		FetchLeaseUntil:          &fetchExpires,
-		BackfillLeaseOwnerID:     "worker-a",
-		BackfillLeaseHeartbeatAt: &backfillHeartbeat,
-		BackfillLeaseUntil:       &backfillExpires,
+		RepositoryID:                repo.ID,
+		Dirty:                       true,
+		DirtySince:                  &now,
+		LastWebhookAt:               &now,
+		LastRequestedFetchAt:        &now,
+		LastFetchStartedAt:          &now,
+		LastFetchFinishedAt:         &now,
+		LastSuccessfulFetchAt:       &now,
+		LastBackfillStartedAt:       &now,
+		LastBackfillFinishedAt:      &now,
+		LastOpenPRScanAt:            &now,
+		InventoryGenerationCurrent:  2,
+		InventoryGenerationBuilding: &buildingGeneration,
+		InventoryLastCommittedAt:    &now,
+		OpenPRTotal:                 3,
+		OpenPRCurrent:               1,
+		OpenPRStale:                 1,
+		BackfillGeneration:          2,
+		OpenPRCursorNumber:          &cursorNumber,
+		OpenPRCursorUpdatedAt:       &cursorUpdatedAt,
+		BackfillMode:                "open_only",
+		BackfillPriority:            5,
+		FetchLeaseOwnerID:           "worker-a",
+		FetchLeaseHeartbeatAt:       &fetchHeartbeat,
+		FetchLeaseUntil:             &fetchExpires,
+		BackfillLeaseOwnerID:        "worker-a",
+		BackfillLeaseHeartbeatAt:    &backfillHeartbeat,
+		BackfillLeaseUntil:          &backfillExpires,
 	}).Error)
 
 	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}), indexer)
@@ -267,8 +272,11 @@ func TestChangeStatusEndpoints(t *testing.T) {
 	require.EqualValues(t, 1, repoStatus["open_pr_stale"])
 	require.EqualValues(t, 1, repoStatus["open_pr_missing"])
 	require.Equal(t, "open_only", repoStatus["backfill_mode"])
-	require.Equal(t, "worker-a", repoStatus["fetch_lease_owner_id"])
-	require.Equal(t, "worker-a", repoStatus["backfill_lease_owner_id"])
+	require.Equal(t, true, repoStatus["inventory_needs_refresh"])
+	require.EqualValues(t, 2, repoStatus["inventory_generation_current"])
+	require.EqualValues(t, 2, repoStatus["backfill_generation"])
+	require.Equal(t, true, repoStatus["inventory_scan_running"])
+	require.Equal(t, true, repoStatus["backfill_running"])
 
 	req = httptest.NewRequest(http.MethodGet, "/v1/changes/repos/acme/widgets/pulls/101/status", nil)
 	rec = httptest.NewRecorder()
@@ -280,6 +288,7 @@ func TestChangeStatusEndpoints(t *testing.T) {
 	require.Equal(t, true, prStatus["indexed"])
 	require.Equal(t, "current", prStatus["index_freshness"])
 	require.EqualValues(t, 2, prStatus["changed_files"])
+	require.Equal(t, true, prStatus["inventory_needs_refresh"])
 }
 
 func TestSearchMentionsEndpoint(t *testing.T) {

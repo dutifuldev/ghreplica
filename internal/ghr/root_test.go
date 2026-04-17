@@ -212,8 +212,9 @@ func TestChangesStatusCommands(t *testing.T) {
 	require.Contains(t, stdout, "acme/widgets change status")
 	require.Contains(t, stdout, "Backfill mode:")
 	require.Contains(t, stdout, "open_only")
-	require.Contains(t, stdout, "Fetch owner:")
-	require.Contains(t, stdout, "Backfill owner:")
+	require.Contains(t, stdout, "Targeted refresh pending:")
+	require.Contains(t, stdout, "Inventory current gen:")
+	require.Contains(t, stdout, "Backfill generation:")
 
 	cmd = NewRootCmd()
 	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "pr", "status", "2")
@@ -496,17 +497,21 @@ func newTestServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/v1/changes/repos/acme/widgets/status", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, gitindex.RepoStatus{
-			RepositoryID:       101,
-			FullName:           "acme/widgets",
-			Dirty:              true,
-			BackfillMode:       "open_only",
-			BackfillPriority:   5,
-			OpenPRTotal:        3,
-			OpenPRCurrent:      1,
-			OpenPRStale:        1,
-			OpenPRMissing:      1,
-			FetchInProgress:    false,
-			BackfillInProgress: true,
+			RepositoryID:               101,
+			FullName:                   "acme/widgets",
+			BackfillMode:               "open_only",
+			BackfillPriority:           5,
+			TargetedRefreshPending:     true,
+			TargetedRefreshRunning:     false,
+			InventoryGenerationCurrent: 2,
+			InventoryNeedsRefresh:      true,
+			InventoryScanRunning:       false,
+			BackfillRunning:            true,
+			BackfillGeneration:         2,
+			OpenPRTotal:                3,
+			OpenPRCurrent:              1,
+			OpenPRStale:                1,
+			OpenPRMissing:              1,
 		})
 	})
 	mux.HandleFunc("/v1/changes/repos/acme/widgets/pulls/2/status", func(w http.ResponseWriter, r *http.Request) {

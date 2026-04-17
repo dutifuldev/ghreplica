@@ -89,6 +89,25 @@ Current batch object-read rules:
 - `GET /v1/changes/repos/{owner}/{repo}/commits/{sha}/files`
 - `GET /v1/changes/repos/{owner}/{repo}/compare/{base}...{head}`
 
+Repository change-status response features:
+
+- `targeted_refresh_pending`
+- `targeted_refresh_running`
+- `inventory_generation_current`
+- `inventory_generation_building`
+- `inventory_needs_refresh`
+- `inventory_last_committed_at`
+- `inventory_scan_running`
+- `backfill_running`
+- `backfill_generation`
+- `backfill_cursor`
+- `backfill_cursor_updated_at`
+- `open_pr_total`
+- `open_pr_current`
+- `open_pr_stale`
+- `open_pr_missing`
+- `last_error`
+
 ## Search Endpoints
 
 - `GET /v1/search/repos/{owner}/{repo}/pulls/{number}/related`
