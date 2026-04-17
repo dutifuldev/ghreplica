@@ -45,6 +45,8 @@ Repo-wide inventory scans should happen on their own cadence, only when the open
 
 Backfill should keep working through missing and stale PRs from the latest inventory snapshot until that snapshot is exhausted or old enough to require a fresh scan.
 
+The inventory should therefore be treated as a committed generation, not as a temporary scratch result that becomes unusable the moment one more webhook arrives.
+
 ## Current Problem
 
 Today the worker effectively does this:
@@ -99,6 +101,27 @@ It should run only when:
 
 This lane owns the reusable open-PR inventory snapshot.
 
+## Inventory Generations
+
+The open-PR inventory should be generation-based.
+
+That means:
+
+- the current completed inventory generation stays usable while a newer one is being built
+- a new scan builds the next generation separately
+- backfill keeps using the latest committed generation until the newer one is fully ready
+- once the newer generation is complete, the scheduler atomically switches to it
+
+This is important for hot repos.
+
+The system should not stop trusting the current inventory just because more webhook traffic arrived.
+
+The right model is:
+
+- current generation remains usable
+- newer generation is needed
+- backfill continues on the current generation until the switch
+
 ### 3. Backlog Backfill
 
 This lane is for coverage work.
@@ -141,7 +164,9 @@ The repo-level change sync state should stop collapsing all work into one dirty 
 It should explicitly track at least:
 
 - targeted refresh backlog present or absent
-- inventory freshness timestamp
+- current inventory generation id
+- current inventory freshness timestamp
+- next inventory generation building or absent
 - inventory last started and finished times
 - backfill last started and finished times
 - backfill cursor
@@ -171,6 +196,13 @@ In plain terms:
 - if the inventory is still recent enough, keep backfilling
 - do not keep rescanning the repo just because fresh webhooks keep arriving
 
+The scheduler should therefore distinguish between:
+
+- inventory is usable
+- inventory needs refresh
+
+Those are not the same thing.
+
 ## Inventory Freshness Window
 
 The scheduler should define an explicit “inventory fresh enough to reuse” window.
@@ -182,24 +214,26 @@ The default production choice should be:
 For example:
 
 - if `last_open_pr_scan_at` is within the configured freshness window
-- and no repair condition invalidated the inventory
+- and no repair condition requires a newer generation
 - then backfill may continue against that inventory without being preempted by another repo-wide scan
 
 The exact default can be tuned later.
 
 The important design rule is that this must be explicit, not inferred indirectly from `dirty=true`.
 
-## Inventory Invalidation
+## Inventory Refresh Triggers
 
-The inventory should only be invalidated when the open-PR set itself may have changed, or when the inventory aged out.
+The system should not use “invalidation” in the strong sense of “stop trusting the current inventory immediately.”
+
+Instead, the system should keep using the current committed generation while separately marking that a newer generation is needed.
 
 The default production rules should be:
 
-- ordinary PR content changes do not invalidate the inventory
+- ordinary PR content changes do not require a newer inventory generation
 - webhook events that clearly point to one PR should enqueue targeted PR refresh only
-- events that may change the open-PR set or repo-wide open-PR metadata should invalidate inventory
+- events that may change the open-PR set or repo-wide open-PR metadata should mark inventory as needing refresh
 
-The production invalidation set should include at least:
+The production refresh trigger set should include at least:
 
 - PR opened
 - PR closed
@@ -208,7 +242,7 @@ The production invalidation set should include at least:
 - explicit repair or operator-requested rescan
 - inventory age exceeding `OPEN_PR_INVENTORY_MAX_AGE`
 
-This keeps repo-wide scans tied to actual repo-wide drift instead of treating every webhook as a reason to relist the whole repo.
+This keeps repo-wide scans tied to real open-set drift without making the current generation unusable in the meantime.
 
 ## Configuration Model
 
@@ -257,7 +291,7 @@ A webhook should do two different things depending on what it knows.
 
 If the webhook tells us which PR changed, it should enqueue targeted PR refresh work.
 
-If the webhook only implies repo-level drift, it may mark the inventory as needing a later scan.
+If the webhook implies repo-level open-PR drift, it should mark inventory as needing a newer generation.
 
 But it should not immediately force the scheduler to redo a full repo-wide inventory pass before backfill can continue.
 
@@ -284,8 +318,8 @@ The three lanes should have explicit ownership over repo state.
 The default production ownership should be:
 
 - targeted webhook refresh lane owns per-PR urgent refresh work
-- inventory scan lane owns repo-wide open-PR inventory and repo-wide totals
-- backlog backfill lane owns the backfill cursor and coverage progression
+- inventory scan lane owns building and committing repo-wide open-PR inventory generations and repo-wide totals
+- backlog backfill lane owns the backfill cursor and coverage progression against the latest committed inventory generation
 
 All three lanes should share one freshness function so they agree on what counts as:
 
@@ -319,8 +353,9 @@ The implementation should:
 2. replace the mixed scheduler with the three-lane scheduler in one pass
 3. replace the old public configuration names with the new lane-shaped names
 4. update the status endpoint and docs at the same time
-5. deploy the new scheduler directly
-6. validate behavior on a hot repo such as `openclaw/openclaw`
+5. implement committed inventory generations as part of the scheduler cutover
+6. deploy the new scheduler directly
+7. validate behavior on a hot repo such as `openclaw/openclaw`
 
 The important rule is:
 
@@ -334,6 +369,8 @@ This is still a scheduler refactor, not a ground-up indexing rewrite.
 The implementation should be validated with targeted tests for:
 
 - webhook-triggered PR refresh not forcing an unnecessary repo-wide scan
+- inventory scan building a new generation while the previous generation remains usable
+- inventory generation switch happening atomically once the new generation is complete
 - inventory scan aging out and becoming eligible again
 - backfill continuing across webhook traffic while inventory is still fresh
 - no simultaneous conflicting ownership of the same repo lane
