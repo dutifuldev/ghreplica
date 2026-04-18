@@ -11,19 +11,20 @@ import (
 )
 
 type CommitResponse struct {
-	SHA                     string    `json:"sha"`
-	TreeSHA                 string    `json:"tree_sha"`
-	AuthorName              string    `json:"author_name"`
-	AuthorEmail             string    `json:"author_email"`
-	AuthoredAt              time.Time `json:"authored_at"`
-	AuthoredTimezoneOffset  int       `json:"authored_timezone_offset"`
-	CommitterName           string    `json:"committer_name"`
-	CommitterEmail          string    `json:"committer_email"`
-	CommittedAt             time.Time `json:"committed_at"`
-	CommittedTimezoneOffset int       `json:"committed_timezone_offset"`
-	Message                 string    `json:"message"`
-	MessageEncoding         string    `json:"message_encoding"`
-	Parents                 []string  `json:"parents"`
+	SHA                     string                        `json:"sha"`
+	TreeSHA                 string                        `json:"tree_sha"`
+	AuthorName              string                        `json:"author_name"`
+	AuthorEmail             string                        `json:"author_email"`
+	AuthoredAt              time.Time                     `json:"authored_at"`
+	AuthoredTimezoneOffset  int                           `json:"authored_timezone_offset"`
+	CommitterName           string                        `json:"committer_name"`
+	CommitterEmail          string                        `json:"committer_email"`
+	CommittedAt             time.Time                     `json:"committed_at"`
+	CommittedTimezoneOffset int                           `json:"committed_timezone_offset"`
+	Message                 string                        `json:"message"`
+	MessageEncoding         string                        `json:"message_encoding"`
+	Parents                 []string                      `json:"parents"`
+	ParentDetails           []gitindex.CommitParentDetail `json:"parent_details,omitempty"`
 }
 
 type PullRequestChangeSnapshotResponse struct {

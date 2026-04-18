@@ -124,6 +124,25 @@ func printCommitView(out io.Writer, repo string, commit CommitResponse) {
 	fmt.Fprintf(tw, "Encoding:\t%s\n", coalesce(commit.MessageEncoding, "UTF-8"))
 	fmt.Fprintf(tw, "Parents:\t%s\n", strings.Join(commit.Parents, ", "))
 	_ = tw.Flush()
+	if len(commit.ParentDetails) > 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Parent detail")
+		tw = newTabWriter(out)
+		fmt.Fprintln(tw, "PARENT\tINDEXED\tREASON\tPATHS\tHUNKS\t+/-")
+		for _, parent := range commit.ParentDetails {
+			fmt.Fprintf(tw, "%d:%s\t%s\t%s\t%d\t%d\t+%d/-%d\n",
+				parent.ParentIndex,
+				shortSHA(parent.ParentSHA),
+				coalesce(parent.IndexedAs, "full"),
+				coalesce(parent.IndexReason, "within_budget"),
+				parent.PathCount,
+				parent.HunkCount,
+				parent.Additions,
+				parent.Deletions,
+			)
+		}
+		_ = tw.Flush()
+	}
 }
 
 func printCommitFiles(out io.Writer, files []map[string]any) {

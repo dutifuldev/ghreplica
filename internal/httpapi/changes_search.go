@@ -20,19 +20,20 @@ import (
 )
 
 type commitResponse struct {
-	SHA                     string    `json:"sha"`
-	TreeSHA                 string    `json:"tree_sha"`
-	AuthorName              string    `json:"author_name"`
-	AuthorEmail             string    `json:"author_email"`
-	AuthoredAt              time.Time `json:"authored_at"`
-	AuthoredTimezoneOffset  int       `json:"authored_timezone_offset"`
-	CommitterName           string    `json:"committer_name"`
-	CommitterEmail          string    `json:"committer_email"`
-	CommittedAt             time.Time `json:"committed_at"`
-	CommittedTimezoneOffset int       `json:"committed_timezone_offset"`
-	Message                 string    `json:"message"`
-	MessageEncoding         string    `json:"message_encoding"`
-	Parents                 []string  `json:"parents"`
+	SHA                     string                        `json:"sha"`
+	TreeSHA                 string                        `json:"tree_sha"`
+	AuthorName              string                        `json:"author_name"`
+	AuthorEmail             string                        `json:"author_email"`
+	AuthoredAt              time.Time                     `json:"authored_at"`
+	AuthoredTimezoneOffset  int                           `json:"authored_timezone_offset"`
+	CommitterName           string                        `json:"committer_name"`
+	CommitterEmail          string                        `json:"committer_email"`
+	CommittedAt             time.Time                     `json:"committed_at"`
+	CommittedTimezoneOffset int                           `json:"committed_timezone_offset"`
+	Message                 string                        `json:"message"`
+	MessageEncoding         string                        `json:"message_encoding"`
+	Parents                 []string                      `json:"parents"`
+	ParentDetails           []gitindex.CommitParentDetail `json:"parent_details,omitempty"`
 }
 
 type pullRequestChangeSnapshotResponse struct {
@@ -306,8 +307,21 @@ func (s *Server) handleGetCommit(c echo.Context) error {
 		return err
 	}
 	parentSHAs := make([]string, 0, len(parents))
+	parentDetails := make([]gitindex.CommitParentDetail, 0, len(parents))
 	for _, parent := range parents {
 		parentSHAs = append(parentSHAs, parent.ParentSHA)
+		parentDetails = append(parentDetails, gitindex.CommitParentDetail{
+			ParentSHA:     parent.ParentSHA,
+			ParentIndex:   parent.ParentIndex,
+			IndexedAs:     parent.IndexedAs,
+			IndexReason:   parent.IndexReason,
+			PathCount:     parent.PathCount,
+			HunkCount:     parent.HunkCount,
+			Additions:     parent.Additions,
+			Deletions:     parent.Deletions,
+			PatchBytes:    parent.PatchBytes,
+			LastIndexedAt: parent.LastIndexedAt,
+		})
 	}
 
 	return c.JSON(http.StatusOK, commitResponse{
@@ -324,6 +338,7 @@ func (s *Server) handleGetCommit(c echo.Context) error {
 		Message:                 commit.Message,
 		MessageEncoding:         commit.MessageEncoding,
 		Parents:                 parentSHAs,
+		ParentDetails:           parentDetails,
 	})
 }
 
@@ -340,15 +355,22 @@ func (s *Server) handleListCommitFiles(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid commit sha"})
 	}
 
+	var commit database.GitCommit
+	if err := s.db.WithContext(c.Request().Context()).
+		Where("repository_id = ? AND sha = ?", repo.ID, sha).
+		First(&commit).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+		}
+		return err
+	}
+
 	var files []database.GitCommitParentFile
 	if err := s.db.WithContext(c.Request().Context()).
 		Where("repository_id = ? AND commit_sha = ?", repo.ID, sha).
 		Order("parent_index ASC, path ASC").
 		Find(&files).Error; err != nil {
 		return err
-	}
-	if len(files) == 0 {
-		return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
 	}
 	var hunks []database.GitCommitParentHunk
 	if err := s.db.WithContext(c.Request().Context()).

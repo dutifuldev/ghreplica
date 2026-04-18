@@ -60,6 +60,19 @@ type FileChange struct {
 	Hunks        []Hunk `json:"hunks,omitempty"`
 }
 
+type CommitParentDetail struct {
+	ParentSHA     string     `json:"parent_sha"`
+	ParentIndex   int        `json:"parent_index"`
+	IndexedAs     string     `json:"indexed_as"`
+	IndexReason   string     `json:"index_reason,omitempty"`
+	PathCount     int        `json:"path_count"`
+	HunkCount     int        `json:"hunk_count"`
+	Additions     int        `json:"additions"`
+	Deletions     int        `json:"deletions"`
+	PatchBytes    int        `json:"patch_bytes"`
+	LastIndexedAt *time.Time `json:"last_indexed_at,omitempty"`
+}
+
 type Hunk struct {
 	Index    int    `json:"index"`
 	DiffHunk string `json:"diff_hunk"`
