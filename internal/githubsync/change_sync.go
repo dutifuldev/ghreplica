@@ -20,6 +20,7 @@ const (
 	changeBackfillModeOpenOnly            = "open_only"
 	defaultTargetedRefreshBurstMaxPRs     = 50
 	defaultTargetedRefreshBurstMaxRuntime = 30 * time.Second
+	defaultInventoryWriteBatchSize        = 250
 )
 
 type RepoBackfillOptions struct {
@@ -942,58 +943,67 @@ func (s *Service) syncOpenPullInventory(ctx context.Context, owner, repo string,
 	result := RepoBackfillResult{OpenPRTotal: len(openPulls)}
 	now := time.Now().UTC()
 	seen := make([]int, 0, len(openPulls))
+	inventoryRows := make([]database.RepoOpenPullInventory, 0, len(openPulls))
+	snapshotFreshnessUpdates := make(map[string][]uint)
 	nextGeneration := nextInventoryGeneration(state)
 	if state.InventoryGenerationBuilding != nil && *state.InventoryGenerationBuilding > 0 {
 		nextGeneration = *state.InventoryGenerationBuilding
 	}
 
-	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, pull := range openPulls {
-			snapshot := snapshotMap[pull.Number]
-			freshness := desiredFreshness(snapshot, pull)
-			if snapshot != nil && snapshot.IndexFreshness != freshness {
-				if err := tx.Model(&database.PullRequestChangeSnapshot{}).
-					Where("id = ?", snapshot.ID).
-					Updates(map[string]any{
-						"index_freshness": freshness,
-						"updated_at":      now,
-					}).Error; err != nil {
-					return err
-				}
-			}
+	for _, pull := range openPulls {
+		snapshot := snapshotMap[pull.Number]
+		freshness := desiredFreshness(snapshot, pull)
+		if snapshot != nil && snapshot.IndexFreshness != freshness {
+			snapshotFreshnessUpdates[freshness] = append(snapshotFreshnessUpdates[freshness], snapshot.ID)
+		}
 
-			inventory := database.RepoOpenPullInventory{
-				RepositoryID:      repositoryID,
-				Generation:        nextGeneration,
-				PullRequestNumber: pull.Number,
-				GitHubUpdatedAt:   pull.UpdatedAt.UTC(),
-				HeadSHA:           strings.TrimSpace(pull.Head.SHA),
-				BaseSHA:           strings.TrimSpace(pull.Base.SHA),
-				BaseRef:           strings.TrimSpace(pull.Base.Ref),
-				State:             strings.TrimSpace(pull.State),
-				Draft:             pull.Draft,
-				FreshnessState:    freshness,
-				LastSeenAt:        now,
+		inventoryRows = append(inventoryRows, database.RepoOpenPullInventory{
+			RepositoryID:      repositoryID,
+			Generation:        nextGeneration,
+			PullRequestNumber: pull.Number,
+			GitHubUpdatedAt:   pull.UpdatedAt.UTC(),
+			HeadSHA:           strings.TrimSpace(pull.Head.SHA),
+			BaseSHA:           strings.TrimSpace(pull.Base.SHA),
+			BaseRef:           strings.TrimSpace(pull.Base.Ref),
+			State:             strings.TrimSpace(pull.State),
+			Draft:             pull.Draft,
+			FreshnessState:    freshness,
+			LastSeenAt:        now,
+		})
+
+		seen = append(seen, pull.Number)
+		result.OpenPRCurrent, result.OpenPRStale = adjustBackfillCounts(result.OpenPRCurrent, result.OpenPRStale, "", freshness)
+	}
+
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for freshness, snapshotIDs := range snapshotFreshnessUpdates {
+			if err := tx.Model(&database.PullRequestChangeSnapshot{}).
+				Where("id IN ?", snapshotIDs).
+				Updates(map[string]any{
+					"index_freshness": freshness,
+					"updated_at":      now,
+				}).Error; err != nil {
+				return err
 			}
+		}
+
+		if len(inventoryRows) > 0 {
 			if err := tx.Clauses(clause.OnConflict{
 				Columns: []clause.Column{{Name: "repository_id"}, {Name: "generation"}, {Name: "pull_request_number"}},
 				DoUpdates: clause.Assignments(map[string]any{
-					"github_updated_at": inventory.GitHubUpdatedAt,
-					"head_sha":          inventory.HeadSHA,
-					"base_sha":          inventory.BaseSHA,
-					"base_ref":          inventory.BaseRef,
-					"state":             inventory.State,
-					"draft":             inventory.Draft,
-					"freshness_state":   inventory.FreshnessState,
-					"last_seen_at":      inventory.LastSeenAt,
+					"github_updated_at": gorm.Expr("excluded.github_updated_at"),
+					"head_sha":          gorm.Expr("excluded.head_sha"),
+					"base_sha":          gorm.Expr("excluded.base_sha"),
+					"base_ref":          gorm.Expr("excluded.base_ref"),
+					"state":             gorm.Expr("excluded.state"),
+					"draft":             gorm.Expr("excluded.draft"),
+					"freshness_state":   gorm.Expr("excluded.freshness_state"),
+					"last_seen_at":      gorm.Expr("excluded.last_seen_at"),
 					"updated_at":        now,
 				}),
-			}).Create(&inventory).Error; err != nil {
+			}).CreateInBatches(inventoryRows, defaultInventoryWriteBatchSize).Error; err != nil {
 				return err
 			}
-
-			seen = append(seen, pull.Number)
-			result.OpenPRCurrent, result.OpenPRStale = adjustBackfillCounts(result.OpenPRCurrent, result.OpenPRStale, "", freshness)
 		}
 
 		prune := tx.Where("repository_id = ? AND generation = ?", repositoryID, nextGeneration)
