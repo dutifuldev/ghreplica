@@ -201,6 +201,14 @@ func (s *Service) MarkRepositoryChangeDirty(ctx context.Context, repositoryID ui
 	return s.MarkInventoryNeedsRefresh(ctx, repositoryID, seenAt)
 }
 
+func retainedDirtyExpr(scanStartedAt time.Time) clause.Expr {
+	return gorm.Expr("CASE WHEN dirty_since IS NOT NULL AND dirty_since > ? THEN TRUE ELSE FALSE END", scanStartedAt)
+}
+
+func retainedDirtySinceExpr(scanStartedAt time.Time) clause.Expr {
+	return gorm.Expr("CASE WHEN dirty_since IS NOT NULL AND dirty_since > ? THEN dirty_since ELSE NULL END", scanStartedAt)
+}
+
 func (s *Service) MarkInventoryNeedsRefresh(ctx context.Context, repositoryID uint, seenAt time.Time) error {
 	if repositoryID == 0 {
 		return nil
@@ -1002,8 +1010,8 @@ func (s *Service) syncOpenPullInventory(ctx context.Context, owner, repo string,
 		return tx.Model(&database.RepoChangeSyncState{}).
 			Where("id = ?", state.ID).
 			Updates(map[string]any{
-				"dirty":                        gorm.Expr("CASE WHEN dirty_since IS NOT NULL AND dirty_since > ? THEN ? ELSE ? END", scanStartedAt, true, false),
-				"dirty_since":                  gorm.Expr("CASE WHEN dirty_since IS NOT NULL AND dirty_since > ? THEN dirty_since ELSE NULL END", scanStartedAt),
+				"dirty":                        retainedDirtyExpr(scanStartedAt),
+				"dirty_since":                  retainedDirtySinceExpr(scanStartedAt),
 				"inventory_generation_current": nextGeneration,
 				"inventory_last_committed_at":  now,
 				"backfill_generation":          nextGeneration,
