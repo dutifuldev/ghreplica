@@ -69,7 +69,7 @@ func Load() Config {
 		RepoLeaseTTL:               durationDefault("REPO_CHANGE_LEASE_TTL", 15*time.Minute),
 		BackfillMaxRuntime:         durationDefault("BACKFILL_MAX_RUNTIME", 5*time.Minute),
 		BackfillMaxPRsPerPass:      intDefault("BACKFILL_MAX_PRS_PER_PASS", 100),
-		WebhookJobQueueConcurrency: intDefault("WEBHOOK_JOB_QUEUE_CONCURRENCY", 3),
+		WebhookJobQueueConcurrency: intDefault("WEBHOOK_JOB_QUEUE_CONCURRENCY", 1),
 		WebhookJobTimeout:          durationDefault("WEBHOOK_JOB_TIMEOUT", 30*time.Second),
 		WebhookJobMaxAttempts:      intDefault("WEBHOOK_JOB_MAX_ATTEMPTS", 8),
 	}

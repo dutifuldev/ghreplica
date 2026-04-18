@@ -80,7 +80,7 @@ func TestLoadIncludesWebhookJobAndDatabasePoolDefaults(t *testing.T) {
 	require.Equal(t, 3, cfg.ControlDBMaxIdleConns)
 	require.Equal(t, 6, cfg.SyncDBMaxOpenConns)
 	require.Equal(t, 2, cfg.SyncDBMaxIdleConns)
-	require.Equal(t, 3, cfg.WebhookJobQueueConcurrency)
+	require.Equal(t, 1, cfg.WebhookJobQueueConcurrency)
 	require.Equal(t, 30*time.Second, cfg.WebhookJobTimeout)
 	require.Equal(t, 8, cfg.WebhookJobMaxAttempts)
 }
