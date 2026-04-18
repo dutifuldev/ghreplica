@@ -436,6 +436,49 @@ func TestWebhookIngestionProjectsPullRequestActionMatrixFromRealFixtures(t *test
 	require.Equal(t, "sparse", tracked.PullsCompleteness)
 }
 
+func TestWebhookIngestionSynchronizeQueuesTargetedRefreshWithoutDirtyingInventory(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
+
+	repo := testfixtures.OpenClawRepository(t)
+	pull := testfixtures.OpenClawPull67096Open(t)
+	payload, err := json.Marshal(map[string]any{
+		"action":       "synchronize",
+		"repository":   repo,
+		"pull_request": pull,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(
+		ctx,
+		"delivery-pr-sync-targeted-only",
+		"pull_request",
+		http.Header{"X-GitHub-Event": []string{"pull_request"}},
+		payload,
+	))
+
+	var storedRepo database.Repository
+	require.NoError(t, db.WithContext(ctx).Where("github_id = ?", repo.ID).First(&storedRepo).Error)
+
+	var state database.RepoChangeSyncState
+	require.NoError(t, db.WithContext(ctx).Where("repository_id = ?", storedRepo.ID).First(&state).Error)
+	require.False(t, state.Dirty)
+	require.Nil(t, state.DirtySince)
+	require.NotNil(t, state.LastWebhookAt)
+
+	var refresh database.RepoTargetedPullRefresh
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND pull_request_number = ?", storedRepo.ID, pull.Number).
+		First(&refresh).Error)
+	require.NotNil(t, refresh.RequestedAt)
+	require.NotNil(t, refresh.LastWebhookAt)
+}
+
 func TestWebhookIngestionMarksBaseBranchPushesAsInventoryRefreshWork(t *testing.T) {
 	ctx := context.Background()
 

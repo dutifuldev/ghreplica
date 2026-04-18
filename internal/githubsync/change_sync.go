@@ -184,12 +184,9 @@ func (s *Service) NoteRepositoryWebhook(ctx context.Context, repositoryID uint, 
 	}
 	seenAt = seenAt.UTC()
 	state := database.RepoChangeSyncState{
-		RepositoryID:         repositoryID,
-		Dirty:                true,
-		DirtySince:           &seenAt,
-		LastWebhookAt:        &seenAt,
-		LastRequestedFetchAt: &seenAt,
-		BackfillMode:         changeBackfillModeOff,
+		RepositoryID:  repositoryID,
+		LastWebhookAt: &seenAt,
+		BackfillMode:  changeBackfillModeOff,
 	}
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "repository_id"}},
