@@ -48,6 +48,11 @@ const (
 	mergeCommitDetailFullMaxPatchBytes       = 250_000
 	mergeCommitDetailPathOnlyMaxFiles        = 150
 	mergeCommitDetailPathOnlyMaxChangedLines = 50_000
+
+	pullRequestChangeFileBatchSize = 100
+	pullRequestChangeHunkBatchSize = 200
+	commitParentFileBatchSize      = 100
+	commitParentHunkBatchSize      = 200
 )
 
 type Service struct {
@@ -161,15 +166,8 @@ func (s *Service) IndexPullRequest(ctx context.Context, owner, repo string, repo
 				hunkRows[i].SnapshotID = stored.ID
 			}
 
-			if len(snapshotRows) > 0 {
-				if err := tx.Create(&snapshotRows).Error; err != nil {
-					return err
-				}
-			}
-			if len(hunkRows) > 0 {
-				if err := tx.Create(&hunkRows).Error; err != nil {
-					return err
-				}
+			if err := insertPullRequestChangeRows(tx, snapshotRows, hunkRows); err != nil {
+				return err
 			}
 
 			for _, commit := range commitRows {
@@ -816,6 +814,20 @@ func upsertSnapshot(tx *gorm.DB, snapshot database.PullRequestChangeSnapshot) er
 	}).Create(&snapshot).Error
 }
 
+func insertPullRequestChangeRows(tx *gorm.DB, fileRows []database.PullRequestChangeFile, hunkRows []database.PullRequestChangeHunk) error {
+	if len(fileRows) > 0 {
+		if err := tx.CreateInBatches(&fileRows, pullRequestChangeFileBatchSize).Error; err != nil {
+			return err
+		}
+	}
+	if len(hunkRows) > 0 {
+		if err := tx.CreateInBatches(&hunkRows, pullRequestChangeHunkBatchSize).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func upsertCommitBundle(tx *gorm.DB, bundle commitBundle) error {
 	if err := tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "repository_id"}, {Name: "sha"}},
@@ -863,12 +875,12 @@ func upsertCommitBundle(tx *gorm.DB, bundle commitBundle) error {
 		}
 	}
 	if len(fileRows) > 0 {
-		if err := tx.CreateInBatches(&fileRows, 100).Error; err != nil {
+		if err := tx.CreateInBatches(&fileRows, commitParentFileBatchSize).Error; err != nil {
 			return err
 		}
 	}
 	if len(hunkRows) > 0 {
-		if err := tx.CreateInBatches(&hunkRows, 200).Error; err != nil {
+		if err := tx.CreateInBatches(&hunkRows, commitParentHunkBatchSize).Error; err != nil {
 			return err
 		}
 	}
