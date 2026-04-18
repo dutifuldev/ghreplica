@@ -1,10 +1,10 @@
 ---
-title: River Webhook Projection Cutover Plan
+title: Background Job Webhook Processing Plan
 date: 2026-04-18
 status: proposed
 ---
 
-# 2026-04-18 River Webhook Projection Cutover Plan
+# 2026-04-18 Background Job Webhook Processing Plan
 
 This document describes the intended production cutover for GitHub webhook ingestion in `ghreplica`.
 
@@ -54,7 +54,7 @@ In plain language:
 
 ## Core Design
 
-Use River as the generic background job runner for webhook-driven projection work.
+Use a durable background job runner for webhook-driven projection work.
 
 Keep the existing repo-specific sync logic custom.
 
@@ -65,7 +65,7 @@ The clean split is:
 
 This avoids reinventing queue plumbing without trying to force the entire sync engine into a generic framework abstraction.
 
-## Why River
+## Recommended Runner
 
 River is the right fit for this cutover because:
 
