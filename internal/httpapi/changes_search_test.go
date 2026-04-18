@@ -92,6 +92,8 @@ func TestChangeAndSearchEndpointsUseIndexedGitData(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &commit))
 	require.Equal(t, pulls[101].HeadSHA, commit["sha"])
 	require.Len(t, commit["parents"], 1)
+	require.Len(t, commit["parent_details"], 1)
+	require.Equal(t, "full", commit["parent_details"].([]any)[0].(map[string]any)["indexed_as"])
 
 	req = httptest.NewRequest(http.MethodGet, "/v1/changes/repos/acme/widgets/commits/"+pulls[101].HeadSHA+"/files", nil)
 	rec = httptest.NewRecorder()
@@ -289,6 +291,51 @@ func TestChangeStatusEndpoints(t *testing.T) {
 	require.Equal(t, "current", prStatus["index_freshness"])
 	require.EqualValues(t, 2, prStatus["changed_files"])
 	require.Equal(t, true, prStatus["inventory_needs_refresh"])
+}
+
+func TestListCommitFilesReturnsEmptyWhenDetailWasSkipped(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	repo := database.Repository{
+		GitHubID:      101,
+		OwnerLogin:    "acme",
+		Name:          "widgets",
+		FullName:      "acme/widgets",
+		HTMLURL:       "https://github.com/acme/widgets",
+		APIURL:        "https://api.github.com/repos/acme/widgets",
+		DefaultBranch: "main",
+		Visibility:    "public",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(&repo).Error)
+	require.NoError(t, db.WithContext(ctx).Create(&database.GitCommit{
+		RepositoryID: repo.ID,
+		SHA:          "abcdef1234567890",
+		TreeSHA:      "tree123",
+		Message:      "merge commit",
+	}).Error)
+	require.NoError(t, db.WithContext(ctx).Create(&database.GitCommitParent{
+		RepositoryID:  repo.ID,
+		CommitSHA:     "abcdef1234567890",
+		ParentSHA:     "parent123",
+		ParentIndex:   0,
+		IndexedAs:     "skipped",
+		IndexReason:   "oversized_merge_commit",
+		PathCount:     200,
+		LastIndexedAt: timePtr(time.Now().UTC()),
+	}).Error)
+
+	server := httpapi.NewServer(db, httpapi.Options{})
+	req := httptest.NewRequest(http.MethodGet, "/v1/changes/repos/acme/widgets/commits/abcdef1234567890/files", nil)
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var commitFiles []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &commitFiles))
+	require.Empty(t, commitFiles)
 }
 
 func TestSearchMentionsEndpoint(t *testing.T) {
@@ -601,4 +648,8 @@ printf ']'
 `
 	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
 	return path
+}
+
+func timePtr(t time.Time) *time.Time {
+	return &t
 }

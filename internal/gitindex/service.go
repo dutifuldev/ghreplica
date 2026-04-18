@@ -24,6 +24,7 @@ const (
 	indexedAsMixed     = "mixed"
 	indexedAsOversized = "oversized"
 	indexedAsFailed    = "failed"
+	indexedAsSkipped   = "skipped"
 
 	defaultIndexTimeout   = 5 * time.Minute
 	defaultASTGrepTimeout = time.Minute
@@ -33,6 +34,20 @@ const (
 	freshnessStaleBaseMoved   = "stale_base_moved"
 	freshnessRebuilding       = "rebuilding"
 	freshnessFailed           = "failed"
+
+	commitIndexReasonWithinBudget            = "within_budget"
+	commitIndexReasonBudgetExceeded          = "budget_exceeded"
+	commitIndexReasonOversizedMerge          = "oversized_merge_commit"
+	commitDetailFullMaxFiles                 = 100
+	commitDetailFullMaxChangedLines          = 20_000
+	commitDetailFullMaxPatchBytes            = 1_000_000
+	commitDetailPathOnlyMaxFiles             = 500
+	commitDetailPathOnlyMaxChangedLines      = 100_000
+	mergeCommitDetailFullMaxFiles            = 25
+	mergeCommitDetailFullMaxChangedLines     = 5_000
+	mergeCommitDetailFullMaxPatchBytes       = 250_000
+	mergeCommitDetailPathOnlyMaxFiles        = 150
+	mergeCommitDetailPathOnlyMaxChangedLines = 50_000
 )
 
 type Service struct {
@@ -259,9 +274,13 @@ type parsedFile struct {
 
 type commitBundle struct {
 	Commit  database.GitCommit
-	Parents []database.GitCommitParent
-	Files   []database.GitCommitParentFile
-	Hunks   []database.GitCommitParentHunk
+	Parents []commitParentBundle
+}
+
+type commitParentBundle struct {
+	Parent database.GitCommitParent
+	Files  []database.GitCommitParentFile
+	Hunks  []database.GitCommitParentHunk
 }
 
 func (s *Service) buildPullRequestIndex(ctx context.Context, mirrorPath string, repositoryID uint, pull database.PullRequest, mergeBase string) ([]database.PullRequestChangeFile, []database.PullRequestChangeHunk, database.PullRequestChangeSnapshot, []commitBundle, error) {
@@ -418,14 +437,14 @@ func (s *Service) buildCommitBundles(ctx context.Context, mirrorPath string, rep
 		if err != nil {
 			return nil, err
 		}
-		bundle := commitBundle{Commit: meta, Parents: parents}
+		bundle := commitBundle{Commit: meta}
+		isMergeCommit := len(parents) > 1
 		for _, parent := range parents {
-			files, hunks, err := s.readCommitDiff(ctx, mirrorPath, repositoryID, sha, parent.ParentSHA, parent.ParentIndex)
+			parentBundle, err := s.readCommitDiff(ctx, mirrorPath, repositoryID, sha, parent, isMergeCommit)
 			if err != nil {
 				return nil, err
 			}
-			bundle.Files = append(bundle.Files, files...)
-			bundle.Hunks = append(bundle.Hunks, hunks...)
+			bundle.Parents = append(bundle.Parents, parentBundle)
 		}
 		bundles = append(bundles, bundle)
 	}
@@ -482,34 +501,157 @@ func (s *Service) readCommitMetadata(ctx context.Context, mirrorPath string, rep
 	return commit, parents, nil
 }
 
-func (s *Service) readCommitDiff(ctx context.Context, mirrorPath string, repositoryID uint, commitSHA, parentSHA string, parentIndex int) ([]database.GitCommitParentFile, []database.GitCommitParentHunk, error) {
-	rawOut, err := s.runGit(ctx, mirrorPath, "diff", "--raw", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", parentSHA, commitSHA)
+func (s *Service) readCommitDiff(ctx context.Context, mirrorPath string, repositoryID uint, commitSHA string, parent database.GitCommitParent, isMergeCommit bool) (commitParentBundle, error) {
+	rawOut, err := s.runGit(ctx, mirrorPath, "diff", "--raw", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", parent.ParentSHA, commitSHA)
 	if err != nil {
-		return nil, nil, err
+		return commitParentBundle{}, err
 	}
-	numstatOut, err := s.runGit(ctx, mirrorPath, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", parentSHA, commitSHA)
+	numstatOut, err := s.runGit(ctx, mirrorPath, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", parent.ParentSHA, commitSHA)
 	if err != nil {
-		return nil, nil, err
+		return commitParentBundle{}, err
 	}
 	files := mergeFileMetadata(parseRawZ(rawOut), parseNumstatZ(numstatOut))
-	patchOut, err := s.runGit(ctx, mirrorPath, "diff", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", "--unified=0", parentSHA, commitSHA)
-	if err == nil {
+
+	totalAdditions, totalDeletions := summarizeFileCounts(files)
+	totalLines := totalAdditions + totalDeletions
+	indexedAs, indexReason := decideCommitDetailLevel(len(files), totalLines, isMergeCommit)
+	now := time.Now().UTC()
+
+	parent.RepositoryID = repositoryID
+	parent.CommitSHA = commitSHA
+	parent.IndexedAs = indexedAs
+	parent.IndexReason = indexReason
+	parent.PathCount = len(files)
+	parent.Additions = totalAdditions
+	parent.Deletions = totalDeletions
+	parent.LastIndexedAt = &now
+
+	if indexedAs == indexedAsSkipped {
+		return commitParentBundle{Parent: parent}, nil
+	}
+
+	if indexedAs == indexedAsFull {
+		patchOut, err := s.runGit(ctx, mirrorPath, "diff", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", "--unified=0", parent.ParentSHA, commitSHA)
+		if err != nil {
+			return commitParentBundle{}, err
+		}
 		if err := applyPatchDetails(files, patchOut); err != nil {
-			return nil, nil, err
+			return commitParentBundle{}, err
+		}
+
+		patchBytes := sumPatchBytes(files)
+		if commitPatchBytesExceedBudget(patchBytes, isMergeCommit) || commitFilesContainReducedDetail(files) {
+			indexedAs = indexedAsPathOnly
+			indexReason = commitIndexReasonBudgetExceeded
+			if isMergeCommit {
+				indexReason = commitIndexReasonOversizedMerge
+			}
+			downgradeCommitFilesToPathsOnly(files)
+			parent.IndexedAs = indexedAs
+			parent.IndexReason = indexReason
+		} else {
+			parent.PatchBytes = patchBytes
 		}
 	}
 
-	var fileRows []database.GitCommitParentFile
-	var hunkRows []database.GitCommitParentHunk
+	fileRows, hunkRows, indexedFileCount, hunkCount, patchBytes := buildCommitParentRows(repositoryID, commitSHA, parent, files)
+	parent.HunkCount = hunkCount
+	parent.PatchBytes = patchBytes
+	if indexedAs == indexedAsPathOnly {
+		parent.PatchBytes = 0
+	}
+	_ = indexedFileCount
+
+	return commitParentBundle{
+		Parent: parent,
+		Files:  fileRows,
+		Hunks:  hunkRows,
+	}, nil
+}
+
+func decideCommitDetailLevel(pathCount, totalLines int, isMergeCommit bool) (string, string) {
+	fullMaxFiles := commitDetailFullMaxFiles
+	fullMaxLines := commitDetailFullMaxChangedLines
+	pathOnlyMaxFiles := commitDetailPathOnlyMaxFiles
+	pathOnlyMaxLines := commitDetailPathOnlyMaxChangedLines
+	reason := commitIndexReasonBudgetExceeded
+	if isMergeCommit {
+		fullMaxFiles = mergeCommitDetailFullMaxFiles
+		fullMaxLines = mergeCommitDetailFullMaxChangedLines
+		pathOnlyMaxFiles = mergeCommitDetailPathOnlyMaxFiles
+		pathOnlyMaxLines = mergeCommitDetailPathOnlyMaxChangedLines
+		reason = commitIndexReasonOversizedMerge
+	}
+	if pathCount <= fullMaxFiles && totalLines <= fullMaxLines {
+		return indexedAsFull, commitIndexReasonWithinBudget
+	}
+	if pathCount <= pathOnlyMaxFiles && totalLines <= pathOnlyMaxLines {
+		return indexedAsPathOnly, reason
+	}
+	return indexedAsSkipped, reason
+}
+
+func commitPatchBytesExceedBudget(patchBytes int, isMergeCommit bool) bool {
+	if isMergeCommit {
+		return patchBytes > mergeCommitDetailFullMaxPatchBytes
+	}
+	return patchBytes > commitDetailFullMaxPatchBytes
+}
+
+func summarizeFileCounts(files map[string]*parsedFile) (int, int) {
+	totalAdditions := 0
+	totalDeletions := 0
+	for _, file := range files {
+		totalAdditions += file.Additions
+		totalDeletions += file.Deletions
+	}
+	return totalAdditions, totalDeletions
+}
+
+func sumPatchBytes(files map[string]*parsedFile) int {
+	total := 0
+	for _, file := range files {
+		total += len(file.PatchText)
+	}
+	return total
+}
+
+func commitFilesContainReducedDetail(files map[string]*parsedFile) bool {
+	for _, file := range files {
+		if file.IndexedAs != "" && file.IndexedAs != indexedAsFull {
+			return true
+		}
+	}
+	return false
+}
+
+func downgradeCommitFilesToPathsOnly(files map[string]*parsedFile) {
+	for _, file := range files {
+		file.IndexedAs = indexedAsPathOnly
+		file.PatchText = ""
+		file.Hunks = nil
+	}
+}
+
+func buildCommitParentRows(repositoryID uint, commitSHA string, parent database.GitCommitParent, files map[string]*parsedFile) ([]database.GitCommitParentFile, []database.GitCommitParentHunk, int, int, int) {
+	fileRows := make([]database.GitCommitParentFile, 0, len(files))
+	hunkRows := make([]database.GitCommitParentHunk, 0)
+	indexedFileCount := 0
+	hunkCount := 0
+	patchBytes := 0
 	for _, file := range orderedFiles(files) {
 		if file.IndexedAs == "" {
 			file.IndexedAs = indexedAsFull
 		}
+		if file.IndexedAs == indexedAsFull {
+			indexedFileCount++
+		}
+		patchBytes += len(file.PatchText)
 		fileRows = append(fileRows, database.GitCommitParentFile{
 			RepositoryID:    repositoryID,
 			CommitSHA:       commitSHA,
-			ParentSHA:       parentSHA,
-			ParentIndex:     parentIndex,
+			ParentSHA:       parent.ParentSHA,
+			ParentIndex:     parent.ParentIndex,
 			Path:            file.Path,
 			PreviousPath:    file.PreviousPath,
 			Status:          file.Status,
@@ -524,12 +666,16 @@ func (s *Service) readCommitDiff(ctx context.Context, mirrorPath string, reposit
 			Changes:         file.Changes,
 			PatchText:       file.PatchText,
 		})
+		if file.IndexedAs != indexedAsFull {
+			continue
+		}
 		for _, hunk := range file.Hunks {
+			hunkCount++
 			hunkRows = append(hunkRows, database.GitCommitParentHunk{
 				RepositoryID: repositoryID,
 				CommitSHA:    commitSHA,
-				ParentSHA:    parentSHA,
-				ParentIndex:  parentIndex,
+				ParentSHA:    parent.ParentSHA,
+				ParentIndex:  parent.ParentIndex,
 				Path:         file.Path,
 				HunkIndex:    hunk.Index,
 				DiffHunk:     hunk.DiffHunk,
@@ -542,7 +688,7 @@ func (s *Service) readCommitDiff(ctx context.Context, mirrorPath string, reposit
 			})
 		}
 	}
-	return fileRows, hunkRows, nil
+	return fileRows, hunkRows, indexedFileCount, hunkCount, patchBytes
 }
 
 func mergeFileMetadata(rawRecords []rawRecord, numstatRecords []numstatRecord) map[string]*parsedFile {
@@ -685,52 +831,39 @@ func upsertCommitBundle(tx *gorm.DB, bundle commitBundle) error {
 	}).Create(&bundle.Commit).Error; err != nil {
 		return err
 	}
+	if err := tx.Where("repository_id = ? AND commit_sha = ?", bundle.Commit.RepositoryID, bundle.Commit.SHA).
+		Delete(&database.GitCommitParentHunk{}).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("repository_id = ? AND commit_sha = ?", bundle.Commit.RepositoryID, bundle.Commit.SHA).
+		Delete(&database.GitCommitParentFile{}).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("repository_id = ? AND commit_sha = ?", bundle.Commit.RepositoryID, bundle.Commit.SHA).
+		Delete(&database.GitCommitParent{}).Error; err != nil {
+		return err
+	}
+
+	parentRows := make([]database.GitCommitParent, 0, len(bundle.Parents))
+	fileRows := make([]database.GitCommitParentFile, 0)
+	hunkRows := make([]database.GitCommitParentHunk, 0)
 	for _, parent := range bundle.Parents {
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "repository_id"}, {Name: "commit_sha"}, {Name: "parent_sha"}, {Name: "parent_index"}},
-			DoNothing: true,
-		}).Create(&parent).Error; err != nil {
+		parentRows = append(parentRows, parent.Parent)
+		fileRows = append(fileRows, parent.Files...)
+		hunkRows = append(hunkRows, parent.Hunks...)
+	}
+	if len(parentRows) > 0 {
+		if err := tx.Create(&parentRows).Error; err != nil {
 			return err
 		}
 	}
-	for _, file := range bundle.Files {
-		if err := tx.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "repository_id"}, {Name: "commit_sha"}, {Name: "parent_index"}, {Name: "path"}},
-			DoUpdates: clause.AssignmentColumns([]string{
-				"parent_sha",
-				"previous_path",
-				"status",
-				"file_kind",
-				"indexed_as",
-				"old_mode",
-				"new_mode",
-				"blob_sha",
-				"previous_blob_sha",
-				"additions",
-				"deletions",
-				"changes",
-				"patch_text",
-				"updated_at",
-			}),
-		}).Create(&file).Error; err != nil {
+	if len(fileRows) > 0 {
+		if err := tx.CreateInBatches(&fileRows, 100).Error; err != nil {
 			return err
 		}
 	}
-	for _, hunk := range bundle.Hunks {
-		if err := tx.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "repository_id"}, {Name: "commit_sha"}, {Name: "parent_index"}, {Name: "path"}, {Name: "hunk_index"}},
-			DoUpdates: clause.AssignmentColumns([]string{
-				"parent_sha",
-				"diff_hunk",
-				"old_start",
-				"old_count",
-				"old_end",
-				"new_start",
-				"new_count",
-				"new_end",
-				"updated_at",
-			}),
-		}).Create(&hunk).Error; err != nil {
+	if len(hunkRows) > 0 {
+		if err := tx.CreateInBatches(&hunkRows, 200).Error; err != nil {
 			return err
 		}
 	}

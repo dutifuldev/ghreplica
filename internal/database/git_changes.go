@@ -35,13 +35,21 @@ type GitCommit struct {
 }
 
 type GitCommitParent struct {
-	ID           uint   `gorm:"primaryKey"`
-	RepositoryID uint   `gorm:"uniqueIndex:idx_git_commit_parents_repo_commit_parent,priority:1;index:idx_git_commit_parents_repo_parent"`
-	CommitSHA    string `gorm:"uniqueIndex:idx_git_commit_parents_repo_commit_parent,priority:2"`
-	ParentSHA    string `gorm:"index:idx_git_commit_parents_repo_parent;uniqueIndex:idx_git_commit_parents_repo_commit_parent,priority:3"`
-	ParentIndex  int    `gorm:"uniqueIndex:idx_git_commit_parents_repo_commit_parent,priority:4"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID            uint   `gorm:"primaryKey"`
+	RepositoryID  uint   `gorm:"uniqueIndex:idx_git_commit_parents_repo_commit_parent,priority:1;index:idx_git_commit_parents_repo_parent"`
+	CommitSHA     string `gorm:"uniqueIndex:idx_git_commit_parents_repo_commit_parent,priority:2"`
+	ParentSHA     string `gorm:"index:idx_git_commit_parents_repo_parent;uniqueIndex:idx_git_commit_parents_repo_commit_parent,priority:3"`
+	ParentIndex   int    `gorm:"uniqueIndex:idx_git_commit_parents_repo_commit_parent,priority:4"`
+	IndexedAs     string
+	IndexReason   string
+	PathCount     int
+	HunkCount     int
+	Additions     int
+	Deletions     int
+	PatchBytes    int
+	LastIndexedAt *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type GitCommitParentFile struct {

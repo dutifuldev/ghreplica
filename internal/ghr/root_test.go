@@ -243,6 +243,8 @@ func TestChangesCommitCommands(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, stdout, "acme/widgets commit abc123")
 	require.Contains(t, stdout, "Fix parser")
+	require.Contains(t, stdout, "Parent detail")
+	require.Contains(t, stdout, "within_budget")
 
 	cmd = NewRootCmd()
 	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "changes", "commit", "files", "abc123", "--json", "parent_sha,file")
@@ -830,6 +832,18 @@ func commitFixture() CommitResponse {
 		Message:         "Fix parser",
 		MessageEncoding: "UTF-8",
 		Parents:         []string{"def456"},
+		ParentDetails: []gitindex.CommitParentDetail{
+			{
+				ParentSHA:   "def456",
+				ParentIndex: 0,
+				IndexedAs:   "full",
+				IndexReason: "within_budget",
+				PathCount:   2,
+				HunkCount:   2,
+				Additions:   7,
+				Deletions:   2,
+			},
+		},
 	}
 }
 
