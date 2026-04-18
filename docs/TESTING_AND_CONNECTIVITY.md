@@ -146,13 +146,13 @@ At minimum, the service should support:
 - `GITHUB_WEBHOOK_SECRET`
 - `GITHUB_REPO_ALLOWLIST`
 - `DATABASE_URL`
-- `SYNC_MODE`
+- `DB_MAX_OPEN_CONNS`
+- `DB_MAX_IDLE_CONNS`
+- `WEBHOOK_JOB_QUEUE_CONCURRENCY`
+- `WEBHOOK_JOB_TIMEOUT`
+- `WEBHOOK_JOB_MAX_ATTEMPTS`
 
-Example modes:
-
-- `poll`
-- `webhook`
-- `hybrid`
+Those last five matter now because webhook delivery is accepted on the request path and projected in background jobs. They are part of the real production runtime surface, not just implementation details.
 
 ## Repository Registration
 

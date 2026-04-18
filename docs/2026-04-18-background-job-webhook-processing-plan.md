@@ -186,6 +186,14 @@ It is a practical adjustment based on the current production observation that th
 
 That is the safer production starting point for the current Cloud SQL footprint. Increase it only after measuring real headroom under load.
 
+These defaults are now exposed through the normal runtime config surface:
+
+- `DB_MAX_OPEN_CONNS`
+- `DB_MAX_IDLE_CONNS`
+- `WEBHOOK_JOB_QUEUE_CONCURRENCY`
+- `WEBHOOK_JOB_TIMEOUT`
+- `WEBHOOK_JOB_MAX_ATTEMPTS`
+
 ## Processing Flow
 
 The River worker should:

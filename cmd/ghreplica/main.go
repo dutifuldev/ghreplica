@@ -7,24 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
-	"time"
 
+	"github.com/dutifuldev/ghreplica/internal/app"
 	"github.com/dutifuldev/ghreplica/internal/config"
-	"github.com/dutifuldev/ghreplica/internal/database"
-	"github.com/dutifuldev/ghreplica/internal/github"
 	"github.com/dutifuldev/ghreplica/internal/githubsync"
-	"github.com/dutifuldev/ghreplica/internal/gitindex"
-	"github.com/dutifuldev/ghreplica/internal/httpapi"
 	"github.com/dutifuldev/ghreplica/internal/refresh"
 	"github.com/dutifuldev/ghreplica/internal/searchindex"
-	"github.com/dutifuldev/ghreplica/internal/webhookjobs"
-	"github.com/dutifuldev/ghreplica/internal/webhooks"
-	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
-	"github.com/riverqueue/river/rivermigrate"
-	"gorm.io/gorm"
 )
 
 func main() {
@@ -60,121 +49,11 @@ func run(args []string) error {
 }
 
 func runServe(cfg config.Config) error {
-	if err := cfg.ValidateDatabase(); err != nil {
-		return err
-	}
-	if err := cfg.ValidateServeRuntime(); err != nil {
-		return err
-	}
-	if database.IsSQLiteURL(cfg.DatabaseURL) {
-		return errors.New("ghreplica serve requires PostgreSQL when background webhook jobs are enabled")
-	}
-
-	db, err := database.Open(cfg.DatabaseURL)
-	if err != nil {
-		return err
-	}
-
-	githubClient := github.NewClient(cfg.GitHubBaseURL, github.AuthConfig{
-		Token:          cfg.GitHubToken,
-		AppID:          cfg.GitHubAppID,
-		InstallationID: cfg.GitHubInstallationID,
-		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
-		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
-	})
-	gitIndex := newGitIndexService(db, githubClient, cfg)
-	githubSync := githubsync.NewService(db, githubClient, gitIndex)
-	webhookIngestor := webhooks.NewService(db, githubSync)
-	sqlDB, err := db.DB()
-	if err != nil {
-		return err
-	}
-	webhookJobClient, dispatcher, err := webhookjobs.NewClient(sqlDB, webhookIngestor, webhookjobs.Config{})
-	if err != nil {
-		return err
-	}
-	webhookIngestor.SetDispatcher(dispatcher)
-	worker := refresh.NewWorker(db, githubSync, 2*time.Second)
-	changeSyncWorker := githubsync.NewChangeSyncWorker(
-		db,
-		githubSync,
-		cfg.ChangeSyncPollInterval,
-		cfg.WebhookFetchDebounce,
-		cfg.OpenPRInventoryMaxAge,
-		cfg.RepoLeaseTTL,
-		cfg.BackfillMaxRuntime,
-		cfg.BackfillMaxPRsPerPass,
-	)
-
-	server := httpapi.NewServer(db, httpapi.Options{
-		GitHubWebhookSecret: cfg.GitHubWebhookSecret,
-		WebhookIngestor:     webhookIngestor,
-		ChangeStatus:        githubSync,
-		StructuralSearch:    gitIndex,
-	})
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if err := webhookJobClient.Start(ctx); err != nil {
-		return err
-	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := webhookJobClient.Stop(shutdownCtx); err != nil {
-			slog.Error("webhook job client stopped with error", "error", err)
-		}
-	}()
-
-	go func() {
-		if err := worker.Start(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("refresh worker stopped", "error", err)
-			stop()
-		}
-	}()
-	go func() {
-		if err := changeSyncWorker.Start(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("change sync worker stopped", "error", err)
-			stop()
-		}
-	}()
-
-	return server.Start(ctx, cfg.AppAddr)
+	return app.RunServe(cfg)
 }
 
 func runMigrate(cfg config.Config, args []string) error {
-	if err := cfg.ValidateDatabase(); err != nil {
-		return err
-	}
-
-	if len(args) != 1 || args[0] != "up" {
-		return errors.New("usage: ghreplica migrate up")
-	}
-
-	db, err := database.Open(cfg.DatabaseURL)
-	if err != nil {
-		return err
-	}
-
-	if database.IsSQLiteURL(cfg.DatabaseURL) {
-		return database.AutoMigrate(db)
-	}
-
-	if err := database.RunMigrations(db, "migrations"); err != nil {
-		return err
-	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		return err
-	}
-	migrator, err := rivermigrate.New(riverdatabasesql.New(sqlDB), nil)
-	if err != nil {
-		return err
-	}
-	_, err = migrator.Migrate(context.Background(), rivermigrate.DirectionUp, nil)
-	return err
+	return app.RunMigrate(cfg, args)
 }
 
 func runSync(cfg config.Config, args []string) error {
@@ -191,19 +70,13 @@ func runSync(cfg config.Config, args []string) error {
 		return err
 	}
 
-	db, err := database.Open(cfg.DatabaseURL)
+	db, err := app.OpenDatabase(cfg)
 	if err != nil {
 		return err
 	}
 
-	client := github.NewClient(cfg.GitHubBaseURL, github.AuthConfig{
-		Token:          cfg.GitHubToken,
-		AppID:          cfg.GitHubAppID,
-		InstallationID: cfg.GitHubInstallationID,
-		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
-		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
-	})
-	service := githubsync.NewService(db, client, newGitIndexService(db, client, cfg))
+	client := app.NewGitHubClient(cfg)
+	service := githubsync.NewService(db, client, app.NewGitIndexService(db, client, cfg))
 
 	switch rest[0] {
 	case "repo":
@@ -265,7 +138,7 @@ func runRefresh(cfg config.Config, args []string) error {
 		return err
 	}
 
-	db, err := database.Open(cfg.DatabaseURL)
+	db, err := app.OpenDatabase(cfg)
 	if err != nil {
 		return err
 	}
@@ -308,19 +181,13 @@ func runBackfill(cfg config.Config, args []string) error {
 		return err
 	}
 
-	db, err := database.Open(cfg.DatabaseURL)
+	db, err := app.OpenDatabase(cfg)
 	if err != nil {
 		return err
 	}
 
-	client := github.NewClient(cfg.GitHubBaseURL, github.AuthConfig{
-		Token:          cfg.GitHubToken,
-		AppID:          cfg.GitHubAppID,
-		InstallationID: cfg.GitHubInstallationID,
-		PrivateKeyPEM:  cfg.GitHubAppPrivateKeyPEM,
-		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
-	})
-	service := githubsync.NewService(db, client, newGitIndexService(db, client, cfg))
+	client := app.NewGitHubClient(cfg)
+	service := githubsync.NewService(db, client, app.NewGitIndexService(db, client, cfg))
 	_, err = service.ConfigureRepoBackfill(context.Background(), owner, repo, *mode, *priority)
 	return err
 }
@@ -344,19 +211,12 @@ func runSearchIndex(cfg config.Config, args []string) error {
 		return err
 	}
 
-	db, err := database.Open(cfg.DatabaseURL)
+	db, err := app.OpenDatabase(cfg)
 	if err != nil {
 		return err
 	}
 
 	return searchindex.NewService(db).RebuildRepository(context.Background(), owner, repo)
-}
-
-func newGitIndexService(db *gorm.DB, client *github.Client, cfg config.Config) *gitindex.Service {
-	return gitindex.NewService(db, client, cfg.GitMirrorRoot).
-		WithIndexTimeout(cfg.GitIndexTimeout).
-		WithASTGrepBinary(cfg.ASTGrepBin).
-		WithASTGrepTimeout(cfg.ASTGrepTimeout)
 }
 
 func usageError() error {

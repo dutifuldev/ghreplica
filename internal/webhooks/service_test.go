@@ -31,7 +31,13 @@ func newWebhookService(t *testing.T, db *gorm.DB, projector webhooks.WebhookProj
 	t.Helper()
 
 	dispatcher := &recordingDispatcher{}
-	service := webhooks.NewService(db, projector)
+	staler, _ := projector.(webhooks.BaseRefStaler)
+	recorder, _ := projector.(webhooks.RepoChangeWebhookRecorder)
+	service := webhooks.NewService(db, webhooks.Dependencies{
+		Projector: projector,
+		Staler:    staler,
+		Recorder:  recorder,
+	})
 	service.SetDispatcher(dispatcher)
 	return service, dispatcher
 }
