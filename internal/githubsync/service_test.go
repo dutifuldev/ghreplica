@@ -197,6 +197,61 @@ func TestUpsertRepositoryTracksRenameByGitHubID(t *testing.T) {
 	require.Equal(t, "acme/widgets-renamed", repos[0].FullName)
 }
 
+func TestUpsertRepositoryReclaimsFullNameFromDifferentGitHubID(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+
+	stale := repoFixture()
+	stale.ID = 999001
+	stale.NodeID = "R_stale"
+	require.NoError(t, db.Create(&database.Repository{
+		GitHubID:      stale.ID,
+		NodeID:        stale.NodeID,
+		OwnerLogin:    "acme",
+		Name:          "widgets",
+		FullName:      stale.FullName,
+		Private:       stale.Private,
+		Archived:      stale.Archived,
+		Disabled:      stale.Disabled,
+		DefaultBranch: stale.DefaultBranch,
+		Description:   stale.Description,
+		HTMLURL:       stale.HTMLURL,
+		APIURL:        stale.URL,
+		Visibility:    stale.Visibility,
+		Fork:          stale.Fork,
+		CreatedAt:     stale.CreatedAt,
+		UpdatedAt:     stale.UpdatedAt,
+	}).Error)
+
+	current, err := service.UpsertRepository(ctx, repoFixture())
+	require.NoError(t, err)
+	require.EqualValues(t, repoFixture().ID, current.GitHubID)
+	require.Equal(t, repoFixture().FullName, current.FullName)
+
+	var repos []database.Repository
+	require.NoError(t, db.Order("github_id ASC").Find(&repos).Error)
+	require.Len(t, repos, 2)
+
+	byGitHubID := make(map[int64]database.Repository, len(repos))
+	for _, repo := range repos {
+		byGitHubID[repo.GitHubID] = repo
+	}
+
+	staleStored, ok := byGitHubID[stale.ID]
+	require.True(t, ok)
+	require.NotEqual(t, repoFixture().FullName, staleStored.FullName)
+	require.Contains(t, staleStored.FullName, "__ghreplica_released__/")
+
+	currentStored, ok := byGitHubID[repoFixture().ID]
+	require.True(t, ok)
+	require.Equal(t, repoFixture().FullName, currentStored.FullName)
+}
+
 func TestUpsertsMaintainSearchDocuments(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
