@@ -20,7 +20,7 @@ const (
 	changeBackfillModeOpenOnly            = "open_only"
 	defaultTargetedRefreshBurstMaxPRs     = 50
 	defaultTargetedRefreshBurstMaxRuntime = 30 * time.Second
-	defaultInventoryWriteBatchSize        = 250
+	defaultInventoryWriteBatchSize        = 100
 )
 
 type RepoBackfillOptions struct {
@@ -942,7 +942,6 @@ func (s *Service) syncOpenPullInventory(ctx context.Context, owner, repo string,
 	}
 	result := RepoBackfillResult{OpenPRTotal: len(openPulls)}
 	now := time.Now().UTC()
-	seen := make([]int, 0, len(openPulls))
 	inventoryRows := make([]database.RepoOpenPullInventory, 0, len(openPulls))
 	snapshotFreshnessUpdates := make(map[string][]uint)
 	nextGeneration := nextInventoryGeneration(state)
@@ -971,52 +970,19 @@ func (s *Service) syncOpenPullInventory(ctx context.Context, owner, repo string,
 			LastSeenAt:        now,
 		})
 
-		seen = append(seen, pull.Number)
 		result.OpenPRCurrent, result.OpenPRStale = adjustBackfillCounts(result.OpenPRCurrent, result.OpenPRStale, "", freshness)
 	}
 
+	if err := s.prepareInventoryGeneration(ctx, repositoryID, state.InventoryGenerationCurrent, nextGeneration); err != nil {
+		return RepoBackfillResult{}, err
+	}
+	if err := s.writeInventoryGeneration(ctx, inventoryRows, now); err != nil {
+		return RepoBackfillResult{}, err
+	}
+	if err := s.applySnapshotFreshnessUpdates(ctx, snapshotFreshnessUpdates, now); err != nil {
+		return RepoBackfillResult{}, err
+	}
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for freshness, snapshotIDs := range snapshotFreshnessUpdates {
-			if err := tx.Model(&database.PullRequestChangeSnapshot{}).
-				Where("id IN ?", snapshotIDs).
-				Updates(map[string]any{
-					"index_freshness": freshness,
-					"updated_at":      now,
-				}).Error; err != nil {
-				return err
-			}
-		}
-
-		if len(inventoryRows) > 0 {
-			if err := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "repository_id"}, {Name: "generation"}, {Name: "pull_request_number"}},
-				DoUpdates: clause.Assignments(map[string]any{
-					"github_updated_at": gorm.Expr("excluded.github_updated_at"),
-					"head_sha":          gorm.Expr("excluded.head_sha"),
-					"base_sha":          gorm.Expr("excluded.base_sha"),
-					"base_ref":          gorm.Expr("excluded.base_ref"),
-					"state":             gorm.Expr("excluded.state"),
-					"draft":             gorm.Expr("excluded.draft"),
-					"freshness_state":   gorm.Expr("excluded.freshness_state"),
-					"last_seen_at":      gorm.Expr("excluded.last_seen_at"),
-					"updated_at":        now,
-				}),
-			}).CreateInBatches(inventoryRows, defaultInventoryWriteBatchSize).Error; err != nil {
-				return err
-			}
-		}
-
-		prune := tx.Where("repository_id = ? AND generation = ?", repositoryID, nextGeneration)
-		if len(seen) > 0 {
-			prune = prune.Where("pull_request_number NOT IN ?", seen)
-		}
-		if err := prune.Delete(&database.RepoOpenPullInventory{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("repository_id = ? AND generation <> ?", repositoryID, nextGeneration).
-			Delete(&database.RepoOpenPullInventory{}).Error; err != nil {
-			return err
-		}
 		return tx.Model(&database.RepoChangeSyncState{}).
 			Where("id = ?", state.ID).
 			Updates(map[string]any{
@@ -1039,6 +1005,77 @@ func (s *Service) syncOpenPullInventory(ctx context.Context, owner, repo string,
 
 	result.OpenPRMissing = maxInt(0, result.OpenPRTotal-result.OpenPRCurrent-result.OpenPRStale)
 	return result, nil
+}
+
+func (s *Service) prepareInventoryGeneration(ctx context.Context, repositoryID uint, currentGeneration, nextGeneration int) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("repository_id = ? AND generation = ?", repositoryID, nextGeneration).
+			Delete(&database.RepoOpenPullInventory{}).Error; err != nil {
+			return err
+		}
+
+		prune := tx.Where("repository_id = ? AND generation <> ?", repositoryID, currentGeneration)
+		if currentGeneration <= 0 {
+			prune = tx.Where("repository_id = ?", repositoryID)
+		}
+		return prune.Where("generation <> ?", nextGeneration).
+			Delete(&database.RepoOpenPullInventory{}).Error
+	})
+}
+
+func (s *Service) writeInventoryGeneration(ctx context.Context, inventoryRows []database.RepoOpenPullInventory, now time.Time) error {
+	if len(inventoryRows) == 0 {
+		return nil
+	}
+
+	for start := 0; start < len(inventoryRows); start += defaultInventoryWriteBatchSize {
+		end := start + defaultInventoryWriteBatchSize
+		if end > len(inventoryRows) {
+			end = len(inventoryRows)
+		}
+		batch := inventoryRows[start:end]
+		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "repository_id"}, {Name: "generation"}, {Name: "pull_request_number"}},
+				DoUpdates: clause.Assignments(map[string]any{
+					"github_updated_at": gorm.Expr("excluded.github_updated_at"),
+					"head_sha":          gorm.Expr("excluded.head_sha"),
+					"base_sha":          gorm.Expr("excluded.base_sha"),
+					"base_ref":          gorm.Expr("excluded.base_ref"),
+					"state":             gorm.Expr("excluded.state"),
+					"draft":             gorm.Expr("excluded.draft"),
+					"freshness_state":   gorm.Expr("excluded.freshness_state"),
+					"last_seen_at":      gorm.Expr("excluded.last_seen_at"),
+					"updated_at":        now,
+				}),
+			}).CreateInBatches(batch, len(batch)).Error
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) applySnapshotFreshnessUpdates(ctx context.Context, snapshotFreshnessUpdates map[string][]uint, now time.Time) error {
+	for freshness, snapshotIDs := range snapshotFreshnessUpdates {
+		for start := 0; start < len(snapshotIDs); start += defaultInventoryWriteBatchSize {
+			end := start + defaultInventoryWriteBatchSize
+			if end > len(snapshotIDs) {
+				end = len(snapshotIDs)
+			}
+			if err := s.db.WithContext(ctx).Model(&database.PullRequestChangeSnapshot{}).
+				Where("id IN ?", snapshotIDs[start:end]).
+				Updates(map[string]any{
+					"index_freshness": freshness,
+					"updated_at":      now,
+				}).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func normalizeBackfillBaseRef(ref string) string {
