@@ -30,6 +30,8 @@ func closeDatabase(db *gorm.DB) {
 type ServeRuntime struct {
 	ControlDB         *gorm.DB
 	ControlSQLDB      *sql.DB
+	QueueDB           *gorm.DB
+	QueueSQLDB        *sql.DB
 	SyncDB            *gorm.DB
 	SyncSQLDB         *sql.DB
 	GitHubClient      *github.Client
@@ -54,6 +56,13 @@ func OpenControlDatabase(cfg config.Config) (*gorm.DB, error) {
 	return database.OpenWithPoolConfig(cfg.DatabaseURL, database.PoolConfig{
 		MaxOpenConns: cfg.ControlDBMaxOpenConns,
 		MaxIdleConns: cfg.ControlDBMaxIdleConns,
+	})
+}
+
+func OpenQueueDatabase(cfg config.Config) (*gorm.DB, error) {
+	return database.OpenWithPoolConfig(cfg.DatabaseURL, database.PoolConfig{
+		MaxOpenConns: cfg.QueueDBMaxOpenConns,
+		MaxIdleConns: cfg.QueueDBMaxIdleConns,
 	})
 }
 
@@ -86,8 +95,14 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
+	queueDB, err := OpenQueueDatabase(cfg)
+	if err != nil {
+		closeDatabase(controlDB)
+		return nil, err
+	}
 	syncDB, err := OpenSyncDatabase(cfg)
 	if err != nil {
+		closeDatabase(queueDB)
 		closeDatabase(controlDB)
 		return nil, err
 	}
@@ -105,22 +120,34 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 	controlSQLDB, err := controlDB.DB()
 	if err != nil {
 		closeDatabase(syncDB)
+		closeDatabase(queueDB)
+		closeDatabase(controlDB)
+		return nil, err
+	}
+	queueSQLDB, err := queueDB.DB()
+	if err != nil {
+		_ = controlSQLDB.Close()
+		closeDatabase(syncDB)
+		closeDatabase(queueDB)
 		closeDatabase(controlDB)
 		return nil, err
 	}
 	syncSQLDB, err := syncDB.DB()
 	if err != nil {
+		_ = queueSQLDB.Close()
 		_ = controlSQLDB.Close()
 		closeDatabase(syncDB)
+		closeDatabase(queueDB)
 		return nil, err
 	}
-	webhookJobClient, dispatcher, err := webhookjobs.NewClient(controlSQLDB, webhookIngestor, webhookjobs.Config{
+	webhookJobClient, dispatcher, err := webhookjobs.NewClient(queueSQLDB, webhookIngestor, webhookjobs.Config{
 		QueueConcurrency: cfg.WebhookJobQueueConcurrency,
 		JobTimeout:       cfg.WebhookJobTimeout,
 		MaxAttempts:      cfg.WebhookJobMaxAttempts,
 	})
 	if err != nil {
 		_ = syncSQLDB.Close()
+		_ = queueSQLDB.Close()
 		_ = controlSQLDB.Close()
 		return nil, err
 	}
@@ -129,6 +156,8 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 	return &ServeRuntime{
 		ControlDB:         controlDB,
 		ControlSQLDB:      controlSQLDB,
+		QueueDB:           queueDB,
+		QueueSQLDB:        queueSQLDB,
 		SyncDB:            syncDB,
 		SyncSQLDB:         syncSQLDB,
 		GitHubClient:      githubClient,
