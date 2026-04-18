@@ -75,6 +75,9 @@ func TestLoadIncludesWebhookJobAndDatabasePoolDefaults(t *testing.T) {
 	t.Setenv("WEBHOOK_JOB_QUEUE_CONCURRENCY", "")
 	t.Setenv("WEBHOOK_JOB_TIMEOUT", "")
 	t.Setenv("WEBHOOK_JOB_MAX_ATTEMPTS", "")
+	t.Setenv("OPEN_PR_INVENTORY_MAX_AGE", "")
+	t.Setenv("BACKFILL_MAX_RUNTIME", "")
+	t.Setenv("BACKFILL_MAX_PRS_PER_PASS", "")
 	t.Setenv("CLOUDSQL_INSTANCE_CONNECTION_NAME", "")
 	t.Setenv("CLOUDSQL_USE_IAM_AUTHN", "")
 
@@ -91,6 +94,9 @@ func TestLoadIncludesWebhookJobAndDatabasePoolDefaults(t *testing.T) {
 	require.Equal(t, 1, cfg.WebhookJobQueueConcurrency)
 	require.Equal(t, 30*time.Second, cfg.WebhookJobTimeout)
 	require.Equal(t, 8, cfg.WebhookJobMaxAttempts)
+	require.Equal(t, 6*time.Hour, cfg.OpenPRInventoryMaxAge)
+	require.Equal(t, 30*time.Minute, cfg.BackfillMaxRuntime)
+	require.Equal(t, 1000, cfg.BackfillMaxPRsPerPass)
 	require.Empty(t, cfg.CloudSQLInstanceConnectionName)
 	require.False(t, cfg.CloudSQLUseIAMAuthN)
 }
@@ -108,6 +114,9 @@ func TestLoadReadsWebhookJobAndDatabasePoolOverrides(t *testing.T) {
 	t.Setenv("WEBHOOK_JOB_QUEUE_CONCURRENCY", "4")
 	t.Setenv("WEBHOOK_JOB_TIMEOUT", "45s")
 	t.Setenv("WEBHOOK_JOB_MAX_ATTEMPTS", "9")
+	t.Setenv("OPEN_PR_INVENTORY_MAX_AGE", "8h")
+	t.Setenv("BACKFILL_MAX_RUNTIME", "45m")
+	t.Setenv("BACKFILL_MAX_PRS_PER_PASS", "2500")
 	t.Setenv("CLOUDSQL_INSTANCE_CONNECTION_NAME", "proj:region:instance")
 	t.Setenv("CLOUDSQL_USE_IAM_AUTHN", "true")
 
@@ -124,6 +133,9 @@ func TestLoadReadsWebhookJobAndDatabasePoolOverrides(t *testing.T) {
 	require.Equal(t, 4, cfg.WebhookJobQueueConcurrency)
 	require.Equal(t, 45*time.Second, cfg.WebhookJobTimeout)
 	require.Equal(t, 9, cfg.WebhookJobMaxAttempts)
+	require.Equal(t, 8*time.Hour, cfg.OpenPRInventoryMaxAge)
+	require.Equal(t, 45*time.Minute, cfg.BackfillMaxRuntime)
+	require.Equal(t, 2500, cfg.BackfillMaxPRsPerPass)
 	require.Equal(t, "proj:region:instance", cfg.CloudSQLInstanceConnectionName)
 	require.True(t, cfg.CloudSQLUseIAMAuthN)
 }

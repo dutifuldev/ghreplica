@@ -297,10 +297,12 @@ func (s *Service) SyncPullRequestIndex(ctx context.Context, owner, repo string, 
 }
 
 func (s *Service) MarkBaseRefStale(ctx context.Context, repositoryID uint, ref string) error {
-	if s.git == nil {
-		return nil
+	var errs []error
+	if s.git != nil {
+		errs = append(errs, s.git.MarkBaseRefStale(ctx, repositoryID, ref))
 	}
-	return s.git.MarkBaseRefStale(ctx, repositoryID, ref)
+	errs = append(errs, s.markInventoryBaseRefStale(ctx, repositoryID, ref))
+	return errors.Join(errs...)
 }
 
 func (s *Service) existingSyncMode(ctx context.Context, fullName string, repositoryID *uint) (string, error) {
