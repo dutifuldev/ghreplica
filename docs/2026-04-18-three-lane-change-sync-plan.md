@@ -41,9 +41,9 @@ When a repo is busy, the system should not keep choosing “scan the whole repo 
 
 Webhook-triggered updates should refresh the exact PRs that changed.
 
-Repo-wide inventory scans should happen on their own cadence, only when the open-PR inventory is old enough to need one.
+Repo-wide inventory scans should happen on their own cadence, only when the open-PR inventory is missing, clearly too old, or needs explicit repair.
 
-Backfill should keep working through missing and stale PRs from the latest inventory snapshot until that snapshot is exhausted or old enough to require a fresh scan.
+Backfill should keep working through missing and stale PRs from the latest inventory snapshot for a long time before another full scan is allowed.
 
 The inventory should therefore be treated as a committed generation, not as a temporary scratch result that becomes unusable the moment one more webhook arrives.
 
@@ -95,7 +95,7 @@ This lane should not run every time a webhook arrives.
 It should run only when:
 
 - the inventory is missing
-- the inventory is older than a configured freshness window
+- the inventory is older than a long repair window
 - an operator explicitly requests a scan
 - repair logic decides the inventory cannot be trusted
 
@@ -139,7 +139,7 @@ It should:
 
 - consume missing or stale PRs from the latest inventory
 - rebuild PR change snapshots in bounded batches
-- keep going until the inventory is exhausted or invalidated
+- keep going until the backlog is mostly drained, a newer generation is committed, or a real repair reason appears
 - avoid being preempted by every new webhook when the inventory is still fresh enough to reuse
 
 This lane owns coverage progression.
@@ -199,11 +199,13 @@ The key rule is:
 
 - inventory freshness should gate repo-wide scan work
 - webhook dirtiness alone should not automatically force a full repo scan ahead of backlog backfill
+- once a full scan finishes, the worker should keep using that committed inventory for many backfill slices before another full scan is allowed
 
 In plain terms:
 
-- if the inventory is still recent enough, keep backfilling
+- if the inventory is still usable, keep backfilling
 - do not keep rescanning the repo just because fresh webhooks keep arriving
+- a new webhook should usually mean “refresh this later,” not “scan again right now”
 
 The scheduler should therefore distinguish between:
 
@@ -212,30 +214,30 @@ The scheduler should therefore distinguish between:
 
 Those are not the same thing.
 
-## Inventory Freshness Window
+## Inventory Reuse Window
 
-The scheduler should define an explicit “inventory fresh enough to reuse” window.
+The scheduler should define an explicit window during which a committed inventory generation stays usable for backfill.
 
 The default production choice should be:
 
-- `OPEN_PR_INVENTORY_MAX_AGE = 10m`
+- `OPEN_PR_INVENTORY_MAX_AGE = 6h`
 
 The direct-cutover default operator-facing values should be:
 
 - `WEBHOOK_REFRESH_DEBOUNCE = 15s`
-- `OPEN_PR_INVENTORY_MAX_AGE = 10m`
-- `BACKFILL_MAX_PRS_PER_PASS = 100`
-- `BACKFILL_MAX_RUNTIME = 5m`
+- `OPEN_PR_INVENTORY_MAX_AGE = 6h`
+- `BACKFILL_MAX_PRS_PER_PASS = 1000`
+- `BACKFILL_MAX_RUNTIME = 30m`
 
 For example:
 
-- if `last_open_pr_scan_at` is within the configured freshness window
+- if `last_open_pr_scan_at` is within the configured repair window
 - and no repair condition requires a newer generation
-- then backfill may continue against that inventory without being preempted by another repo-wide scan
+- then backfill should keep using that inventory and should not be preempted by another repo-wide scan
 
-The exact default can be tuned later.
+The important design rule is that the inventory reuse window is long.
 
-The important design rule is that this must be explicit, not inferred indirectly from `dirty=true`.
+The system should not interpret one more webhook as proof that the current inventory generation is no longer usable.
 
 ## Inventory Refresh Triggers
 
@@ -269,6 +271,13 @@ The default direct-cutover rule should explicitly not mark inventory refresh nee
 
 This keeps repo-wide scans tied to real open-set drift without making the current generation unusable in the meantime.
 
+The scheduler should therefore keep two ideas separate:
+
+- inventory is still usable for backfill
+- inventory should be refreshed later
+
+A busy repo will often be in both states at once.
+
 ## Configuration Model
 
 The scheduler refactor should simplify the operator-facing configuration.
@@ -286,14 +295,14 @@ Keep:
 The direct-cutover defaults should be:
 
 - `WEBHOOK_REFRESH_DEBOUNCE = 15s`
-- `BACKFILL_MAX_PRS_PER_PASS = 100`
-- `BACKFILL_MAX_RUNTIME = 5m`
+- `BACKFILL_MAX_PRS_PER_PASS = 1000`
+- `BACKFILL_MAX_RUNTIME = 30m`
 
 Rename or replace:
 
 - the old repo minimum fetch interval should become an inventory freshness setting
   - use `OPEN_PR_INVENTORY_MAX_AGE`
-  - the real question is whether the current inventory is still fresh enough to reuse
+  - the real question is whether the current inventory still deserves another repair scan yet
 
 Remove from the operator-facing model:
 
@@ -326,6 +335,8 @@ If the webhook implies repo-level open-PR drift, it should mark inventory as nee
 
 But it should not immediately force the scheduler to redo a full repo-wide inventory pass before backfill can continue.
 
+In the normal case, it should only mark that a later inventory refresh is needed.
+
 ## Preemption Rule
 
 Targeted webhook refresh work should be urgent, but it should not starve backlog backfill forever.
@@ -333,7 +344,8 @@ Targeted webhook refresh work should be urgent, but it should not starve backlog
 The default production rule should be:
 
 - process targeted webhook refreshes in bounded bursts
-- after one bounded burst, if backlog still exists and the inventory is still valid, let backfill run one slice
+- after one bounded burst, if backlog still exists and the inventory is still usable, let backfill run one slice
+- if no other repo needs a turn, let the same repo keep taking more backfill slices from the same committed inventory
 
 The direct-cutover default burst policy should be:
 
@@ -345,6 +357,7 @@ In plain terms:
 
 - urgent PR refresh wins first
 - but it does not get an unlimited right to keep cutting the line
+- and it does not automatically buy the repo another full scan
 
 This is the main scheduler behavior that prevents hot repos from repeatedly rescanning or repeatedly prioritizing fresh webhook work while the historical backlog barely moves.
 
@@ -428,7 +441,9 @@ The implementation should be validated with targeted tests for:
 - inventory generation switch happening atomically once the new generation is complete
 - inventory scan aging out and becoming eligible again
 - backfill continuing across webhook traffic while inventory is still fresh
-- backfill slice stopping at `100 PRs` or `5m`, whichever happens first
+- dirty webhook traffic marking inventory for later refresh without immediately forcing another full scan
+- backfill continuing to use the same committed inventory for many slices
+- backfill slice stopping at `1000 PRs` or `30m`, whichever happens first
 - targeted refresh burst stopping at `50 PRs` or `30s`, whichever happens first
 - no simultaneous conflicting ownership of the same repo lane
 - status counters remaining consistent while lanes alternate

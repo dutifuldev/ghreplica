@@ -67,16 +67,16 @@ func NewChangeSyncWorker(db *gorm.DB, service *Service, pollInterval, webhookRef
 		webhookRefreshDebounce = 15 * time.Second
 	}
 	if openPRInventoryMaxAge <= 0 {
-		openPRInventoryMaxAge = 10 * time.Minute
+		openPRInventoryMaxAge = 6 * time.Hour
 	}
 	if leaseTTL <= 0 {
 		leaseTTL = 15 * time.Minute
 	}
 	if backfillMaxRuntime <= 0 {
-		backfillMaxRuntime = 5 * time.Minute
+		backfillMaxRuntime = 30 * time.Minute
 	}
 	if backfillMaxPRsPerPass <= 0 {
-		backfillMaxPRsPerPass = 100
+		backfillMaxPRsPerPass = 1000
 	}
 	return &ChangeSyncWorker{
 		db:                      db,
@@ -532,16 +532,12 @@ func (w *ChangeSyncWorker) processInventoryScan(ctx context.Context, ageOnly boo
 		Where(backfillAvailableSQL, backfillAvailableArgs...)
 	if ageOnly {
 		query = query.
-			Where("dirty = ?", false).
 			Where("inventory_generation_current <> 0").
 			Where("inventory_last_committed_at IS NOT NULL AND inventory_last_committed_at <= ?", now.Add(-w.openPRInventoryMaxAge)).
 			Order("backfill_priority DESC, inventory_last_committed_at ASC, repository_id ASC")
 	} else {
 		query = query.
-			Where("((dirty = ? AND (last_requested_fetch_at IS NULL OR last_requested_fetch_at <= ?)) OR inventory_generation_current = 0 OR inventory_last_committed_at IS NULL)",
-				true,
-				now.Add(-w.webhookRefreshDebounce),
-			).
+			Where("(inventory_generation_current = 0 OR inventory_last_committed_at IS NULL)").
 			Order("CASE WHEN inventory_generation_current = 0 THEN 0 ELSE 1 END ASC, backfill_priority DESC, inventory_last_committed_at ASC NULLS FIRST, repository_id ASC")
 	}
 	var state database.RepoChangeSyncState
