@@ -135,8 +135,8 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 		db,
 		service,
 		time.Millisecond,
-		time.Nanosecond,
 		time.Hour,
+		time.Minute,
 		time.Second,
 		time.Minute,
 		1,
@@ -163,6 +163,9 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 
 	dirtyAt := time.Now().UTC()
 	require.NoError(t, service.MarkInventoryNeedsRefresh(ctx, state.RepositoryID, dirtyAt))
+	status, err = service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.True(t, status.InventoryNeedsRefresh)
 
 	processed, err = worker.RunOnce(ctx)
 	require.NoError(t, err)
@@ -225,6 +228,110 @@ func TestChangeSyncWorkerProcessesTargetedRefreshWithoutRescanningInventory(t *t
 	require.NoError(t, err)
 	require.True(t, prStatus.Indexed)
 	require.Equal(t, "current", prStatus.IndexFreshness)
+}
+
+func TestChangeSyncWorkerProcessesInventoryRefreshEvenWhenTargetedWorkExists(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "open_only", 5)
+	require.NoError(t, err)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, 1, server.ListPullCount())
+
+	seenAt := time.Now().UTC()
+	require.NoError(t, service.EnqueuePullRequestRefresh(ctx, state.RepositoryID, 101, seenAt))
+	require.NoError(t, service.MarkInventoryNeedsRefresh(ctx, state.RepositoryID, seenAt))
+
+	processed, err = worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, 2, server.ListPullCount())
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.False(t, status.InventoryNeedsRefresh)
+	require.False(t, status.TargetedRefreshPending)
+}
+
+func TestChangeSyncWorkerPreservesNewInventoryRefreshRequestedDuringScan(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	scanStarted := make(chan struct{})
+	releaseScan := make(chan struct{})
+	server.onListPull = func() {
+		select {
+		case <-scanStarted:
+		default:
+			close(scanStarted)
+		}
+		<-releaseScan
+	}
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "open_only", 5)
+	require.NoError(t, err)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := worker.RunOnce(ctx)
+		done <- runErr
+	}()
+
+	<-scanStarted
+	require.NoError(t, service.MarkInventoryNeedsRefresh(ctx, state.RepositoryID, time.Now().UTC()))
+	close(releaseScan)
+	require.NoError(t, <-done)
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.True(t, status.InventoryNeedsRefresh)
+	require.Equal(t, 1, server.ListPullCount())
 }
 
 func TestChangeSyncWorkerRunOnceReclaimsStaleFetchLease(t *testing.T) {
@@ -395,6 +502,7 @@ type backfillGitHubServer struct {
 	*httptest.Server
 	mu            sync.Mutex
 	listPullCount int
+	onListPull    func()
 }
 
 func (s *backfillGitHubServer) recordListPull() {
@@ -500,6 +608,9 @@ func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *
 	})
 	mux.HandleFunc("/repos/acme/widgets/pulls", func(w http.ResponseWriter, r *http.Request) {
 		server.recordListPull()
+		if server.onListPull != nil {
+			server.onListPull()
+		}
 		writeBackfillJSON(t, w, []github.PullRequestResponse{pulls[103], pulls[102], pulls[101]})
 	})
 	mux.HandleFunc("/repos/acme/widgets/issues/", func(w http.ResponseWriter, r *http.Request) {

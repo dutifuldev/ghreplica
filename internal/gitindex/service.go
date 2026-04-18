@@ -641,7 +641,12 @@ func buildCommitParentRows(repositoryID uint, commitSHA string, parent database.
 	patchBytes := 0
 	for _, file := range orderedFiles(files) {
 		if file.IndexedAs == "" {
-			file.IndexedAs = indexedAsFull
+			switch parent.IndexedAs {
+			case indexedAsPathOnly, indexedAsSkipped:
+				file.IndexedAs = parent.IndexedAs
+			default:
+				file.IndexedAs = indexedAsFull
+			}
 		}
 		if file.IndexedAs == indexedAsFull {
 			indexedFileCount++
