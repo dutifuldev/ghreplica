@@ -66,6 +66,9 @@ func runServe(cfg config.Config) error {
 	if err := cfg.ValidateServeRuntime(); err != nil {
 		return err
 	}
+	if database.IsSQLiteURL(cfg.DatabaseURL) {
+		return errors.New("ghreplica serve requires PostgreSQL when background webhook jobs are enabled")
+	}
 
 	db, err := database.Open(cfg.DatabaseURL)
 	if err != nil {
