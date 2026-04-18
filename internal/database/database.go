@@ -256,7 +256,37 @@ type RepositoryRefreshJob struct {
 	UpdatedAt           time.Time
 }
 
+type PoolConfig struct {
+	MaxOpenConns int
+	MaxIdleConns int
+}
+
+func DefaultPoolConfig() PoolConfig {
+	return PoolConfig{
+		MaxOpenConns: 10,
+		MaxIdleConns: 5,
+	}
+}
+
+func (c PoolConfig) withDefaults() PoolConfig {
+	defaults := DefaultPoolConfig()
+	if c.MaxOpenConns <= 0 {
+		c.MaxOpenConns = defaults.MaxOpenConns
+	}
+	if c.MaxIdleConns <= 0 {
+		c.MaxIdleConns = defaults.MaxIdleConns
+	}
+	if c.MaxIdleConns > c.MaxOpenConns {
+		c.MaxIdleConns = c.MaxOpenConns
+	}
+	return c
+}
+
 func Open(databaseURL string) (*gorm.DB, error) {
+	return OpenWithPoolConfig(databaseURL, DefaultPoolConfig())
+}
+
+func OpenWithPoolConfig(databaseURL string, poolConfig PoolConfig) (*gorm.DB, error) {
 	gormConfig := &gorm.Config{
 		Logger: logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
 			LogLevel:                  logger.Warn,
@@ -283,12 +313,14 @@ func Open(databaseURL string) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	poolConfig = poolConfig.withDefaults()
+
 	// Production now runs webhook jobs and sync workers concurrently, but the live
 	// Cloud SQL instance still needs headroom for other services and reserved
 	// connections. Keep the pool moderate so background workers do not starve
 	// themselves or other apps by exhausting server-side slots.
-	sqlDB.SetMaxOpenConns(10)
-	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetMaxOpenConns(poolConfig.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(poolConfig.MaxIdleConns)
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 

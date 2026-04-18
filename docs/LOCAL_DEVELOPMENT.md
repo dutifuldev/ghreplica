@@ -23,6 +23,11 @@ export DATABASE_URL='postgres://ghreplica:ghreplica@127.0.0.1:54329/ghreplica?ss
 export GIT_MIRROR_ROOT='.data/git-mirrors'
 export GITHUB_TOKEN="$(gh auth token)"
 export GITHUB_WEBHOOK_SECRET='replace-this-with-a-long-random-secret'
+export DB_MAX_OPEN_CONNS=10
+export DB_MAX_IDLE_CONNS=5
+export WEBHOOK_JOB_QUEUE_CONCURRENCY=3
+export WEBHOOK_JOB_TIMEOUT=30s
+export WEBHOOK_JOB_MAX_ATTEMPTS=8
 ```
 
 `APP_ADDR` defaults to `127.0.0.1:8080`, so the API stays local unless you override it.
@@ -129,6 +134,16 @@ Recommended settings:
 - events: `ping`, `repository`, `issues`, `pull_request`
 
 Once configured, GitHub deliveries will hit the local API, be accepted quickly, and then be processed asynchronously into the local mirror.
+
+The background webhook worker and shared database pool are now controlled through the normal runtime config:
+
+- `DB_MAX_OPEN_CONNS`
+- `DB_MAX_IDLE_CONNS`
+- `WEBHOOK_JOB_QUEUE_CONCURRENCY`
+- `WEBHOOK_JOB_TIMEOUT`
+- `WEBHOOK_JOB_MAX_ATTEMPTS`
+
+The defaults above match the current production baseline and are a good local starting point too.
 
 ## Recommended First Test Flow
 

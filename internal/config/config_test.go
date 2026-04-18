@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -59,6 +60,36 @@ func TestValidateServeRuntimeFailsWhenMirrorRootIsFile(t *testing.T) {
 	err := cfg.ValidateServeRuntime()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "GIT_MIRROR_ROOT")
+}
+
+func TestLoadIncludesWebhookJobAndDatabasePoolDefaults(t *testing.T) {
+	t.Setenv("DB_MAX_OPEN_CONNS", "")
+	t.Setenv("DB_MAX_IDLE_CONNS", "")
+	t.Setenv("WEBHOOK_JOB_QUEUE_CONCURRENCY", "")
+	t.Setenv("WEBHOOK_JOB_TIMEOUT", "")
+	t.Setenv("WEBHOOK_JOB_MAX_ATTEMPTS", "")
+
+	cfg := Load()
+	require.Equal(t, 10, cfg.DatabaseMaxOpenConns)
+	require.Equal(t, 5, cfg.DatabaseMaxIdleConns)
+	require.Equal(t, 3, cfg.WebhookJobQueueConcurrency)
+	require.Equal(t, 30*time.Second, cfg.WebhookJobTimeout)
+	require.Equal(t, 8, cfg.WebhookJobMaxAttempts)
+}
+
+func TestLoadReadsWebhookJobAndDatabasePoolOverrides(t *testing.T) {
+	t.Setenv("DB_MAX_OPEN_CONNS", "14")
+	t.Setenv("DB_MAX_IDLE_CONNS", "7")
+	t.Setenv("WEBHOOK_JOB_QUEUE_CONCURRENCY", "4")
+	t.Setenv("WEBHOOK_JOB_TIMEOUT", "45s")
+	t.Setenv("WEBHOOK_JOB_MAX_ATTEMPTS", "9")
+
+	cfg := Load()
+	require.Equal(t, 14, cfg.DatabaseMaxOpenConns)
+	require.Equal(t, 7, cfg.DatabaseMaxIdleConns)
+	require.Equal(t, 4, cfg.WebhookJobQueueConcurrency)
+	require.Equal(t, 45*time.Second, cfg.WebhookJobTimeout)
+	require.Equal(t, 9, cfg.WebhookJobMaxAttempts)
 }
 
 func writeExecutable(t *testing.T, name string) string {
