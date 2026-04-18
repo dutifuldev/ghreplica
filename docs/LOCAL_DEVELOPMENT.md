@@ -23,8 +23,10 @@ export DATABASE_URL='postgres://ghreplica:ghreplica@127.0.0.1:54329/ghreplica?ss
 export GIT_MIRROR_ROOT='.data/git-mirrors'
 export GITHUB_TOKEN="$(gh auth token)"
 export GITHUB_WEBHOOK_SECRET='replace-this-with-a-long-random-secret'
-export DB_MAX_OPEN_CONNS=10
-export DB_MAX_IDLE_CONNS=5
+export DB_CONTROL_MAX_OPEN_CONNS=6
+export DB_CONTROL_MAX_IDLE_CONNS=3
+export DB_SYNC_MAX_OPEN_CONNS=6
+export DB_SYNC_MAX_IDLE_CONNS=2
 export WEBHOOK_JOB_QUEUE_CONCURRENCY=3
 export WEBHOOK_JOB_TIMEOUT=30s
 export WEBHOOK_JOB_MAX_ATTEMPTS=8
@@ -135,15 +137,17 @@ Recommended settings:
 
 Once configured, GitHub deliveries will hit the local API, be accepted quickly, and then be processed asynchronously into the local mirror.
 
-The background webhook worker and shared database pool are now controlled through the normal runtime config:
+The background webhook worker and the split serve-time database pools are now controlled through the normal runtime config:
 
-- `DB_MAX_OPEN_CONNS`
-- `DB_MAX_IDLE_CONNS`
+- `DB_CONTROL_MAX_OPEN_CONNS`
+- `DB_CONTROL_MAX_IDLE_CONNS`
+- `DB_SYNC_MAX_OPEN_CONNS`
+- `DB_SYNC_MAX_IDLE_CONNS`
 - `WEBHOOK_JOB_QUEUE_CONCURRENCY`
 - `WEBHOOK_JOB_TIMEOUT`
 - `WEBHOOK_JOB_MAX_ATTEMPTS`
 
-The defaults above match the current production baseline and are a good local starting point too.
+The defaults above match the current production baseline and are a good local starting point too. The control pool protects the HTTP path and River, while the sync pool is reserved for inventory scans, backfill, and heavy indexing.
 
 ## Recommended First Test Flow
 

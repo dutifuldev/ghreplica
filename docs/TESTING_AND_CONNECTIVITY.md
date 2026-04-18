@@ -146,13 +146,15 @@ At minimum, the service should support:
 - `GITHUB_WEBHOOK_SECRET`
 - `GITHUB_REPO_ALLOWLIST`
 - `DATABASE_URL`
-- `DB_MAX_OPEN_CONNS`
-- `DB_MAX_IDLE_CONNS`
+- `DB_CONTROL_MAX_OPEN_CONNS`
+- `DB_CONTROL_MAX_IDLE_CONNS`
+- `DB_SYNC_MAX_OPEN_CONNS`
+- `DB_SYNC_MAX_IDLE_CONNS`
 - `WEBHOOK_JOB_QUEUE_CONCURRENCY`
 - `WEBHOOK_JOB_TIMEOUT`
 - `WEBHOOK_JOB_MAX_ATTEMPTS`
 
-Those last five matter now because webhook delivery is accepted on the request path and projected in background jobs. They are part of the real production runtime surface, not just implementation details.
+Those last seven matter now because webhook delivery is accepted on the request path, projected in background jobs, and heavy sync work runs on a separate pool. They are part of the real production runtime surface, not just implementation details.
 
 ## Repository Registration
 

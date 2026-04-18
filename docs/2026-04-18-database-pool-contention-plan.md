@@ -56,18 +56,21 @@ The cleanest next step is to stop making every subsystem compete on one shared d
 
 The preferred shape is:
 
-- one primary application pool for:
+- one control pool for:
   - HTTP handlers
-  - canonical projection work
-  - change-sync state updates
-- one separate River pool for:
-  - queue leadership
-  - producer work
+  - webhook acceptance
+  - River leadership
+  - River producer work
   - webhook-processing workers
+- one sync pool for:
+  - inventory scans
+  - backfill
+  - heavy indexing work
+  - refresh worker jobs
 
 Both pools should use the same database, but they should not share the same `sql.DB` handle or the same pool limits.
 
-That gives the queue system its own bounded lane and stops queue housekeeping from starving the repo-sync path, or vice versa.
+That keeps batch sync work from starving the control-plane traffic that needs to stay responsive.
 
 # Why This Is Better
 
@@ -90,8 +93,8 @@ The intended long-term shape is:
 
 Create separate database open paths for:
 
-- primary app DB
-- River DB
+- control DB
+- sync DB
 
 They may share the same DSN, but they should have separate pool sizes.
 
@@ -101,12 +104,12 @@ Start with explicit independent limits rather than one shared limit.
 
 Example starting point:
 
-- app DB:
-  - `APP_DB_MAX_OPEN_CONNS = 10`
-  - `APP_DB_MAX_IDLE_CONNS = 5`
-- River DB:
-  - `RIVER_DB_MAX_OPEN_CONNS = 5`
-  - `RIVER_DB_MAX_IDLE_CONNS = 2`
+- control DB:
+  - `DB_CONTROL_MAX_OPEN_CONNS = 6`
+  - `DB_CONTROL_MAX_IDLE_CONNS = 3`
+- sync DB:
+  - `DB_SYNC_MAX_OPEN_CONNS = 6`
+  - `DB_SYNC_MAX_IDLE_CONNS = 2`
 
 These are starting values, not a promise that the exact numbers are final.
 

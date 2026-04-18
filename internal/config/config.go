@@ -16,6 +16,10 @@ type Config struct {
 	DatabaseURL                string
 	DatabaseMaxOpenConns       int
 	DatabaseMaxIdleConns       int
+	ControlDBMaxOpenConns      int
+	ControlDBMaxIdleConns      int
+	SyncDBMaxOpenConns         int
+	SyncDBMaxIdleConns         int
 	GitMirrorRoot              string
 	GitIndexTimeout            time.Duration
 	ASTGrepTimeout             time.Duration
@@ -44,6 +48,10 @@ func Load() Config {
 		DatabaseURL:                strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		DatabaseMaxOpenConns:       intDefault("DB_MAX_OPEN_CONNS", 10),
 		DatabaseMaxIdleConns:       intDefault("DB_MAX_IDLE_CONNS", 5),
+		ControlDBMaxOpenConns:      intDefault("DB_CONTROL_MAX_OPEN_CONNS", 6),
+		ControlDBMaxIdleConns:      intDefault("DB_CONTROL_MAX_IDLE_CONNS", 3),
+		SyncDBMaxOpenConns:         intDefault("DB_SYNC_MAX_OPEN_CONNS", 6),
+		SyncDBMaxIdleConns:         intDefault("DB_SYNC_MAX_IDLE_CONNS", 2),
 		GitMirrorRoot:              getenvDefault("GIT_MIRROR_ROOT", ".data/git-mirrors"),
 		GitIndexTimeout:            durationDefault("GIT_INDEX_TIMEOUT", 5*time.Minute),
 		ASTGrepTimeout:             durationDefault("AST_GREP_TIMEOUT", time.Minute),
