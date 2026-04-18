@@ -283,9 +283,11 @@ func Open(databaseURL string) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	// Cloud SQL is a shared backend in staging, so keep the pool intentionally small.
-	sqlDB.SetMaxOpenConns(5)
-	sqlDB.SetMaxIdleConns(5)
+	// Production now runs webhook jobs and sync workers concurrently, so keep the
+	// pool large enough to avoid turning moderate background concurrency into
+	// immediate connection contention.
+	sqlDB.SetMaxOpenConns(20)
+	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 

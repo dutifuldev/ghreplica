@@ -20,7 +20,10 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
 	"github.com/dutifuldev/ghreplica/internal/refresh"
 	"github.com/dutifuldev/ghreplica/internal/searchindex"
+	"github.com/dutifuldev/ghreplica/internal/webhookjobs"
 	"github.com/dutifuldev/ghreplica/internal/webhooks"
+	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
+	"github.com/riverqueue/river/rivermigrate"
 	"gorm.io/gorm"
 )
 
@@ -63,6 +66,9 @@ func runServe(cfg config.Config) error {
 	if err := cfg.ValidateServeRuntime(); err != nil {
 		return err
 	}
+	if database.IsSQLiteURL(cfg.DatabaseURL) {
+		return errors.New("ghreplica serve requires PostgreSQL when background webhook jobs are enabled")
+	}
 
 	db, err := database.Open(cfg.DatabaseURL)
 	if err != nil {
@@ -79,6 +85,15 @@ func runServe(cfg config.Config) error {
 	gitIndex := newGitIndexService(db, githubClient, cfg)
 	githubSync := githubsync.NewService(db, githubClient, gitIndex)
 	webhookIngestor := webhooks.NewService(db, githubSync)
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	webhookJobClient, dispatcher, err := webhookjobs.NewClient(sqlDB, webhookIngestor, webhookjobs.Config{})
+	if err != nil {
+		return err
+	}
+	webhookIngestor.SetDispatcher(dispatcher)
 	worker := refresh.NewWorker(db, githubSync, 2*time.Second)
 	changeSyncWorker := githubsync.NewChangeSyncWorker(
 		db,
@@ -100,6 +115,17 @@ func runServe(cfg config.Config) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if err := webhookJobClient.Start(ctx); err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := webhookJobClient.Stop(shutdownCtx); err != nil {
+			slog.Error("webhook job client stopped with error", "error", err)
+		}
+	}()
 
 	go func() {
 		if err := worker.Start(ctx); err != nil && ctx.Err() == nil {
@@ -135,7 +161,20 @@ func runMigrate(cfg config.Config, args []string) error {
 		return database.AutoMigrate(db)
 	}
 
-	return database.RunMigrations(db, "migrations")
+	if err := database.RunMigrations(db, "migrations"); err != nil {
+		return err
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return err
+	}
+	migrator, err := rivermigrate.New(riverdatabasesql.New(sqlDB), nil)
+	if err != nil {
+		return err
+	}
+	_, err = migrator.Migrate(context.Background(), rivermigrate.DirectionUp, nil)
+	return err
 }
 
 func runSync(cfg config.Config, args []string) error {

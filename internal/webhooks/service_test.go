@@ -2,6 +2,7 @@ package webhooks_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -14,7 +15,34 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/testfixtures"
 	"github.com/dutifuldev/ghreplica/internal/webhooks"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+type recordingDispatcher struct {
+	deliveryIDs []string
+}
+
+func (d *recordingDispatcher) EnqueueWebhookDeliveryTx(_ context.Context, _ *sql.Tx, deliveryID string) error {
+	d.deliveryIDs = append(d.deliveryIDs, deliveryID)
+	return nil
+}
+
+func newWebhookService(t *testing.T, db *gorm.DB, projector webhooks.WebhookProjector) (*webhooks.Service, *recordingDispatcher) {
+	t.Helper()
+
+	dispatcher := &recordingDispatcher{}
+	service := webhooks.NewService(db, projector)
+	service.SetDispatcher(dispatcher)
+	return service, dispatcher
+}
+
+func handleAndProcessWebhook(t *testing.T, ctx context.Context, ingestor *webhooks.Service, dispatcher *recordingDispatcher, deliveryID, event string, headers http.Header, payload []byte) {
+	t.Helper()
+
+	require.NoError(t, ingestor.HandleWebhook(ctx, deliveryID, event, headers, payload))
+	require.Equal(t, []string{deliveryID}, dispatcher.deliveryIDs[len(dispatcher.deliveryIDs)-1:])
+	require.NoError(t, ingestor.ProcessWebhookDelivery(ctx, deliveryID))
+}
 
 func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testing.T) {
 	ctx := context.Background()
@@ -24,7 +52,7 @@ func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testin
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
+	ingestor, dispatcher := newWebhookService(t, db, projector)
 	payload, err := json.Marshal(map[string]any{
 		"action":       "opened",
 		"repository":   repoFixture(),
@@ -40,10 +68,21 @@ func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testin
 		payload,
 	)
 	require.NoError(t, err)
+	require.Equal(t, []string{"delivery-1"}, dispatcher.deliveryIDs)
 
 	var delivery database.WebhookDelivery
 	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-1").First(&delivery).Error)
 	require.Equal(t, "pull_request", delivery.Event)
+	require.Nil(t, delivery.ProcessedAt)
+	require.Nil(t, delivery.RepositoryID)
+
+	var repoCount int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.Repository{}).Count(&repoCount).Error)
+	require.Zero(t, repoCount)
+
+	require.NoError(t, ingestor.ProcessWebhookDelivery(ctx, "delivery-1"))
+
+	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-1").First(&delivery).Error)
 	require.NotNil(t, delivery.ProcessedAt)
 	require.NotNil(t, delivery.RepositoryID)
 
@@ -82,15 +121,17 @@ func TestWebhookIngestionIgnoresUnsupportedEventsForRefreshScheduling(t *testing
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
-	err = ingestor.HandleWebhook(
+	ingestor, dispatcher := newWebhookService(t, db, projector)
+	handleAndProcessWebhook(
+		t,
 		ctx,
+		ingestor,
+		dispatcher,
 		"delivery-unsupported",
 		"workflow_job",
 		http.Header{"X-GitHub-Event": []string{"workflow_job"}},
 		[]byte(`{"repository":{"name":"widgets","full_name":"acme/widgets","owner":{"login":"acme"}}}`),
 	)
-	require.NoError(t, err)
 
 	var delivery database.WebhookDelivery
 	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-unsupported").First(&delivery).Error)
@@ -131,15 +172,17 @@ func TestWebhookIngestionReusesTrackedRepositoryAcrossRenameByRepositoryID(t *te
 	}
 	require.NoError(t, db.WithContext(ctx).Create(tracked).Error)
 
-	ingestor := webhooks.NewService(db, nil)
-	err = ingestor.HandleWebhook(
+	ingestor, dispatcher := newWebhookService(t, db, nil)
+	handleAndProcessWebhook(
+		t,
 		ctx,
+		ingestor,
+		dispatcher,
 		"delivery-rename-unsupported",
 		"workflow_job",
 		http.Header{"X-GitHub-Event": []string{"workflow_job"}},
 		[]byte(`{"repository":{"id":101,"name":"widgets-renamed","full_name":"acme/widgets-renamed","owner":{"login":"acme"}}}`),
 	)
-	require.NoError(t, err)
 
 	var trackedRows []database.TrackedRepository
 	require.NoError(t, db.WithContext(ctx).Order("id ASC").Find(&trackedRows).Error)
@@ -159,7 +202,7 @@ func TestWebhookIngestionProjectsIssueCommentPayload(t *testing.T) {
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
+	ingestor, dispatcher := newWebhookService(t, db, projector)
 	payload, err := json.Marshal(map[string]any{
 		"action":     "created",
 		"repository": repoFixture(),
@@ -168,14 +211,16 @@ func TestWebhookIngestionProjectsIssueCommentPayload(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = ingestor.HandleWebhook(
+	handleAndProcessWebhook(
+		t,
 		ctx,
+		ingestor,
+		dispatcher,
 		"delivery-comment",
 		"issue_comment",
 		http.Header{"X-GitHub-Event": []string{"issue_comment"}},
 		payload,
 	)
-	require.NoError(t, err)
 
 	var repo database.Repository
 	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&repo).Error)
@@ -198,7 +243,7 @@ func TestWebhookIngestionProjectsReviewAndReviewCommentPayloadsFromRealFixtures(
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
+	ingestor, dispatcher := newWebhookService(t, db, projector)
 
 	repo := testfixtures.OpenClawRepository(t)
 	pull := testfixtures.OpenClawPull66863(t)
@@ -212,7 +257,7 @@ func TestWebhookIngestionProjectsReviewAndReviewCommentPayloadsFromRealFixtures(
 		"review":       review,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review", "pull_request_review", http.Header{"X-GitHub-Event": []string{"pull_request_review"}}, reviewPayload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-review", "pull_request_review", http.Header{"X-GitHub-Event": []string{"pull_request_review"}}, reviewPayload)
 
 	reviewCommentPayload, err := json.Marshal(map[string]any{
 		"action":       "created",
@@ -221,7 +266,7 @@ func TestWebhookIngestionProjectsReviewAndReviewCommentPayloadsFromRealFixtures(
 		"comment":      reviewComment,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-comment", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, reviewCommentPayload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-review-comment", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, reviewCommentPayload)
 
 	var storedRepo database.Repository
 	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&storedRepo).Error)
@@ -248,7 +293,7 @@ func TestWebhookIngestionUpsertsIssueCommentAcrossDeliveries(t *testing.T) {
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
+	ingestor, dispatcher := newWebhookService(t, db, projector)
 
 	repo := testfixtures.OpenClawRepository(t)
 	issue := testfixtures.OpenClawIssue66797(t)
@@ -261,7 +306,7 @@ func TestWebhookIngestionUpsertsIssueCommentAcrossDeliveries(t *testing.T) {
 		"comment":    comment,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-issue-comment-1", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-issue-comment-1", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload)
 
 	edited := comment
 	edited.Body = "Updated issue comment body from an edited delivery."
@@ -272,7 +317,7 @@ func TestWebhookIngestionUpsertsIssueCommentAcrossDeliveries(t *testing.T) {
 		"comment":    edited,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-issue-comment-2", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-issue-comment-2", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload)
 
 	var comments []database.IssueComment
 	require.NoError(t, db.WithContext(ctx).Order("github_id ASC").Find(&comments).Error)
@@ -288,7 +333,7 @@ func TestWebhookIngestionDeletesIssueAndReviewComments(t *testing.T) {
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
+	ingestor, dispatcher := newWebhookService(t, db, projector)
 
 	repo := testfixtures.OpenClawRepository(t)
 	issue := testfixtures.OpenClawIssue66797(t)
@@ -301,7 +346,7 @@ func TestWebhookIngestionDeletesIssueAndReviewComments(t *testing.T) {
 		"comment":    issueComment,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-issue-comment-create", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-issue-comment-create", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload)
 
 	payload, err = json.Marshal(map[string]any{
 		"action":     "deleted",
@@ -310,7 +355,7 @@ func TestWebhookIngestionDeletesIssueAndReviewComments(t *testing.T) {
 		"comment":    issueComment,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-issue-comment-delete", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-issue-comment-delete", "issue_comment", http.Header{"X-GitHub-Event": []string{"issue_comment"}}, payload)
 
 	pullIssue := testfixtures.OpenClawIssue66863(t)
 	pull := testfixtures.OpenClawPull66863(t)
@@ -323,7 +368,7 @@ func TestWebhookIngestionDeletesIssueAndReviewComments(t *testing.T) {
 		"comment":      reviewComment,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-comment-create", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, payload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-review-comment-create", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, payload)
 
 	payload, err = json.Marshal(map[string]any{
 		"action":       "deleted",
@@ -332,7 +377,7 @@ func TestWebhookIngestionDeletesIssueAndReviewComments(t *testing.T) {
 		"comment":      reviewComment,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-comment-delete", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, payload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-review-comment-delete", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, payload)
 
 	var issueComments int64
 	var reviewComments int64
@@ -354,7 +399,7 @@ func TestWebhookIngestionProjectsClosedIssuePayloadFromRealFixture(t *testing.T)
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
+	ingestor, dispatcher := newWebhookService(t, db, projector)
 
 	payload, err := json.Marshal(map[string]any{
 		"action":     "closed",
@@ -362,13 +407,7 @@ func TestWebhookIngestionProjectsClosedIssuePayloadFromRealFixture(t *testing.T)
 		"issue":      testfixtures.OpenClawIssue67094Closed(t),
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(
-		ctx,
-		"delivery-issue-closed",
-		"issues",
-		http.Header{"X-GitHub-Event": []string{"issues"}},
-		payload,
-	))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-issue-closed", "issues", http.Header{"X-GitHub-Event": []string{"issues"}}, payload)
 
 	var issue database.Issue
 	require.NoError(t, db.WithContext(ctx).Where("github_id = ?", int64(4267632693)).First(&issue).Error)
@@ -390,7 +429,7 @@ func TestWebhookIngestionProjectsPullRequestActionMatrixFromRealFixtures(t *test
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
+	ingestor, dispatcher := newWebhookService(t, db, projector)
 
 	repo := testfixtures.OpenClawRepository(t)
 	openPull := testfixtures.OpenClawPull67096Open(t)
@@ -411,13 +450,7 @@ func TestWebhookIngestionProjectsPullRequestActionMatrixFromRealFixtures(t *test
 			"pull_request": tc.pull,
 		})
 		require.NoError(t, err)
-		require.NoError(t, ingestor.HandleWebhook(
-			ctx,
-			tc.deliveryID,
-			"pull_request",
-			http.Header{"X-GitHub-Event": []string{"pull_request"}},
-			payload,
-		))
+		handleAndProcessWebhook(t, ctx, ingestor, dispatcher, tc.deliveryID, "pull_request", http.Header{"X-GitHub-Event": []string{"pull_request"}}, payload)
 	}
 
 	var pulls []database.PullRequest
@@ -444,7 +477,7 @@ func TestWebhookIngestionSynchronizeQueuesTargetedRefreshWithoutDirtyingInventor
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
+	ingestor, dispatcher := newWebhookService(t, db, projector)
 
 	repo := testfixtures.OpenClawRepository(t)
 	pull := testfixtures.OpenClawPull67096Open(t)
@@ -454,13 +487,7 @@ func TestWebhookIngestionSynchronizeQueuesTargetedRefreshWithoutDirtyingInventor
 		"pull_request": pull,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(
-		ctx,
-		"delivery-pr-sync-targeted-only",
-		"pull_request",
-		http.Header{"X-GitHub-Event": []string{"pull_request"}},
-		payload,
-	))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-pr-sync-targeted-only", "pull_request", http.Header{"X-GitHub-Event": []string{"pull_request"}}, payload)
 
 	var storedRepo database.Repository
 	require.NoError(t, db.WithContext(ctx).Where("github_id = ?", repo.ID).First(&storedRepo).Error)
@@ -487,7 +514,7 @@ func TestWebhookIngestionMarksBaseBranchPushesAsInventoryRefreshWork(t *testing.
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
+	ingestor, dispatcher := newWebhookService(t, db, projector)
 
 	repo := testfixtures.OpenClawRepository(t)
 	storedRepo, err := projector.UpsertRepository(ctx, repo)
@@ -506,13 +533,7 @@ func TestWebhookIngestionMarksBaseBranchPushesAsInventoryRefreshWork(t *testing.
 		"repository": repo,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(
-		ctx,
-		"delivery-push-main",
-		"push",
-		http.Header{"X-GitHub-Event": []string{"push"}},
-		payload,
-	))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-push-main", "push", http.Header{"X-GitHub-Event": []string{"push"}}, payload)
 
 	var state database.RepoChangeSyncState
 	require.NoError(t, db.WithContext(ctx).Where("repository_id = ?", storedRepo.ID).First(&state).Error)
@@ -528,7 +549,7 @@ func TestWebhookIngestionReplaysReviewAndReviewCommentEditsWithoutDuplicates(t *
 	require.NoError(t, database.AutoMigrate(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor := webhooks.NewService(db, projector)
+	ingestor, dispatcher := newWebhookService(t, db, projector)
 
 	repo := testfixtures.OpenClawRepository(t)
 	pull := testfixtures.OpenClawPull66863(t)
@@ -542,7 +563,7 @@ func TestWebhookIngestionReplaysReviewAndReviewCommentEditsWithoutDuplicates(t *
 		"review":       review,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-submit", "pull_request_review", http.Header{"X-GitHub-Event": []string{"pull_request_review"}}, reviewPayload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-review-submit", "pull_request_review", http.Header{"X-GitHub-Event": []string{"pull_request_review"}}, reviewPayload)
 
 	reviewPayload, err = json.Marshal(map[string]any{
 		"action":       "edited",
@@ -551,7 +572,7 @@ func TestWebhookIngestionReplaysReviewAndReviewCommentEditsWithoutDuplicates(t *
 		"review":       review,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-edit", "pull_request_review", http.Header{"X-GitHub-Event": []string{"pull_request_review"}}, reviewPayload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-review-edit", "pull_request_review", http.Header{"X-GitHub-Event": []string{"pull_request_review"}}, reviewPayload)
 
 	reviewCommentPayload, err := json.Marshal(map[string]any{
 		"action":       "created",
@@ -560,7 +581,7 @@ func TestWebhookIngestionReplaysReviewAndReviewCommentEditsWithoutDuplicates(t *
 		"comment":      reviewComment,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-comment-create", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, reviewCommentPayload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-review-comment-create", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, reviewCommentPayload)
 
 	reviewCommentPayload, err = json.Marshal(map[string]any{
 		"action":       "edited",
@@ -569,7 +590,7 @@ func TestWebhookIngestionReplaysReviewAndReviewCommentEditsWithoutDuplicates(t *
 		"comment":      reviewComment,
 	})
 	require.NoError(t, err)
-	require.NoError(t, ingestor.HandleWebhook(ctx, "delivery-review-comment-edit", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, reviewCommentPayload))
+	handleAndProcessWebhook(t, ctx, ingestor, dispatcher, "delivery-review-comment-edit", "pull_request_review_comment", http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}}, reviewCommentPayload)
 
 	var reviews int64
 	var reviewComments int64
