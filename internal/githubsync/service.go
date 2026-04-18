@@ -3,6 +3,7 @@ package githubsync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -477,16 +478,72 @@ func (s *Service) upsertRepository(ctx context.Context, repo gh.RepositoryRespon
 		UpdatedAt:     repo.UpdatedAt,
 	}
 
-	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "github_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"node_id", "owner_id", "owner_login", "name", "full_name", "private", "archived", "disabled", "default_branch", "description", "html_url", "api_url", "visibility", "fork", "raw_json", "created_at", "updated_at"}),
-	}).Create(&model).Error; err != nil {
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existingByGitHubID database.Repository
+		err := tx.Where("github_id = ?", repo.ID).First(&existingByGitHubID).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		var existingByFullName database.Repository
+		err = tx.Where("full_name = ?", repo.FullName).First(&existingByFullName).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+
+		if existingByFullName.ID != 0 && existingByFullName.GitHubID != repo.ID {
+			if err := tx.Model(&database.Repository{}).
+				Where("id = ?", existingByFullName.ID).
+				Updates(map[string]any{
+					"full_name":  releasedRepositoryFullName(existingByFullName, repo.FullName),
+					"updated_at": time.Now().UTC(),
+				}).Error; err != nil {
+				return err
+			}
+		}
+
+		assignments := repositoryAssignments(model)
+		if existingByGitHubID.ID != 0 {
+			return tx.Model(&database.Repository{}).
+				Where("id = ?", existingByGitHubID.ID).
+				Updates(assignments).Error
+		}
+
+		return tx.Create(&model).Error
+	}); err != nil {
 		return database.Repository{}, err
 	}
 
 	var stored database.Repository
 	err = s.db.WithContext(ctx).Preload("Owner").Where("github_id = ?", repo.ID).First(&stored).Error
 	return stored, err
+}
+
+func repositoryAssignments(model database.Repository) map[string]any {
+	return map[string]any{
+		"node_id":        model.NodeID,
+		"owner_id":       model.OwnerID,
+		"owner_login":    model.OwnerLogin,
+		"name":           model.Name,
+		"full_name":      model.FullName,
+		"private":        model.Private,
+		"archived":       model.Archived,
+		"disabled":       model.Disabled,
+		"default_branch": model.DefaultBranch,
+		"description":    model.Description,
+		"html_url":       model.HTMLURL,
+		"api_url":        model.APIURL,
+		"visibility":     model.Visibility,
+		"fork":           model.Fork,
+		"raw_json":       model.RawJSON,
+		"created_at":     model.CreatedAt,
+		"updated_at":     model.UpdatedAt,
+	}
+}
+
+func releasedRepositoryFullName(existing database.Repository, claimedFullName string) string {
+	sanitizedClaimed := strings.NewReplacer("/", "__", " ", "_").Replace(strings.TrimSpace(claimedFullName))
+	return fmt.Sprintf("__ghreplica_released__/%d/%d/%s", existing.GitHubID, time.Now().UTC().UnixNano(), sanitizedClaimed)
 }
 
 func (s *Service) upsertUser(ctx context.Context, user gh.UserResponse) (database.User, error) {
