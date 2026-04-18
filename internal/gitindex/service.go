@@ -829,6 +829,14 @@ func insertPullRequestChangeRows(tx *gorm.DB, fileRows []database.PullRequestCha
 }
 
 func upsertCommitBundle(tx *gorm.DB, bundle commitBundle) error {
+	rewrite, err := shouldRewriteCommitBundle(tx, bundle)
+	if err != nil {
+		return err
+	}
+	if !rewrite {
+		return nil
+	}
+
 	if err := tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "repository_id"}, {Name: "sha"}},
 		DoUpdates: clause.AssignmentColumns([]string{
@@ -885,6 +893,29 @@ func upsertCommitBundle(tx *gorm.DB, bundle commitBundle) error {
 		}
 	}
 	return nil
+}
+
+func shouldRewriteCommitBundle(tx *gorm.DB, bundle commitBundle) (bool, error) {
+	var commitCount int64
+	if err := tx.Model(&database.GitCommit{}).
+		Where("repository_id = ? AND sha = ?", bundle.Commit.RepositoryID, bundle.Commit.SHA).
+		Count(&commitCount).Error; err != nil {
+		return false, err
+	}
+	if commitCount == 0 {
+		return true, nil
+	}
+	if len(bundle.Parents) == 0 {
+		return false, nil
+	}
+
+	var parentCount int64
+	if err := tx.Model(&database.GitCommitParent{}).
+		Where("repository_id = ? AND commit_sha = ?", bundle.Commit.RepositoryID, bundle.Commit.SHA).
+		Count(&parentCount).Error; err != nil {
+		return false, err
+	}
+	return parentCount != int64(len(bundle.Parents)), nil
 }
 
 func (s *Service) markSnapshotFailed(ctx context.Context, repositoryID uint, pull database.PullRequest, mergeBase string, reason error) error {

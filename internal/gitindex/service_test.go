@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/github"
@@ -75,6 +76,38 @@ func TestIndexPullRequestBuildsSnapshotAndCommitIndexes(t *testing.T) {
 	var commitHunks []database.GitCommitParentHunk
 	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND commit_sha = ?", repo.ID, pull.HeadSHA).Find(&commitHunks).Error)
 	require.NotEmpty(t, commitHunks)
+}
+
+func TestIndexPullRequestReusesExistingCommitDetail(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "reuse-commit-detail.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	repo, pull := seedRepositoryAndPullRequest(t, db, fixture, 101)
+
+	indexer := gitindex.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}), filepath.Join(t.TempDir(), "mirrors"))
+	require.NoError(t, indexer.IndexPullRequest(ctx, "acme", "widgets", repo, pull))
+
+	var parent database.GitCommitParent
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND commit_sha = ?", repo.ID, pull.HeadSHA).
+		First(&parent).Error)
+
+	sentinel := time.Date(2026, time.April, 18, 15, 0, 0, 0, time.UTC)
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.GitCommitParent{}).
+		Where("id = ?", parent.ID).
+		Update("updated_at", sentinel).Error)
+
+	require.NoError(t, indexer.IndexPullRequest(ctx, "acme", "widgets", repo, pull))
+
+	var stored database.GitCommitParent
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND commit_sha = ? AND parent_index = ?", repo.ID, pull.HeadSHA, parent.ParentIndex).
+		First(&stored).Error)
+	require.Equal(t, sentinel, stored.UpdatedAt.UTC())
 }
 
 func TestIndexPullRequestSkipsOversizedMergeCommitDetail(t *testing.T) {
