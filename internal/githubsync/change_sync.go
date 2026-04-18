@@ -1309,11 +1309,11 @@ func (s *Service) updateRepoInventoryCountsTx(tx *gorm.DB, state database.RepoCh
 	}
 
 	updates := map[string]any{
-		"open_pr_total":    int(total),
-		"open_pr_current":  int(current),
-		"open_pr_stale":    int(stale),
-		"updated_at":       now,
-		"last_error":       "",
+		"open_pr_total":   int(total),
+		"open_pr_current": int(current),
+		"open_pr_stale":   int(stale),
+		"updated_at":      now,
+		"last_error":      "",
 	}
 	for key, value := range extraUpdates {
 		updates[key] = value
