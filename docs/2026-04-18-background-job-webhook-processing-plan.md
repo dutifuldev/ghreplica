@@ -173,23 +173,25 @@ The intended first-cut meaning is:
 
 ## Database Pool Baseline
 
-This cutover should be paired with a less restrictive database pool.
+This cutover should be paired with split serve-time database pools.
 
 Recommended starting values:
 
-- max open connections: `10`
-- max idle connections: `5`
+- control pool:
+  - max open connections: `6`
+  - max idle connections: `3`
+- sync pool:
+  - max open connections: `6`
+  - max idle connections: `2`
 
-That is not a River-specific requirement.
-
-It is a practical adjustment based on the current production observation that the database pool is too small for hot webhook traffic plus background sync work.
-
-That is the safer production starting point for the current Cloud SQL footprint. Increase it only after measuring real headroom under load.
+That keeps River and the HTTP request path off the same pool as inventory scans, backfill, and heavy indexing.
 
 These defaults are now exposed through the normal runtime config surface:
 
-- `DB_MAX_OPEN_CONNS`
-- `DB_MAX_IDLE_CONNS`
+- `DB_CONTROL_MAX_OPEN_CONNS`
+- `DB_CONTROL_MAX_IDLE_CONNS`
+- `DB_SYNC_MAX_OPEN_CONNS`
+- `DB_SYNC_MAX_IDLE_CONNS`
 - `WEBHOOK_JOB_QUEUE_CONCURRENCY`
 - `WEBHOOK_JOB_TIMEOUT`
 - `WEBHOOK_JOB_MAX_ATTEMPTS`

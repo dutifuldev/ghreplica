@@ -17,23 +17,50 @@ import (
 	"gorm.io/gorm"
 )
 
+func closeDatabase(db *gorm.DB) {
+	if db == nil {
+		return
+	}
+	sqlDB, err := db.DB()
+	if err == nil {
+		_ = sqlDB.Close()
+	}
+}
+
 type ServeRuntime struct {
-	DB               *gorm.DB
-	SQLDB            *sql.DB
-	GitHubClient     *github.Client
-	GitIndex         *gitindex.Service
-	GitHubSync       *githubsync.Service
-	WebhookIngestor  *webhooks.Service
-	WebhookJobClient *river.Client[*sql.Tx]
-	RefreshWorker    *refresh.Worker
-	ChangeSyncWorker *githubsync.ChangeSyncWorker
-	Server           *httpapi.Server
+	ControlDB         *gorm.DB
+	ControlSQLDB      *sql.DB
+	SyncDB            *gorm.DB
+	SyncSQLDB         *sql.DB
+	GitHubClient      *github.Client
+	SyncGitIndex      *gitindex.Service
+	ControlGitHubSync *githubsync.Service
+	SyncGitHubSync    *githubsync.Service
+	WebhookIngestor   *webhooks.Service
+	WebhookJobClient  *river.Client[*sql.Tx]
+	RefreshWorker     *refresh.Worker
+	ChangeSyncWorker  *githubsync.ChangeSyncWorker
+	Server            *httpapi.Server
 }
 
 func OpenDatabase(cfg config.Config) (*gorm.DB, error) {
 	return database.OpenWithPoolConfig(cfg.DatabaseURL, database.PoolConfig{
 		MaxOpenConns: cfg.DatabaseMaxOpenConns,
 		MaxIdleConns: cfg.DatabaseMaxIdleConns,
+	})
+}
+
+func OpenControlDatabase(cfg config.Config) (*gorm.DB, error) {
+	return database.OpenWithPoolConfig(cfg.DatabaseURL, database.PoolConfig{
+		MaxOpenConns: cfg.ControlDBMaxOpenConns,
+		MaxIdleConns: cfg.ControlDBMaxIdleConns,
+	})
+}
+
+func OpenSyncDatabase(cfg config.Config) (*gorm.DB, error) {
+	return database.OpenWithPoolConfig(cfg.DatabaseURL, database.PoolConfig{
+		MaxOpenConns: cfg.SyncDBMaxOpenConns,
+		MaxIdleConns: cfg.SyncDBMaxIdleConns,
 	})
 }
 
@@ -55,46 +82,65 @@ func NewGitIndexService(db *gorm.DB, client *github.Client, cfg config.Config) *
 }
 
 func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
-	db, err := OpenDatabase(cfg)
+	controlDB, err := OpenControlDatabase(cfg)
 	if err != nil {
+		return nil, err
+	}
+	syncDB, err := OpenSyncDatabase(cfg)
+	if err != nil {
+		closeDatabase(controlDB)
 		return nil, err
 	}
 
 	githubClient := NewGitHubClient(cfg)
-	gitIndex := NewGitIndexService(db, githubClient, cfg)
-	githubSync := githubsync.NewService(db, githubClient, gitIndex)
-	webhookIngestor := webhooks.NewService(db, webhooks.Dependencies{
-		Projector: githubSync,
-		Staler:    githubSync,
-		Recorder:  githubSync,
+	syncGitIndex := NewGitIndexService(syncDB, githubClient, cfg)
+	controlGitHubSync := githubsync.NewService(controlDB, githubClient)
+	syncGitHubSync := githubsync.NewService(syncDB, githubClient, syncGitIndex)
+	webhookIngestor := webhooks.NewService(controlDB, webhooks.Dependencies{
+		Projector: controlGitHubSync,
+		Staler:    controlGitHubSync,
+		Recorder:  controlGitHubSync,
 	})
 
-	sqlDB, err := db.DB()
+	controlSQLDB, err := controlDB.DB()
 	if err != nil {
+		closeDatabase(syncDB)
+		closeDatabase(controlDB)
 		return nil, err
 	}
-	webhookJobClient, dispatcher, err := webhookjobs.NewClient(sqlDB, webhookIngestor, webhookjobs.Config{
+	syncSQLDB, err := syncDB.DB()
+	if err != nil {
+		_ = controlSQLDB.Close()
+		closeDatabase(syncDB)
+		return nil, err
+	}
+	webhookJobClient, dispatcher, err := webhookjobs.NewClient(controlSQLDB, webhookIngestor, webhookjobs.Config{
 		QueueConcurrency: cfg.WebhookJobQueueConcurrency,
 		JobTimeout:       cfg.WebhookJobTimeout,
 		MaxAttempts:      cfg.WebhookJobMaxAttempts,
 	})
 	if err != nil {
+		_ = syncSQLDB.Close()
+		_ = controlSQLDB.Close()
 		return nil, err
 	}
 	webhookIngestor.SetDispatcher(dispatcher)
 
 	return &ServeRuntime{
-		DB:               db,
-		SQLDB:            sqlDB,
-		GitHubClient:     githubClient,
-		GitIndex:         gitIndex,
-		GitHubSync:       githubSync,
-		WebhookIngestor:  webhookIngestor,
-		WebhookJobClient: webhookJobClient,
-		RefreshWorker:    refresh.NewWorker(db, githubSync, 2*time.Second),
+		ControlDB:         controlDB,
+		ControlSQLDB:      controlSQLDB,
+		SyncDB:            syncDB,
+		SyncSQLDB:         syncSQLDB,
+		GitHubClient:      githubClient,
+		SyncGitIndex:      syncGitIndex,
+		ControlGitHubSync: controlGitHubSync,
+		SyncGitHubSync:    syncGitHubSync,
+		WebhookIngestor:   webhookIngestor,
+		WebhookJobClient:  webhookJobClient,
+		RefreshWorker:     refresh.NewWorker(syncDB, syncGitHubSync, 2*time.Second),
 		ChangeSyncWorker: githubsync.NewChangeSyncWorker(
-			db,
-			githubSync,
+			syncDB,
+			syncGitHubSync,
 			cfg.ChangeSyncPollInterval,
 			cfg.WebhookFetchDebounce,
 			cfg.OpenPRInventoryMaxAge,
@@ -102,11 +148,11 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 			cfg.BackfillMaxRuntime,
 			cfg.BackfillMaxPRsPerPass,
 		),
-		Server: httpapi.NewServer(db, httpapi.Options{
+		Server: httpapi.NewServer(controlDB, httpapi.Options{
 			GitHubWebhookSecret: cfg.GitHubWebhookSecret,
 			WebhookIngestor:     webhookIngestor,
-			ChangeStatus:        githubSync,
-			StructuralSearch:    gitIndex,
+			ChangeStatus:        controlGitHubSync,
+			StructuralSearch:    syncGitIndex,
 		}),
 	}, nil
 }
