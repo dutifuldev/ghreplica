@@ -257,14 +257,18 @@ type RepositoryRefreshJob struct {
 }
 
 type PoolConfig struct {
-	MaxOpenConns int
-	MaxIdleConns int
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxIdleTime time.Duration
+	ConnMaxLifetime time.Duration
 }
 
 func DefaultPoolConfig() PoolConfig {
 	return PoolConfig{
-		MaxOpenConns: 10,
-		MaxIdleConns: 5,
+		MaxOpenConns:    10,
+		MaxIdleConns:    5,
+		ConnMaxIdleTime: 30 * time.Minute,
+		ConnMaxLifetime: 2 * time.Hour,
 	}
 }
 
@@ -278,6 +282,12 @@ func (c PoolConfig) withDefaults() PoolConfig {
 	}
 	if c.MaxIdleConns > c.MaxOpenConns {
 		c.MaxIdleConns = c.MaxOpenConns
+	}
+	if c.ConnMaxIdleTime <= 0 {
+		c.ConnMaxIdleTime = defaults.ConnMaxIdleTime
+	}
+	if c.ConnMaxLifetime <= 0 {
+		c.ConnMaxLifetime = defaults.ConnMaxLifetime
 	}
 	return c
 }
@@ -316,10 +326,37 @@ func OpenWithPoolConfig(databaseURL string, poolConfig PoolConfig) (*gorm.DB, er
 	// themselves or other apps by exhausting server-side slots.
 	sqlDB.SetMaxOpenConns(poolConfig.MaxOpenConns)
 	sqlDB.SetMaxIdleConns(poolConfig.MaxIdleConns)
-	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
-	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	sqlDB.SetConnMaxIdleTime(poolConfig.ConnMaxIdleTime)
+	sqlDB.SetConnMaxLifetime(poolConfig.ConnMaxLifetime)
 
 	return db, nil
+}
+
+func PrewarmPool(ctx context.Context, sqlDB *sql.DB, target int) error {
+	if sqlDB == nil || target <= 0 {
+		return nil
+	}
+
+	held := make([]*sql.Conn, 0, target)
+	defer func() {
+		for i := len(held) - 1; i >= 0; i-- {
+			_ = held[i].Close()
+		}
+	}()
+
+	for i := 0; i < target; i++ {
+		conn, err := sqlDB.Conn(ctx)
+		if err != nil {
+			return err
+		}
+		if err := conn.PingContext(ctx); err != nil {
+			_ = conn.Close()
+			return err
+		}
+		held = append(held, conn)
+	}
+
+	return nil
 }
 
 func newGormConfig() *gorm.Config {
