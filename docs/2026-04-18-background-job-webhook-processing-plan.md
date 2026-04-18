@@ -143,6 +143,53 @@ The job should be unique by `delivery_id`.
 
 That ensures one GitHub delivery is only processed once in the projection path even if the request is replayed or retried.
 
+## Initial Production Defaults
+
+The first production cut should keep the setup small and explicit.
+
+Recommended starting values:
+
+- queue name: `webhook_projection`
+- job kind: `github_webhook_process`
+- queue concurrency: `6`
+- job timeout: `30s`
+- max attempts: `8`
+- retry backoff: exponential with jitter, capped at `30m`
+- uniqueness key: `delivery_id`
+- uniqueness window: `7d`
+
+These values match the current shape of production load reasonably well:
+
+- current webhook-side cancellation churn tends to appear after roughly `4s` to `10s`
+- webhook projection jobs should perform bounded projection work, not deep Git indexing
+- the queue should be able to absorb hot-repo bursts without creating a large number of competing workers immediately
+
+The intended first-cut meaning is:
+
+- give each delivery enough time to finish normal projection work
+- retry transient failures a handful of times
+- avoid infinite churn on the same failing delivery
+- dedupe replayed GitHub deliveries safely
+
+## Database Pool Baseline
+
+This cutover should be paired with a less restrictive database pool.
+
+Recommended starting values:
+
+- max open connections: `20`
+- max idle connections: `10`
+
+That is not a River-specific requirement.
+
+It is a practical adjustment based on the current production observation that the database pool is too small for hot webhook traffic plus background sync work.
+
+If the pool is not increased for the initial rollout, the webhook projection queue concurrency should be reduced to:
+
+- queue concurrency: `3`
+
+That is the safer fallback if database capacity is intentionally held low during the first rollout.
+
 ## Processing Flow
 
 The River worker should:
