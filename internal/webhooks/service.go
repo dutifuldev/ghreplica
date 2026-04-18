@@ -62,14 +62,17 @@ var supportedWebhookEvents = map[string]struct{}{
 	"repository":                  {},
 }
 
-func NewService(db *gorm.DB, deps Dependencies) *Service {
+func NewService(acceptorDB, processorDB *gorm.DB, deps Dependencies) *Service {
+	if processorDB == nil {
+		processorDB = acceptorDB
+	}
 	search := deps.Search
 	if search == nil {
-		search = searchindex.NewService(db)
+		search = searchindex.NewService(processorDB)
 	}
 	return &Service{
-		acceptor:  NewAcceptor(db),
-		processor: NewProcessor(db, deps.Projector, deps.Staler, deps.Recorder, search),
+		acceptor:  NewAcceptor(acceptorDB),
+		processor: NewProcessor(processorDB, deps.Projector, deps.Staler, deps.Recorder, search),
 	}
 }
 

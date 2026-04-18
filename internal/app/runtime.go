@@ -96,10 +96,10 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 	syncGitIndex := NewGitIndexService(syncDB, githubClient, cfg)
 	controlGitHubSync := githubsync.NewService(controlDB, githubClient)
 	syncGitHubSync := githubsync.NewService(syncDB, githubClient, syncGitIndex)
-	webhookIngestor := webhooks.NewService(controlDB, webhooks.Dependencies{
-		Projector: controlGitHubSync,
-		Staler:    controlGitHubSync,
-		Recorder:  controlGitHubSync,
+	webhookIngestor := webhooks.NewService(controlDB, syncDB, webhooks.Dependencies{
+		Projector: syncGitHubSync,
+		Staler:    syncGitHubSync,
+		Recorder:  syncGitHubSync,
 	})
 
 	controlSQLDB, err := controlDB.DB()
