@@ -10,6 +10,13 @@ ghreplica keeps GitHub-shaped repository data in server-side storage, uses Git a
 
 `ghreplica` is intentionally unopinionated. Where GitHub already defines the resource shape and semantics, `ghreplica` tries to preserve them, and the extra features it adds do not require downstream tools to adopt a `ghreplica`-specific workflow or data model.
 
+Repository identity rule:
+
+- repository identity is `github_id`
+- repository names like `owner/repo` are current lookup names, not the permanent identity
+
+That distinction matters for renames, forks, and name reuse. The API should still look GitHub-shaped, but the internal model should treat `full_name` as mutable.
+
 On top of its GitHub-compatible read surface, `ghreplica` also adds derived functionality for tooling:
 
 - mirror status so clients can inspect freshness, completeness, and indexing state instead of assuming the mirror is fully up to date
@@ -159,6 +166,8 @@ For hot repositories, change sync now runs in three explicit lanes:
 - backlog backfill from the latest committed inventory generation
 
 That means this project is not trying to pretend it has perfect live parity with GitHub at all times. The goal is reliable, inspectable, bounded mirroring. If something is partially indexed, stale, or still being rebuilt, the system should say so rather than silently acting complete.
+
+The same honesty rule applies to repository identity. The mirror should treat `github_id` as the canonical repository key and treat `full_name` as the current lookup name that may move over time.
 
 ## Local Development
 

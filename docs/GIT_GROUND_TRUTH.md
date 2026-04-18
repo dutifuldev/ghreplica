@@ -61,12 +61,40 @@ It should store:
 - PR-to-merge-base-SHA mappings
 - materialized PR-level rolled-up change indexes
 
+It should also store the canonical repository identity model:
+
+- repository rows keyed by `github_id`
+- current and historical repository name claims used for `owner/repo` lookup
+
 Postgres should answer product queries like:
 
 - which open PRs touch these files
 - which PRs touched overlapping line ranges
 - which commits modified this path recently
 - which PRs are similar to this PR based on changed code
+
+## Repository Identity
+
+Repository identity needs one explicit rule:
+
+- `github_id` is the durable repository identity
+- `full_name` is the current name, not the permanent identity
+
+That matters because GitHub repository names are mutable.
+
+Examples:
+
+- a repository can be renamed
+- an old name can later be reused
+- a fork can move or rename independently
+
+So the long-term storage model should not make `full_name` the canonical identity key. Instead, `full_name` should be treated as a movable lookup alias or name claim that points at the canonical repository row.
+
+The practical result is:
+
+- canonical repository row keyed by `github_id`
+- separate current-name resolution for `owner/repo` lookups
+- historical name state kept separately when useful for debugging and cutovers
 
 ## Commit-Level Truth
 
