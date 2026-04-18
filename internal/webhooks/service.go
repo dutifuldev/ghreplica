@@ -211,9 +211,10 @@ func (s *Service) projectEvent(ctx context.Context, event, action string, payloa
 				if err := json.Unmarshal(payload, &envelope); err == nil {
 					repo, err := s.projector.UpsertRepository(ctx, envelope.Repository)
 					if err == nil {
+						seenAt := time.Now().UTC()
 						_ = staler.MarkBaseRefStale(ctx, repo.ID, envelope.Ref)
 						if recorder, ok := s.projector.(repoChangeWebhookRecorder); ok {
-							_ = recorder.NoteRepositoryWebhook(ctx, repo.ID, time.Now().UTC())
+							_ = recorder.MarkInventoryNeedsRefresh(ctx, repo.ID, seenAt)
 						}
 						return repo.ID, nil
 					}

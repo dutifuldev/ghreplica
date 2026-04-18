@@ -115,18 +115,31 @@ func (w *ChangeSyncWorker) Start(ctx context.Context) error {
 }
 
 func (w *ChangeSyncWorker) RunOnce(ctx context.Context) (bool, error) {
+	processedAny := false
 	if processed, err := w.processTargetedRefreshBurst(ctx); err != nil {
-		return false, err
+		return processedAny, err
 	} else if processed {
-		if backfillProcessed, backfillErr := w.processBackfillRepo(ctx); backfillErr != nil || backfillProcessed {
-			return true, backfillErr
-		}
+		processedAny = true
+	}
+	if processed, err := w.processInventoryScan(ctx, false); err != nil {
+		return processedAny || processed, err
+	} else if processed {
 		return true, nil
 	}
-	if processed, err := w.processBackfillRepo(ctx); err != nil || processed {
-		return processed, err
+	if processed, err := w.processBackfillRepo(ctx); err != nil {
+		return processedAny || processed, err
+	} else if processed {
+		return true, nil
 	}
-	return w.processInventoryScan(ctx)
+	if processedAny {
+		return true, nil
+	}
+	if processed, err := w.processInventoryScan(ctx, true); err != nil {
+		return processed, err
+	} else if processed {
+		processedAny = true
+	}
+	return processedAny, nil
 }
 
 func (s *Service) ConfigureRepoBackfill(ctx context.Context, owner, repo, mode string, priority int) (database.RepoChangeSyncState, error) {
@@ -503,22 +516,30 @@ func (w *ChangeSyncWorker) processTargetedRefreshBurst(ctx context.Context) (boo
 	return processedAny, nil
 }
 
-func (w *ChangeSyncWorker) processInventoryScan(ctx context.Context) (bool, error) {
+func (w *ChangeSyncWorker) processInventoryScan(ctx context.Context, ageOnly bool) (bool, error) {
 	now := time.Now().UTC()
 	fetchAvailableSQL, fetchAvailableArgs := w.leases.reclaimableSQL(fetchLeaseKind, now)
 	backfillAvailableSQL, backfillAvailableArgs := w.leases.reclaimableSQL(backfillLeaseKind, now)
-	var state database.RepoChangeSyncState
-	err := w.db.WithContext(ctx).
+	query := w.db.WithContext(ctx).
 		Where("backfill_mode <> ?", changeBackfillModeOff).
 		Where(fetchAvailableSQL, fetchAvailableArgs...).
-		Where(backfillAvailableSQL, backfillAvailableArgs...).
-		Where("(dirty = ?) OR inventory_generation_current = 0 OR inventory_last_committed_at IS NULL OR inventory_last_committed_at <= ?",
-			true,
-			now.Add(-w.openPRInventoryMaxAge),
-		).
-		Where("dirty = ? OR dirty_since IS NULL OR dirty_since <= ?", false, now.Add(-w.webhookRefreshDebounce)).
-		Order("CASE WHEN inventory_generation_current = 0 THEN 0 ELSE 1 END ASC, backfill_priority DESC, inventory_last_committed_at ASC NULLS FIRST, repository_id ASC").
-		First(&state).Error
+		Where(backfillAvailableSQL, backfillAvailableArgs...)
+	if ageOnly {
+		query = query.
+			Where("dirty = ?", false).
+			Where("inventory_generation_current <> 0").
+			Where("inventory_last_committed_at IS NOT NULL AND inventory_last_committed_at <= ?", now.Add(-w.openPRInventoryMaxAge)).
+			Order("backfill_priority DESC, inventory_last_committed_at ASC, repository_id ASC")
+	} else {
+		query = query.
+			Where("((dirty = ? AND (last_requested_fetch_at IS NULL OR last_requested_fetch_at <= ?)) OR inventory_generation_current = 0 OR inventory_last_committed_at IS NULL)",
+				true,
+				now.Add(-w.webhookRefreshDebounce),
+			).
+			Order("CASE WHEN inventory_generation_current = 0 THEN 0 ELSE 1 END ASC, backfill_priority DESC, inventory_last_committed_at ASC NULLS FIRST, repository_id ASC")
+	}
+	var state database.RepoChangeSyncState
+	err := query.First(&state).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return false, nil
@@ -893,6 +914,10 @@ func normalizeBackfillMode(mode string) string {
 }
 
 func (s *Service) syncOpenPullInventory(ctx context.Context, owner, repo string, state database.RepoChangeSyncState) (RepoBackfillResult, error) {
+	scanStartedAt := time.Now().UTC()
+	if state.FetchLeaseStartedAt != nil && !state.FetchLeaseStartedAt.IsZero() {
+		scanStartedAt = state.FetchLeaseStartedAt.UTC()
+	}
 	openPulls, err := s.github.ListPullRequests(ctx, owner, repo, "open")
 	if err != nil {
 		return RepoBackfillResult{}, err
@@ -980,8 +1005,8 @@ func (s *Service) syncOpenPullInventory(ctx context.Context, owner, repo string,
 		return tx.Model(&database.RepoChangeSyncState{}).
 			Where("id = ?", state.ID).
 			Updates(map[string]any{
-				"dirty":                        false,
-				"dirty_since":                  nil,
+				"dirty":                        gorm.Expr("CASE WHEN dirty_since IS NOT NULL AND dirty_since > ? THEN ? ELSE ? END", scanStartedAt, true, false),
+				"dirty_since":                  gorm.Expr("CASE WHEN dirty_since IS NOT NULL AND dirty_since > ? THEN dirty_since ELSE NULL END", scanStartedAt),
 				"inventory_generation_current": nextGeneration,
 				"inventory_last_committed_at":  now,
 				"backfill_generation":          nextGeneration,

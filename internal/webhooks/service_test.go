@@ -436,6 +436,47 @@ func TestWebhookIngestionProjectsPullRequestActionMatrixFromRealFixtures(t *test
 	require.Equal(t, "sparse", tracked.PullsCompleteness)
 }
 
+func TestWebhookIngestionMarksBaseBranchPushesAsInventoryRefreshWork(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor := webhooks.NewService(db, projector)
+
+	repo := testfixtures.OpenClawRepository(t)
+	storedRepo, err := projector.UpsertRepository(ctx, repo)
+	require.NoError(t, err)
+	require.NoError(t, db.WithContext(ctx).Create(&database.PullRequestChangeSnapshot{
+		RepositoryID:      storedRepo.ID,
+		PullRequestNumber: 67096,
+		BaseRef:           "main",
+		IndexFreshness:    "current",
+		HeadSHA:           "abc123",
+		BaseSHA:           "def456",
+	}).Error)
+
+	payload, err := json.Marshal(map[string]any{
+		"ref":        "refs/heads/main",
+		"repository": repo,
+	})
+	require.NoError(t, err)
+	require.NoError(t, ingestor.HandleWebhook(
+		ctx,
+		"delivery-push-main",
+		"push",
+		http.Header{"X-GitHub-Event": []string{"push"}},
+		payload,
+	))
+
+	var state database.RepoChangeSyncState
+	require.NoError(t, db.WithContext(ctx).Where("repository_id = ?", storedRepo.ID).First(&state).Error)
+	require.True(t, state.Dirty)
+	require.NotNil(t, state.DirtySince)
+}
+
 func TestWebhookIngestionReplaysReviewAndReviewCommentEditsWithoutDuplicates(t *testing.T) {
 	ctx := context.Background()
 
