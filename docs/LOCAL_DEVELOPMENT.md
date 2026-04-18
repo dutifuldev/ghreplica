@@ -19,6 +19,7 @@ Copy `.env.example` into your shell environment:
 
 ```bash
 export APP_ADDR=127.0.0.1:8080
+export DB_DIALER=postgres
 export DATABASE_URL='postgres://ghreplica:ghreplica@127.0.0.1:54329/ghreplica?sslmode=disable'
 export GIT_MIRROR_ROOT='.data/git-mirrors'
 export GITHUB_TOKEN="$(gh auth token)"
@@ -139,6 +140,7 @@ Once configured, GitHub deliveries will hit the local API, be accepted quickly, 
 
 The background webhook worker and the split serve-time database pools are now controlled through the normal runtime config:
 
+- `DB_DIALER`
 - `DB_CONTROL_MAX_OPEN_CONNS`
 - `DB_CONTROL_MAX_IDLE_CONNS`
 - `DB_SYNC_MAX_OPEN_CONNS`

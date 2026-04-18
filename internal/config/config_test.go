@@ -63,6 +63,7 @@ func TestValidateServeRuntimeFailsWhenMirrorRootIsFile(t *testing.T) {
 }
 
 func TestLoadIncludesWebhookJobAndDatabasePoolDefaults(t *testing.T) {
+	t.Setenv("DB_DIALER", "")
 	t.Setenv("DB_MAX_OPEN_CONNS", "")
 	t.Setenv("DB_MAX_IDLE_CONNS", "")
 	t.Setenv("DB_CONTROL_MAX_OPEN_CONNS", "")
@@ -74,8 +75,11 @@ func TestLoadIncludesWebhookJobAndDatabasePoolDefaults(t *testing.T) {
 	t.Setenv("WEBHOOK_JOB_QUEUE_CONCURRENCY", "")
 	t.Setenv("WEBHOOK_JOB_TIMEOUT", "")
 	t.Setenv("WEBHOOK_JOB_MAX_ATTEMPTS", "")
+	t.Setenv("CLOUDSQL_INSTANCE_CONNECTION_NAME", "")
+	t.Setenv("CLOUDSQL_USE_IAM_AUTHN", "")
 
 	cfg := Load()
+	require.Equal(t, "postgres", cfg.DatabaseDialer)
 	require.Equal(t, 10, cfg.DatabaseMaxOpenConns)
 	require.Equal(t, 5, cfg.DatabaseMaxIdleConns)
 	require.Equal(t, 6, cfg.ControlDBMaxOpenConns)
@@ -87,9 +91,12 @@ func TestLoadIncludesWebhookJobAndDatabasePoolDefaults(t *testing.T) {
 	require.Equal(t, 1, cfg.WebhookJobQueueConcurrency)
 	require.Equal(t, 30*time.Second, cfg.WebhookJobTimeout)
 	require.Equal(t, 8, cfg.WebhookJobMaxAttempts)
+	require.Empty(t, cfg.CloudSQLInstanceConnectionName)
+	require.False(t, cfg.CloudSQLUseIAMAuthN)
 }
 
 func TestLoadReadsWebhookJobAndDatabasePoolOverrides(t *testing.T) {
+	t.Setenv("DB_DIALER", "cloudsql")
 	t.Setenv("DB_MAX_OPEN_CONNS", "14")
 	t.Setenv("DB_MAX_IDLE_CONNS", "7")
 	t.Setenv("DB_CONTROL_MAX_OPEN_CONNS", "9")
@@ -101,8 +108,11 @@ func TestLoadReadsWebhookJobAndDatabasePoolOverrides(t *testing.T) {
 	t.Setenv("WEBHOOK_JOB_QUEUE_CONCURRENCY", "4")
 	t.Setenv("WEBHOOK_JOB_TIMEOUT", "45s")
 	t.Setenv("WEBHOOK_JOB_MAX_ATTEMPTS", "9")
+	t.Setenv("CLOUDSQL_INSTANCE_CONNECTION_NAME", "proj:region:instance")
+	t.Setenv("CLOUDSQL_USE_IAM_AUTHN", "true")
 
 	cfg := Load()
+	require.Equal(t, "cloudsql", cfg.DatabaseDialer)
 	require.Equal(t, 14, cfg.DatabaseMaxOpenConns)
 	require.Equal(t, 7, cfg.DatabaseMaxIdleConns)
 	require.Equal(t, 9, cfg.ControlDBMaxOpenConns)
@@ -114,6 +124,30 @@ func TestLoadReadsWebhookJobAndDatabasePoolOverrides(t *testing.T) {
 	require.Equal(t, 4, cfg.WebhookJobQueueConcurrency)
 	require.Equal(t, 45*time.Second, cfg.WebhookJobTimeout)
 	require.Equal(t, 9, cfg.WebhookJobMaxAttempts)
+	require.Equal(t, "proj:region:instance", cfg.CloudSQLInstanceConnectionName)
+	require.True(t, cfg.CloudSQLUseIAMAuthN)
+}
+
+func TestValidateDatabaseCloudSQLRequiresInstanceName(t *testing.T) {
+	cfg := Config{
+		DatabaseDialer: "cloudsql",
+		DatabaseURL:    "postgres://user@localhost/db?sslmode=disable",
+	}
+
+	err := cfg.ValidateDatabase()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "CLOUDSQL_INSTANCE_CONNECTION_NAME")
+}
+
+func TestValidateDatabaseRejectsUnknownDialer(t *testing.T) {
+	cfg := Config{
+		DatabaseDialer: "weird",
+		DatabaseURL:    "postgres://user@localhost/db?sslmode=disable",
+	}
+
+	err := cfg.ValidateDatabase()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported DB_DIALER")
 }
 
 func writeExecutable(t *testing.T, name string) string {

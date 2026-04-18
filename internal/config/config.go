@@ -12,70 +12,76 @@ import (
 )
 
 type Config struct {
-	AppAddr                    string
-	DatabaseURL                string
-	DatabaseMaxOpenConns       int
-	DatabaseMaxIdleConns       int
-	ControlDBMaxOpenConns      int
-	ControlDBMaxIdleConns      int
-	QueueDBMaxOpenConns        int
-	QueueDBMaxIdleConns        int
-	SyncDBMaxOpenConns         int
-	SyncDBMaxIdleConns         int
-	GitMirrorRoot              string
-	GitIndexTimeout            time.Duration
-	ASTGrepTimeout             time.Duration
-	ASTGrepBin                 string
-	GitHubBaseURL              string
-	GitHubToken                string
-	GitHubAppID                string
-	GitHubInstallationID       string
-	GitHubAppPrivateKeyPEM     string
-	GitHubAppPrivateKeyPath    string
-	GitHubWebhookSecret        string
-	ChangeSyncPollInterval     time.Duration
-	WebhookFetchDebounce       time.Duration
-	OpenPRInventoryMaxAge      time.Duration
-	RepoLeaseTTL               time.Duration
-	BackfillMaxRuntime         time.Duration
-	BackfillMaxPRsPerPass      int
-	WebhookJobQueueConcurrency int
-	WebhookJobTimeout          time.Duration
-	WebhookJobMaxAttempts      int
+	AppAddr                        string
+	DatabaseDialer                 string
+	DatabaseURL                    string
+	DatabaseMaxOpenConns           int
+	DatabaseMaxIdleConns           int
+	ControlDBMaxOpenConns          int
+	ControlDBMaxIdleConns          int
+	QueueDBMaxOpenConns            int
+	QueueDBMaxIdleConns            int
+	SyncDBMaxOpenConns             int
+	SyncDBMaxIdleConns             int
+	GitMirrorRoot                  string
+	GitIndexTimeout                time.Duration
+	ASTGrepTimeout                 time.Duration
+	ASTGrepBin                     string
+	GitHubBaseURL                  string
+	GitHubToken                    string
+	GitHubAppID                    string
+	GitHubInstallationID           string
+	GitHubAppPrivateKeyPEM         string
+	GitHubAppPrivateKeyPath        string
+	GitHubWebhookSecret            string
+	ChangeSyncPollInterval         time.Duration
+	WebhookFetchDebounce           time.Duration
+	OpenPRInventoryMaxAge          time.Duration
+	RepoLeaseTTL                   time.Duration
+	BackfillMaxRuntime             time.Duration
+	BackfillMaxPRsPerPass          int
+	WebhookJobQueueConcurrency     int
+	WebhookJobTimeout              time.Duration
+	WebhookJobMaxAttempts          int
+	CloudSQLInstanceConnectionName string
+	CloudSQLUseIAMAuthN            bool
 }
 
 func Load() Config {
 	return Config{
-		AppAddr:                    getenvDefault("APP_ADDR", "127.0.0.1:8080"),
-		DatabaseURL:                strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		DatabaseMaxOpenConns:       intDefault("DB_MAX_OPEN_CONNS", 10),
-		DatabaseMaxIdleConns:       intDefault("DB_MAX_IDLE_CONNS", 5),
-		ControlDBMaxOpenConns:      intDefault("DB_CONTROL_MAX_OPEN_CONNS", 6),
-		ControlDBMaxIdleConns:      intDefault("DB_CONTROL_MAX_IDLE_CONNS", 2),
-		QueueDBMaxOpenConns:        intDefault("DB_QUEUE_MAX_OPEN_CONNS", 4),
-		QueueDBMaxIdleConns:        intDefault("DB_QUEUE_MAX_IDLE_CONNS", 1),
-		SyncDBMaxOpenConns:         intDefault("DB_SYNC_MAX_OPEN_CONNS", 8),
-		SyncDBMaxIdleConns:         intDefault("DB_SYNC_MAX_IDLE_CONNS", 2),
-		GitMirrorRoot:              getenvDefault("GIT_MIRROR_ROOT", ".data/git-mirrors"),
-		GitIndexTimeout:            durationDefault("GIT_INDEX_TIMEOUT", 5*time.Minute),
-		ASTGrepTimeout:             durationDefault("AST_GREP_TIMEOUT", time.Minute),
-		ASTGrepBin:                 getenvDefault("AST_GREP_BIN", "ast-grep"),
-		GitHubBaseURL:              getenvDefault("GITHUB_BASE_URL", "https://api.github.com"),
-		GitHubToken:                strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
-		GitHubAppID:                strings.TrimSpace(os.Getenv("GITHUB_APP_ID")),
-		GitHubInstallationID:       strings.TrimSpace(os.Getenv("GITHUB_APP_INSTALLATION_ID")),
-		GitHubAppPrivateKeyPEM:     strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_PEM")),
-		GitHubAppPrivateKeyPath:    strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH")),
-		GitHubWebhookSecret:        strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET")),
-		ChangeSyncPollInterval:     durationDefault("CHANGE_SYNC_POLL_INTERVAL", 5*time.Second),
-		WebhookFetchDebounce:       durationDefault("WEBHOOK_REFRESH_DEBOUNCE", 15*time.Second),
-		OpenPRInventoryMaxAge:      durationDefault("OPEN_PR_INVENTORY_MAX_AGE", 10*time.Minute),
-		RepoLeaseTTL:               durationDefault("REPO_CHANGE_LEASE_TTL", 15*time.Minute),
-		BackfillMaxRuntime:         durationDefault("BACKFILL_MAX_RUNTIME", 5*time.Minute),
-		BackfillMaxPRsPerPass:      intDefault("BACKFILL_MAX_PRS_PER_PASS", 100),
-		WebhookJobQueueConcurrency: intDefault("WEBHOOK_JOB_QUEUE_CONCURRENCY", 1),
-		WebhookJobTimeout:          durationDefault("WEBHOOK_JOB_TIMEOUT", 30*time.Second),
-		WebhookJobMaxAttempts:      intDefault("WEBHOOK_JOB_MAX_ATTEMPTS", 8),
+		AppAddr:                        getenvDefault("APP_ADDR", "127.0.0.1:8080"),
+		DatabaseDialer:                 getenvDefault("DB_DIALER", "postgres"),
+		DatabaseURL:                    strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		DatabaseMaxOpenConns:           intDefault("DB_MAX_OPEN_CONNS", 10),
+		DatabaseMaxIdleConns:           intDefault("DB_MAX_IDLE_CONNS", 5),
+		ControlDBMaxOpenConns:          intDefault("DB_CONTROL_MAX_OPEN_CONNS", 6),
+		ControlDBMaxIdleConns:          intDefault("DB_CONTROL_MAX_IDLE_CONNS", 2),
+		QueueDBMaxOpenConns:            intDefault("DB_QUEUE_MAX_OPEN_CONNS", 4),
+		QueueDBMaxIdleConns:            intDefault("DB_QUEUE_MAX_IDLE_CONNS", 1),
+		SyncDBMaxOpenConns:             intDefault("DB_SYNC_MAX_OPEN_CONNS", 8),
+		SyncDBMaxIdleConns:             intDefault("DB_SYNC_MAX_IDLE_CONNS", 2),
+		GitMirrorRoot:                  getenvDefault("GIT_MIRROR_ROOT", ".data/git-mirrors"),
+		GitIndexTimeout:                durationDefault("GIT_INDEX_TIMEOUT", 5*time.Minute),
+		ASTGrepTimeout:                 durationDefault("AST_GREP_TIMEOUT", time.Minute),
+		ASTGrepBin:                     getenvDefault("AST_GREP_BIN", "ast-grep"),
+		GitHubBaseURL:                  getenvDefault("GITHUB_BASE_URL", "https://api.github.com"),
+		GitHubToken:                    strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+		GitHubAppID:                    strings.TrimSpace(os.Getenv("GITHUB_APP_ID")),
+		GitHubInstallationID:           strings.TrimSpace(os.Getenv("GITHUB_APP_INSTALLATION_ID")),
+		GitHubAppPrivateKeyPEM:         strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_PEM")),
+		GitHubAppPrivateKeyPath:        strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY_PATH")),
+		GitHubWebhookSecret:            strings.TrimSpace(os.Getenv("GITHUB_WEBHOOK_SECRET")),
+		ChangeSyncPollInterval:         durationDefault("CHANGE_SYNC_POLL_INTERVAL", 5*time.Second),
+		WebhookFetchDebounce:           durationDefault("WEBHOOK_REFRESH_DEBOUNCE", 15*time.Second),
+		OpenPRInventoryMaxAge:          durationDefault("OPEN_PR_INVENTORY_MAX_AGE", 10*time.Minute),
+		RepoLeaseTTL:                   durationDefault("REPO_CHANGE_LEASE_TTL", 15*time.Minute),
+		BackfillMaxRuntime:             durationDefault("BACKFILL_MAX_RUNTIME", 5*time.Minute),
+		BackfillMaxPRsPerPass:          intDefault("BACKFILL_MAX_PRS_PER_PASS", 100),
+		WebhookJobQueueConcurrency:     intDefault("WEBHOOK_JOB_QUEUE_CONCURRENCY", 1),
+		WebhookJobTimeout:              durationDefault("WEBHOOK_JOB_TIMEOUT", 30*time.Second),
+		WebhookJobMaxAttempts:          intDefault("WEBHOOK_JOB_MAX_ATTEMPTS", 8),
+		CloudSQLInstanceConnectionName: strings.TrimSpace(os.Getenv("CLOUDSQL_INSTANCE_CONNECTION_NAME")),
+		CloudSQLUseIAMAuthN:            boolDefault("CLOUDSQL_USE_IAM_AUTHN", false),
 	}
 }
 
@@ -83,8 +89,17 @@ func (c Config) ValidateDatabase() error {
 	if c.DatabaseURL == "" {
 		return errors.New("DATABASE_URL is required")
 	}
-
-	return nil
+	switch strings.ToLower(strings.TrimSpace(c.DatabaseDialer)) {
+	case "", "postgres":
+		return nil
+	case "cloudsql":
+		if strings.TrimSpace(c.CloudSQLInstanceConnectionName) == "" {
+			return errors.New("CLOUDSQL_INSTANCE_CONNECTION_NAME is required for DB_DIALER=cloudsql")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported DB_DIALER %q", c.DatabaseDialer)
+	}
 }
 
 func (c Config) ValidateServeRuntime() error {
@@ -203,4 +218,19 @@ func intDefault(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func boolDefault(key string, fallback bool) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }

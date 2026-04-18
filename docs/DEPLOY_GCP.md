@@ -13,7 +13,7 @@ This document describes the first shared staging deployment for `ghreplica` on G
 
 The intended traffic path is:
 
-`Internet -> static IP -> Caddy -> ghreplica -> cloud-sql-proxy -> Cloud SQL`
+`Internet -> static IP -> Caddy -> ghreplica -> Cloud SQL`
 
 Only `80` and `443` should be exposed publicly.
 
@@ -120,6 +120,8 @@ cp deploy/gcp/ghreplica.env.example deploy/gcp/ghreplica.env
 Populate:
 
 - `CLOUD_SQL_INSTANCE_CONNECTION_NAME`
+- `DB_DIALER=cloudsql`
+- `CLOUDSQL_USE_IAM_AUTHN=true`
 - `DB_NAME=ghreplica`
 - `DB_IAM_USER_URLENCODED=bob-gcloud%40dutiful-20260414.iam`
 - `GITHUB_WEBHOOK_SECRET`
@@ -205,6 +207,6 @@ The configured secret must exactly match `GITHUB_WEBHOOK_SECRET`.
 ## Notes
 
 - The app itself is not published directly; only `caddy` exposes ports.
-- `cloud-sql-proxy` runs with IAM auth, using the VM service account.
+- The app uses the in-process Cloud SQL Go connector with IAM auth, using the VM service account.
 - Prefer GitHub App auth over `GITHUB_TOKEN` for this deployment.
 - This is a staging-first deployment shape. Add user-facing auth before opening the API broadly to other people.
