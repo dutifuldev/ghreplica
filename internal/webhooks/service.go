@@ -2,6 +2,7 @@ package webhooks
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,7 +15,6 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 type WebhookProjector interface {
@@ -38,6 +38,10 @@ type repoChangeWebhookRecorder interface {
 	NoteRepositoryWebhook(ctx context.Context, repositoryID uint, seenAt time.Time) error
 	EnqueuePullRequestRefresh(ctx context.Context, repositoryID uint, number int, seenAt time.Time) error
 	MarkInventoryNeedsRefresh(ctx context.Context, repositoryID uint, seenAt time.Time) error
+}
+
+type DeliveryDispatcher interface {
+	EnqueueWebhookDeliveryTx(ctx context.Context, tx *sql.Tx, deliveryID string) error
 }
 
 func pullRequestWebhookNeedsInventoryRefresh(action string, payload []byte) bool {
@@ -64,9 +68,11 @@ func pullRequestWebhookNeedsInventoryRefresh(action string, payload []byte) bool
 }
 
 type Service struct {
-	db        *gorm.DB
-	projector WebhookProjector
-	search    *searchindex.Service
+	db         *gorm.DB
+	sqlDB      *sql.DB
+	projector  WebhookProjector
+	search     *searchindex.Service
+	dispatcher DeliveryDispatcher
 }
 
 var supportedWebhookEvents = map[string]struct{}{
@@ -81,26 +87,70 @@ var supportedWebhookEvents = map[string]struct{}{
 }
 
 func NewService(db *gorm.DB, projector WebhookProjector) *Service {
-	return &Service{db: db, projector: projector, search: searchindex.NewService(db)}
+	sqlDB, err := db.DB()
+	if err != nil {
+		sqlDB = nil
+	}
+	return &Service{db: db, sqlDB: sqlDB, projector: projector, search: searchindex.NewService(db)}
+}
+
+func (s *Service) SetDispatcher(dispatcher DeliveryDispatcher) {
+	s.dispatcher = dispatcher
 }
 
 func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, headers http.Header, payload []byte) error {
 	now := time.Now().UTC()
 
-	delivery, repoRef, err := s.buildWebhookDelivery(deliveryID, event, headers, payload, now)
+	if s.sqlDB == nil {
+		return errors.New("webhook SQL database handle is not configured")
+	}
+	if s.dispatcher == nil {
+		return errors.New("webhook delivery dispatcher is not configured")
+	}
+
+	delivery, _, err := s.buildWebhookDelivery(deliveryID, event, headers, payload, now)
 	if err != nil {
 		return err
 	}
 
-	tx := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "delivery_id"}},
-		DoNothing: true,
-	}).Create(&delivery)
-	if tx.Error != nil {
-		return tx.Error
+	tx, err := s.sqlDB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	if tx.RowsAffected == 0 {
+	defer tx.Rollback()
+
+	inserted, err := s.insertWebhookDeliveryTx(ctx, tx, delivery)
+	if err != nil {
+		return err
+	}
+	if !inserted {
 		return nil
+	}
+
+	if err := s.dispatcher.EnqueueWebhookDeliveryTx(ctx, tx, delivery.DeliveryID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *Service) ProcessWebhookDelivery(ctx context.Context, deliveryID string) error {
+	now := time.Now().UTC()
+
+	var delivery database.WebhookDelivery
+	if err := s.db.WithContext(ctx).Where("delivery_id = ?", deliveryID).First(&delivery).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if delivery.ProcessedAt != nil {
+		return nil
+	}
+
+	repoRef, err := repositoryRefFromPayload(delivery.PayloadJSON)
+	if err != nil {
+		return err
 	}
 
 	if repoRef != nil {
@@ -123,15 +173,15 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, h
 			"processed_at": now,
 		}
 		if tracked.Enabled && tracked.WebhookProjectionEnabled {
-			if _, ok := supportedWebhookEvents[event]; ok {
-				repositoryID, err := s.projectEvent(ctx, event, delivery.Action, payload, repoRef)
+			if _, ok := supportedWebhookEvents[delivery.Event]; ok {
+				repositoryID, err := s.projectEvent(ctx, delivery.Event, delivery.Action, delivery.PayloadJSON, repoRef)
 				if err != nil {
 					return err
 				}
 				if repositoryID != 0 {
 					updates["repository_id"] = repositoryID
 				}
-				if err := s.updateTrackedRepositoryProjectionState(ctx, tracked, repoRef, repositoryID, event, now); err != nil {
+				if err := s.updateTrackedRepositoryProjectionState(ctx, tracked, repoRef, repositoryID, delivery.Event, now); err != nil {
 					return err
 				}
 			}
@@ -155,6 +205,42 @@ func (s *Service) HandleWebhook(ctx context.Context, deliveryID, event string, h
 	return s.db.WithContext(ctx).Model(&database.WebhookDelivery{}).
 		Where("delivery_id = ?", deliveryID).
 		Updates(map[string]any{"processed_at": now}).Error
+}
+
+func (s *Service) insertWebhookDeliveryTx(ctx context.Context, tx *sql.Tx, delivery database.WebhookDelivery) (bool, error) {
+	headersJSON := string(delivery.HeadersJSON)
+	payloadJSON := string(delivery.PayloadJSON)
+
+	var (
+		query string
+		args  []any
+	)
+	switch s.db.Dialector.Name() {
+	case "sqlite":
+		query = `
+			INSERT INTO webhook_deliveries (delivery_id, event, action, headers_json, payload_json, received_at)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT (delivery_id) DO NOTHING
+		`
+		args = []any{delivery.DeliveryID, delivery.Event, delivery.Action, headersJSON, payloadJSON, delivery.ReceivedAt}
+	default:
+		query = `
+			INSERT INTO webhook_deliveries (delivery_id, event, action, headers_json, payload_json, received_at)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (delivery_id) DO NOTHING
+		`
+		args = []any{delivery.DeliveryID, delivery.Event, delivery.Action, headersJSON, payloadJSON, delivery.ReceivedAt}
+	}
+
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rowsAffected > 0, nil
 }
 
 func (s *Service) updateTrackedRepositoryProjectionState(ctx context.Context, tracked database.TrackedRepository, repoRef *repositoryRef, repositoryID uint, event string, seenAt time.Time) error {
@@ -463,6 +549,14 @@ func (s *Service) buildWebhookDelivery(deliveryID, event string, headers http.He
 	}
 
 	return delivery, repoRef, nil
+}
+
+func repositoryRefFromPayload(payload []byte) (*repositoryRef, error) {
+	var envelope envelope
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return nil, err
+	}
+	return extractRepository(envelope.Repository)
 }
 
 func extractRepository(repository *struct {
