@@ -1,8 +1,10 @@
 package app
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/config"
@@ -107,6 +109,27 @@ func OpenSyncDatabase(cfg config.Config, connector *database.Connector) (*databa
 	})
 }
 
+func prewarmServeRuntimePools(cfg config.Config, controlSQLDB, queueSQLDB, syncSQLDB *sql.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	for _, pool := range []struct {
+		name   string
+		sqlDB  *sql.DB
+		target int
+	}{
+		{name: "control", sqlDB: controlSQLDB, target: min(2, cfg.ControlDBMaxIdleConns)},
+		{name: "queue", sqlDB: queueSQLDB, target: min(2, cfg.QueueDBMaxIdleConns)},
+		{name: "sync", sqlDB: syncSQLDB, target: min(2, cfg.SyncDBMaxIdleConns)},
+	} {
+		if err := database.PrewarmPool(ctx, pool.sqlDB, pool.target); err != nil {
+			return fmt.Errorf("prewarm %s database pool: %w", pool.name, err)
+		}
+	}
+
+	return nil
+}
+
 func NewGitHubClient(cfg config.Config) *github.Client {
 	return github.NewClient(cfg.GitHubBaseURL, github.AuthConfig{
 		Token:          cfg.GitHubToken,
@@ -164,6 +187,13 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 	controlSQLDB := controlHandle.SQLDB
 	queueSQLDB := queueHandle.SQLDB
 	syncSQLDB := syncHandle.SQLDB
+	if err := prewarmServeRuntimePools(cfg, controlSQLDB, queueSQLDB, syncSQLDB); err != nil {
+		_ = syncSQLDB.Close()
+		_ = queueSQLDB.Close()
+		_ = controlSQLDB.Close()
+		_ = connector.Close()
+		return nil, err
+	}
 	webhookJobClient, dispatcher, err := webhookjobs.NewClient(queueSQLDB, webhookIngestor, webhookjobs.Config{
 		QueueConcurrency: cfg.WebhookJobQueueConcurrency,
 		JobTimeout:       cfg.WebhookJobTimeout,

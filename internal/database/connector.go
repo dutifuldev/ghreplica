@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"cloud.google.com/go/cloudsqlconn"
 	cloudsqlpgxv5 "cloud.google.com/go/cloudsqlconn/postgres/pgxv5"
@@ -117,8 +116,8 @@ func (c *Connector) Open(poolConfig PoolConfig) (*Handle, error) {
 	poolConfig = poolConfig.withDefaults()
 	sqlDB.SetMaxOpenConns(poolConfig.MaxOpenConns)
 	sqlDB.SetMaxIdleConns(poolConfig.MaxIdleConns)
-	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
-	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	sqlDB.SetConnMaxIdleTime(poolConfig.ConnMaxIdleTime)
+	sqlDB.SetConnMaxLifetime(poolConfig.ConnMaxLifetime)
 
 	return &Handle{
 		GormDB: db,
