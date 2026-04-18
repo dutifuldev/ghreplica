@@ -287,12 +287,7 @@ func Open(databaseURL string) (*gorm.DB, error) {
 }
 
 func OpenWithPoolConfig(databaseURL string, poolConfig PoolConfig) (*gorm.DB, error) {
-	gormConfig := &gorm.Config{
-		Logger: logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
-			LogLevel:                  logger.Warn,
-			IgnoreRecordNotFoundError: true,
-		}),
-	}
+	gormConfig := newGormConfig()
 
 	var (
 		db  *gorm.DB
@@ -300,9 +295,9 @@ func OpenWithPoolConfig(databaseURL string, poolConfig PoolConfig) (*gorm.DB, er
 	)
 
 	if IsSQLiteURL(databaseURL) {
-		db, err = gorm.Open(sqlite.Open(strings.TrimPrefix(databaseURL, "sqlite://")), gormConfig)
+		db, err = gorm.Open(sqliteDialector(databaseURL), gormConfig)
 	} else {
-		db, err = gorm.Open(postgres.Open(databaseURL), gormConfig)
+		db, err = gorm.Open(postgresDialector(databaseURL), gormConfig)
 	}
 	if err != nil {
 		return nil, err
@@ -325,6 +320,23 @@ func OpenWithPoolConfig(databaseURL string, poolConfig PoolConfig) (*gorm.DB, er
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
 	return db, nil
+}
+
+func newGormConfig() *gorm.Config {
+	return &gorm.Config{
+		Logger: logger.New(log.New(os.Stdout, "\r\n", log.LstdFlags), logger.Config{
+			LogLevel:                  logger.Warn,
+			IgnoreRecordNotFoundError: true,
+		}),
+	}
+}
+
+func sqliteDialector(databaseURL string) gorm.Dialector {
+	return sqlite.Open(strings.TrimPrefix(databaseURL, "sqlite://"))
+}
+
+func postgresDialector(databaseURL string) gorm.Dialector {
+	return postgres.Open(databaseURL)
 }
 
 func IsSQLiteURL(databaseURL string) bool {

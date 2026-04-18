@@ -2,6 +2,7 @@ package app
 
 import (
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/config"
@@ -16,16 +17,6 @@ import (
 	"github.com/riverqueue/river"
 	"gorm.io/gorm"
 )
-
-func closeDatabase(db *gorm.DB) {
-	if db == nil {
-		return
-	}
-	sqlDB, err := db.DB()
-	if err == nil {
-		_ = sqlDB.Close()
-	}
-}
 
 type ServeRuntime struct {
 	ControlDB         *gorm.DB
@@ -43,31 +34,74 @@ type ServeRuntime struct {
 	RefreshWorker     *refresh.Worker
 	ChangeSyncWorker  *githubsync.ChangeSyncWorker
 	Server            *httpapi.Server
+	connectorCleanup  func() error
 }
 
-func OpenDatabase(cfg config.Config) (*gorm.DB, error) {
-	return database.OpenWithPoolConfig(cfg.DatabaseURL, database.PoolConfig{
-		MaxOpenConns: cfg.DatabaseMaxOpenConns,
-		MaxIdleConns: cfg.DatabaseMaxIdleConns,
+type OpenedDatabase struct {
+	DB      *gorm.DB
+	SQLDB   *sql.DB
+	cleanup func() error
+}
+
+func (d *OpenedDatabase) Close() error {
+	if d == nil {
+		return nil
+	}
+	var errs []error
+	if d.SQLDB != nil {
+		errs = append(errs, d.SQLDB.Close())
+	}
+	if d.cleanup != nil {
+		errs = append(errs, d.cleanup())
+	}
+	return errors.Join(errs...)
+}
+
+func newDatabaseConnector(cfg config.Config) (*database.Connector, error) {
+	return database.NewConnector(database.ConnectConfig{
+		DatabaseURL:                    cfg.DatabaseURL,
+		Dialer:                         cfg.DatabaseDialer,
+		CloudSQLInstanceConnectionName: cfg.CloudSQLInstanceConnectionName,
+		CloudSQLUseIAMAuthN:            cfg.CloudSQLUseIAMAuthN,
 	})
 }
 
-func OpenControlDatabase(cfg config.Config) (*gorm.DB, error) {
-	return database.OpenWithPoolConfig(cfg.DatabaseURL, database.PoolConfig{
+func OpenDatabaseHandle(cfg config.Config) (*OpenedDatabase, error) {
+	connector, err := newDatabaseConnector(cfg)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := connector.Open(database.PoolConfig{
+		MaxOpenConns: cfg.DatabaseMaxOpenConns,
+		MaxIdleConns: cfg.DatabaseMaxIdleConns,
+	})
+	if err != nil {
+		_ = connector.Close()
+		return nil, err
+	}
+	return &OpenedDatabase{
+		DB:      handle.GormDB,
+		SQLDB:   handle.SQLDB,
+		cleanup: connector.Close,
+	}, nil
+}
+
+func OpenControlDatabase(cfg config.Config, connector *database.Connector) (*database.Handle, error) {
+	return connector.Open(database.PoolConfig{
 		MaxOpenConns: cfg.ControlDBMaxOpenConns,
 		MaxIdleConns: cfg.ControlDBMaxIdleConns,
 	})
 }
 
-func OpenQueueDatabase(cfg config.Config) (*gorm.DB, error) {
-	return database.OpenWithPoolConfig(cfg.DatabaseURL, database.PoolConfig{
+func OpenQueueDatabase(cfg config.Config, connector *database.Connector) (*database.Handle, error) {
+	return connector.Open(database.PoolConfig{
 		MaxOpenConns: cfg.QueueDBMaxOpenConns,
 		MaxIdleConns: cfg.QueueDBMaxIdleConns,
 	})
 }
 
-func OpenSyncDatabase(cfg config.Config) (*gorm.DB, error) {
-	return database.OpenWithPoolConfig(cfg.DatabaseURL, database.PoolConfig{
+func OpenSyncDatabase(cfg config.Config, connector *database.Connector) (*database.Handle, error) {
+	return connector.Open(database.PoolConfig{
 		MaxOpenConns: cfg.SyncDBMaxOpenConns,
 		MaxIdleConns: cfg.SyncDBMaxIdleConns,
 	})
@@ -91,21 +125,30 @@ func NewGitIndexService(db *gorm.DB, client *github.Client, cfg config.Config) *
 }
 
 func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
-	controlDB, err := OpenControlDatabase(cfg)
+	connector, err := newDatabaseConnector(cfg)
 	if err != nil {
 		return nil, err
 	}
-	queueDB, err := OpenQueueDatabase(cfg)
+	controlHandle, err := OpenControlDatabase(cfg, connector)
 	if err != nil {
-		closeDatabase(controlDB)
 		return nil, err
 	}
-	syncDB, err := OpenSyncDatabase(cfg)
+	queueHandle, err := OpenQueueDatabase(cfg, connector)
 	if err != nil {
-		closeDatabase(queueDB)
-		closeDatabase(controlDB)
+		_ = controlHandle.SQLDB.Close()
+		_ = connector.Close()
 		return nil, err
 	}
+	syncHandle, err := OpenSyncDatabase(cfg, connector)
+	if err != nil {
+		_ = queueHandle.SQLDB.Close()
+		_ = controlHandle.SQLDB.Close()
+		_ = connector.Close()
+		return nil, err
+	}
+	controlDB := controlHandle.GormDB
+	queueDB := queueHandle.GormDB
+	syncDB := syncHandle.GormDB
 
 	githubClient := NewGitHubClient(cfg)
 	syncGitIndex := NewGitIndexService(syncDB, githubClient, cfg)
@@ -117,29 +160,9 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 		Recorder:  syncGitHubSync,
 	})
 
-	controlSQLDB, err := controlDB.DB()
-	if err != nil {
-		closeDatabase(syncDB)
-		closeDatabase(queueDB)
-		closeDatabase(controlDB)
-		return nil, err
-	}
-	queueSQLDB, err := queueDB.DB()
-	if err != nil {
-		_ = controlSQLDB.Close()
-		closeDatabase(syncDB)
-		closeDatabase(queueDB)
-		closeDatabase(controlDB)
-		return nil, err
-	}
-	syncSQLDB, err := syncDB.DB()
-	if err != nil {
-		_ = queueSQLDB.Close()
-		_ = controlSQLDB.Close()
-		closeDatabase(syncDB)
-		closeDatabase(queueDB)
-		return nil, err
-	}
+	controlSQLDB := controlHandle.SQLDB
+	queueSQLDB := queueHandle.SQLDB
+	syncSQLDB := syncHandle.SQLDB
 	webhookJobClient, dispatcher, err := webhookjobs.NewClient(queueSQLDB, webhookIngestor, webhookjobs.Config{
 		QueueConcurrency: cfg.WebhookJobQueueConcurrency,
 		JobTimeout:       cfg.WebhookJobTimeout,
@@ -149,6 +172,7 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 		_ = syncSQLDB.Close()
 		_ = queueSQLDB.Close()
 		_ = controlSQLDB.Close()
+		_ = connector.Close()
 		return nil, err
 	}
 	webhookIngestor.SetDispatcher(dispatcher)
@@ -183,5 +207,26 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 			ChangeStatus:        controlGitHubSync,
 			StructuralSearch:    syncGitIndex,
 		}),
+		connectorCleanup: connector.Close,
 	}, nil
+}
+
+func (r *ServeRuntime) Close() error {
+	if r == nil {
+		return nil
+	}
+	var errs []error
+	if r.SyncSQLDB != nil {
+		errs = append(errs, r.SyncSQLDB.Close())
+	}
+	if r.QueueSQLDB != nil {
+		errs = append(errs, r.QueueSQLDB.Close())
+	}
+	if r.ControlSQLDB != nil {
+		errs = append(errs, r.ControlSQLDB.Close())
+	}
+	if r.connectorCleanup != nil {
+		errs = append(errs, r.connectorCleanup())
+	}
+	return errors.Join(errs...)
 }

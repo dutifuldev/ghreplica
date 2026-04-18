@@ -70,10 +70,12 @@ func runSync(cfg config.Config, args []string) error {
 		return err
 	}
 
-	db, err := app.OpenDatabase(cfg)
+	dbHandle, err := app.OpenDatabaseHandle(cfg)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = dbHandle.Close() }()
+	db := dbHandle.DB
 
 	client := app.NewGitHubClient(cfg)
 	service := githubsync.NewService(db, client, app.NewGitIndexService(db, client, cfg))
@@ -138,12 +140,13 @@ func runRefresh(cfg config.Config, args []string) error {
 		return err
 	}
 
-	db, err := app.OpenDatabase(cfg)
+	dbHandle, err := app.OpenDatabaseHandle(cfg)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = dbHandle.Close() }()
 
-	return refresh.NewScheduler(db).EnqueueRepositoryRefresh(context.Background(), refresh.Request{
+	return refresh.NewScheduler(dbHandle.DB).EnqueueRepositoryRefresh(context.Background(), refresh.Request{
 		Owner:      owner,
 		Name:       repo,
 		FullName:   owner + "/" + repo,
@@ -181,13 +184,14 @@ func runBackfill(cfg config.Config, args []string) error {
 		return err
 	}
 
-	db, err := app.OpenDatabase(cfg)
+	dbHandle, err := app.OpenDatabaseHandle(cfg)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = dbHandle.Close() }()
 
 	client := app.NewGitHubClient(cfg)
-	service := githubsync.NewService(db, client, app.NewGitIndexService(db, client, cfg))
+	service := githubsync.NewService(dbHandle.DB, client, app.NewGitIndexService(dbHandle.DB, client, cfg))
 	_, err = service.ConfigureRepoBackfill(context.Background(), owner, repo, *mode, *priority)
 	return err
 }
@@ -211,12 +215,13 @@ func runSearchIndex(cfg config.Config, args []string) error {
 		return err
 	}
 
-	db, err := app.OpenDatabase(cfg)
+	dbHandle, err := app.OpenDatabaseHandle(cfg)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = dbHandle.Close() }()
 
-	return searchindex.NewService(db).RebuildRepository(context.Background(), owner, repo)
+	return searchindex.NewService(dbHandle.DB).RebuildRepository(context.Background(), owner, repo)
 }
 
 func usageError() error {

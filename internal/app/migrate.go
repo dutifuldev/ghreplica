@@ -18,10 +18,12 @@ func RunMigrate(cfg config.Config, args []string) error {
 		return errors.New("usage: ghreplica migrate up")
 	}
 
-	db, err := OpenDatabase(cfg)
+	dbHandle, err := OpenDatabaseHandle(cfg)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = dbHandle.Close() }()
+	db := dbHandle.DB
 
 	if database.IsSQLiteURL(cfg.DatabaseURL) {
 		return database.AutoMigrate(db)
@@ -30,11 +32,7 @@ func RunMigrate(cfg config.Config, args []string) error {
 		return err
 	}
 
-	sqlDB, err := db.DB()
-	if err != nil {
-		return err
-	}
-	migrator, err := rivermigrate.New(riverdatabasesql.New(sqlDB), nil)
+	migrator, err := rivermigrate.New(riverdatabasesql.New(dbHandle.SQLDB), nil)
 	if err != nil {
 		return err
 	}

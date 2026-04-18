@@ -28,6 +28,11 @@ func RunServe(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err := runtime.Close(); err != nil {
+			slog.Error("serve runtime closed with error", "error", err)
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
