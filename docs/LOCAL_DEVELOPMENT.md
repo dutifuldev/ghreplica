@@ -94,15 +94,15 @@ make refresh REPO=dutifuldev/ghreplica
 
 ## Step 5: Enable Live GitHub Webhook Delivery
 
-The current webhook path is intentionally thin:
+The current webhook path now matches production more closely:
 
 - `POST /webhooks/github`
 - validates `X-Hub-Signature-256`
 - stores the raw delivery in `webhook_deliveries`
-- enqueues a repository refresh job
-- the in-process worker refreshes the repository through the existing GitHub poller
+- enqueues a background webhook-processing job
+- the background worker projects supported events into the canonical GitHub-shaped tables and enqueues targeted pull refresh work where needed
 
-This is enough for controlled local testing even though it is not yet a full event projector.
+This keeps the request path small while still exercising the real projection flow locally.
 
 Start a tunnel:
 
@@ -128,7 +128,7 @@ Recommended settings:
 - secret: the exact `GITHUB_WEBHOOK_SECRET` value
 - events: `ping`, `repository`, `issues`, `pull_request`
 
-Once configured, GitHub deliveries will hit the local API, enqueue refresh work, and the local worker will refresh that repository's mirrored state.
+Once configured, GitHub deliveries will hit the local API, be accepted quickly, and then be processed asynchronously into the local mirror.
 
 ## Recommended First Test Flow
 
@@ -145,8 +145,8 @@ Once configured, GitHub deliveries will hit the local API, enqueue refresh work,
 
 ## Limits Of The Current Local Webhook Path
 
-- webhook deliveries are persisted, but only a small amount of event-specific data is interpreted directly
-- repository refresh still depends on the GitHub REST API
+- local `serve` now expects PostgreSQL because webhook background jobs use River
+- deep pull-request refresh still depends on the existing targeted refresh and backfill machinery after webhook projection
 - GitHub App installation-token auth is supported, but app registration and install management still happen outside `ghreplica`
 
-For local development, that is the correct tradeoff: simple, reproducible, and close to the production data model without overbuilding the ingestion path.
+For local development, that is the correct tradeoff: the webhook boundary now behaves like production, while the heavier repo-sync policy remains the same custom worker logic.

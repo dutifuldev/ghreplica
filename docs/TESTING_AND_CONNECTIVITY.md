@@ -439,12 +439,12 @@ That remains the fastest path to:
 - API contract checks
 - usable initial development
 
-`ghreplica` now also has a thin repository webhook path for local development and controlled repos:
+`ghreplica` now also has a production-shaped webhook path for local development and controlled repos:
 
 - GitHub signs the delivery
 - `ghreplica` validates the signature
 - the raw delivery is stored in `webhook_deliveries`
-- a repository refresh job is queued
-- the in-process worker refreshes the affected repository through the existing poller
+- a background webhook-processing job is queued
+- the worker projects supported events into the canonical tables and enqueues follow-up refresh work when needed
 
-That is enough for freshness in local and fixture-repo testing. A GitHub App should still be added later for serious multi-repo adoption.
+That is enough for realistic local webhook testing without doing heavy projection work inline on the request path. A GitHub App should still be added later for serious multi-repo adoption.
