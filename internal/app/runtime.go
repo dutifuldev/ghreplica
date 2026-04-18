@@ -131,6 +131,7 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 	}
 	controlHandle, err := OpenControlDatabase(cfg, connector)
 	if err != nil {
+		_ = connector.Close()
 		return nil, err
 	}
 	queueHandle, err := OpenQueueDatabase(cfg, connector)
