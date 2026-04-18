@@ -1167,43 +1167,107 @@ func (s *Service) reconcileTargetedRefresh(ctx context.Context, repositoryID uin
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var inventory database.RepoOpenPullInventory
+		inventoryFound := true
 		if err := tx.Where("repository_id = ? AND generation = ? AND pull_request_number = ?", repositoryID, state.InventoryGenerationCurrent, number).
 			First(&inventory).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil
+				inventoryFound = false
+			} else {
+				return err
 			}
-			return err
 		}
 
-		snapshot, err := s.pullRequestSnapshotOptional(ctx, repositoryID, number)
-		if err != nil {
-			return err
+		var snapshot database.PullRequestChangeSnapshot
+		snapshotFound := true
+		if err := tx.Where("repository_id = ? AND pull_request_number = ?", repositoryID, number).
+			First(&snapshot).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				snapshotFound = false
+			} else {
+				return err
+			}
 		}
-		newFreshness := desiredFreshness(snapshot, pull)
-		nextCurrent, nextStale := adjustBackfillCounts(state.OpenPRCurrent, state.OpenPRStale, inventory.FreshnessState, newFreshness)
+		var snapshotPtr *database.PullRequestChangeSnapshot
+		if snapshotFound {
+			snapshotPtr = &snapshot
+		}
+		newFreshness := desiredFreshness(snapshotPtr, pull)
+
+		if snapshotFound && snapshot.IndexFreshness != newFreshness {
+			if err := tx.Model(&database.PullRequestChangeSnapshot{}).
+				Where("id = ?", snapshot.ID).
+				Updates(map[string]any{
+					"index_freshness": newFreshness,
+					"updated_at":      now,
+				}).Error; err != nil {
+				return err
+			}
+		}
+
+		if strings.TrimSpace(pull.State) != "open" {
+			if inventoryFound {
+				if err := tx.Where("id = ?", inventory.ID).Delete(&database.RepoOpenPullInventory{}).Error; err != nil {
+					return err
+				}
+			}
+			return s.updateRepoInventoryCountsTx(tx, *state, now, nil)
+		}
+
+		if inventoryFound {
+			if err := tx.Model(&database.RepoOpenPullInventory{}).
+				Where("id = ?", inventory.ID).
+				Updates(map[string]any{
+					"github_updated_at": pull.UpdatedAt.UTC(),
+					"head_sha":          strings.TrimSpace(pull.Head.SHA),
+					"base_sha":          strings.TrimSpace(pull.Base.SHA),
+					"base_ref":          strings.TrimSpace(pull.Base.Ref),
+					"state":             strings.TrimSpace(pull.State),
+					"draft":             pull.Draft,
+					"freshness_state":   newFreshness,
+					"last_seen_at":      now,
+					"updated_at":        now,
+				}).Error; err != nil {
+				return err
+			}
+		} else {
+			inventoryRow := inventoryFromPull(repositoryID, pull)
+			inventoryRow.Generation = state.InventoryGenerationCurrent
+			inventoryRow.FreshnessState = newFreshness
+			inventoryRow.LastSeenAt = now
+			if err := tx.Create(&inventoryRow).Error; err != nil {
+				return err
+			}
+		}
+		return s.updateRepoInventoryCountsTx(tx, *state, now, nil)
+	})
+}
+
+func (s *Service) markInventoryBaseRefStale(ctx context.Context, repositoryID uint, ref string) error {
+	baseRef := normalizeBackfillBaseRef(ref)
+	if repositoryID == 0 || baseRef == "" {
+		return nil
+	}
+
+	state, err := s.repoChangeStateOptional(ctx, repositoryID)
+	if err != nil {
+		return err
+	}
+	if state == nil || state.InventoryGenerationCurrent <= 0 {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&database.RepoOpenPullInventory{}).
-			Where("id = ?", inventory.ID).
+			Where("repository_id = ? AND generation = ? AND base_ref = ?", repositoryID, state.InventoryGenerationCurrent, baseRef).
+			Where("freshness_state <> ?", "stale_base_moved").
 			Updates(map[string]any{
-				"github_updated_at": pull.UpdatedAt.UTC(),
-				"head_sha":          strings.TrimSpace(pull.Head.SHA),
-				"base_sha":          strings.TrimSpace(pull.Base.SHA),
-				"base_ref":          strings.TrimSpace(pull.Base.Ref),
-				"state":             strings.TrimSpace(pull.State),
-				"draft":             pull.Draft,
-				"freshness_state":   newFreshness,
-				"last_seen_at":      now,
-				"updated_at":        now,
+				"freshness_state": "stale_base_moved",
+				"updated_at":      now,
 			}).Error; err != nil {
 			return err
 		}
-		return tx.Model(&database.RepoChangeSyncState{}).
-			Where("id = ?", state.ID).
-			Updates(map[string]any{
-				"open_pr_current": nextCurrent,
-				"open_pr_stale":   nextStale,
-				"updated_at":      now,
-				"last_error":      "",
-			}).Error
+		return s.updateRepoInventoryCountsTx(tx, *state, now, nil)
 	})
 }
 
@@ -1218,6 +1282,45 @@ func inventoryFromPull(repositoryID uint, pull gh.PullRequestResponse) database.
 		State:             strings.TrimSpace(pull.State),
 		Draft:             pull.Draft,
 	}
+}
+
+func (s *Service) updateRepoInventoryCountsTx(tx *gorm.DB, state database.RepoChangeSyncState, now time.Time, extraUpdates map[string]any) error {
+	var total int64
+	if err := tx.Model(&database.RepoOpenPullInventory{}).
+		Where("repository_id = ? AND generation = ?", state.RepositoryID, state.InventoryGenerationCurrent).
+		Count(&total).Error; err != nil {
+		return err
+	}
+
+	var current int64
+	if err := tx.Model(&database.RepoOpenPullInventory{}).
+		Where("repository_id = ? AND generation = ?", state.RepositoryID, state.InventoryGenerationCurrent).
+		Where("freshness_state = ?", "current").
+		Count(&current).Error; err != nil {
+		return err
+	}
+
+	var stale int64
+	if err := tx.Model(&database.RepoOpenPullInventory{}).
+		Where("repository_id = ? AND generation = ?", state.RepositoryID, state.InventoryGenerationCurrent).
+		Where("freshness_state <> '' AND freshness_state <> ?", "current").
+		Count(&stale).Error; err != nil {
+		return err
+	}
+
+	updates := map[string]any{
+		"open_pr_total":    int(total),
+		"open_pr_current":  int(current),
+		"open_pr_stale":    int(stale),
+		"updated_at":       now,
+		"last_error":       "",
+	}
+	for key, value := range extraUpdates {
+		updates[key] = value
+	}
+	return tx.Model(&database.RepoChangeSyncState{}).
+		Where("id = ?", state.ID).
+		Updates(updates).Error
 }
 
 func (s *Service) advanceBackfillProgress(ctx context.Context, stateID uint, inventory database.RepoOpenPullInventory, newFreshness string) error {

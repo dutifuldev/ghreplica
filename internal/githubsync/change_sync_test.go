@@ -339,6 +339,123 @@ func TestChangeSyncWorkerRefreshesInventoryWhenSnapshotIsOldEnough(t *testing.T)
 	require.False(t, status.InventoryNeedsRefresh)
 }
 
+func TestChangeSyncWorkerTargetedRefreshRestoresMissingInventoryRow(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "open_only", 5)
+	require.NoError(t, err)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, 1, server.ListPullCount())
+
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND generation = ? AND pull_request_number = ?", state.RepositoryID, 1, 101).
+		Delete(&database.RepoOpenPullInventory{}).Error)
+	require.NoError(t, db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
+		Where("id = ?", state.ID).
+		Updates(map[string]any{
+			"open_pr_total": 2,
+			"updated_at":    time.Now().UTC(),
+		}).Error)
+
+	seenAt := time.Now().UTC()
+	require.NoError(t, service.EnqueuePullRequestRefresh(ctx, state.RepositoryID, 101, seenAt))
+	require.NoError(t, service.MarkInventoryNeedsRefresh(ctx, state.RepositoryID, seenAt))
+
+	processed, err = worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, 1, server.ListPullCount())
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.Equal(t, 3, status.OpenPRTotal)
+
+	var restored database.RepoOpenPullInventory
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND generation = ? AND pull_request_number = ?", state.RepositoryID, status.InventoryGenerationCurrent, 101).
+		First(&restored).Error)
+	require.Equal(t, "current", restored.FreshnessState)
+}
+
+func TestMarkBaseRefStaleUpdatesCurrentInventoryGeneration(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	_, err = service.ConfigureRepoBackfill(ctx, "acme", "widgets", "open_only", 5)
+	require.NoError(t, err)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	processed, err = worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.Equal(t, 1, status.OpenPRCurrent)
+
+	require.NoError(t, service.MarkBaseRefStale(ctx, status.RepositoryID, "refs/heads/main"))
+
+	status, err = service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.Equal(t, 0, status.OpenPRCurrent)
+	require.Equal(t, 3, status.OpenPRStale)
+
+	var inventory database.RepoOpenPullInventory
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND generation = ? AND pull_request_number = ?", status.RepositoryID, status.InventoryGenerationCurrent, 101).
+		First(&inventory).Error)
+	require.Equal(t, "stale_base_moved", inventory.FreshnessState)
+}
+
 func TestChangeSyncWorkerPreservesNewInventoryRefreshRequestedDuringScan(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
