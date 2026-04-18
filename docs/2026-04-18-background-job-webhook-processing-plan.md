@@ -151,7 +151,7 @@ Recommended starting values:
 
 - queue name: `webhook_projection`
 - job kind: `github_webhook_process`
-- queue concurrency: `6`
+- queue concurrency: `3`
 - job timeout: `30s`
 - max attempts: `8`
 - retry backoff: exponential with jitter, capped at `30m`
@@ -177,18 +177,14 @@ This cutover should be paired with a less restrictive database pool.
 
 Recommended starting values:
 
-- max open connections: `20`
-- max idle connections: `10`
+- max open connections: `10`
+- max idle connections: `5`
 
 That is not a River-specific requirement.
 
 It is a practical adjustment based on the current production observation that the database pool is too small for hot webhook traffic plus background sync work.
 
-If the pool is not increased for the initial rollout, the webhook projection queue concurrency should be reduced to:
-
-- queue concurrency: `3`
-
-That is the safer fallback if database capacity is intentionally held low during the first rollout.
+That is the safer production starting point for the current Cloud SQL footprint. Increase it only after measuring real headroom under load.
 
 ## Processing Flow
 

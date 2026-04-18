@@ -17,7 +17,7 @@ const (
 	QueueWebhookProjection      = "webhook_projection"
 	JobKindGitHubWebhookProcess = "github_webhook_process"
 
-	defaultQueueConcurrency = 6
+	defaultQueueConcurrency = 3
 	defaultJobTimeout       = 30 * time.Second
 	defaultMaxAttempts      = 8
 	defaultUniquePeriod     = 7 * 24 * time.Hour

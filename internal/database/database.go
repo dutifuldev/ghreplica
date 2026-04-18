@@ -283,11 +283,12 @@ func Open(databaseURL string) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	// Production now runs webhook jobs and sync workers concurrently, so keep the
-	// pool large enough to avoid turning moderate background concurrency into
-	// immediate connection contention.
-	sqlDB.SetMaxOpenConns(20)
-	sqlDB.SetMaxIdleConns(10)
+	// Production now runs webhook jobs and sync workers concurrently, but the live
+	// Cloud SQL instance still needs headroom for other services and reserved
+	// connections. Keep the pool moderate so background workers do not starve
+	// themselves or other apps by exhausting server-side slots.
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(5)
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
