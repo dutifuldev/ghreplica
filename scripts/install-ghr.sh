@@ -97,6 +97,29 @@ install_binary() {
   exit 1
 }
 
+print_success() {
+  local dest="$1"
+
+  echo
+  echo "Installed:"
+  echo "  Binary: ${BINARY}"
+  echo "  Version: ${VERSION}"
+  echo "  Path: ${dest}"
+  echo
+
+  case ":${PATH}:" in
+    *:"${BIN_DIR}":*)
+      echo "Next:"
+      echo "  Run: ${BINARY} --help"
+      ;;
+    *)
+      echo "Next:"
+      echo "  Add ${BIN_DIR} to your PATH."
+      echo "  Then run: ${BINARY} --help"
+      ;;
+  esac
+}
+
 VERSION="${GHR_VERSION:-}"
 INSTALL_DIR="${GHR_INSTALL_DIR:-}"
 
@@ -154,12 +177,4 @@ curl -fsSL -o "${TMPDIR}/${ASSET}" "${URL}"
 tar -xzf "${TMPDIR}/${ASSET}" -C "${TMPDIR}"
 install_binary "${TMPDIR}/${BINARY}" "${BIN_DIR}"
 
-echo "installed ${BINARY} to ${BIN_DIR}/${BINARY}"
-
-case ":${PATH}:" in
-  *:"${BIN_DIR}":*)
-    ;;
-  *)
-    echo "note: ${BIN_DIR} is not on your PATH"
-    ;;
-esac
+print_success "${BIN_DIR}/${BINARY}"
