@@ -118,6 +118,78 @@ func printRepoStatus(out io.Writer, status MirrorStatusResponse) {
 	_ = tw.Flush()
 }
 
+func printMirrorRepositoryList(out io.Writer, repos []MirrorRepositoryResponse) {
+	if len(repos) == 0 {
+		fmt.Fprintln(out, "no mirrored repositories found")
+		return
+	}
+
+	tw := newTabWriter(out)
+	fmt.Fprintln(tw, "FULL NAME\tENABLED\tSYNC MODE\tPULLS\tLAST WEBHOOK")
+	for _, repo := range repos {
+		fmt.Fprintf(tw, "%s\t%t\t%s\t%d\t%s\n",
+			repo.FullName,
+			repo.Enabled,
+			repo.SyncMode,
+			repo.Coverage.Pulls,
+			humanTimePtr(repo.Timestamps.LastWebhookAt),
+		)
+	}
+	_ = tw.Flush()
+}
+
+func printMirrorRepository(out io.Writer, repo MirrorRepositoryResponse) {
+	fmt.Fprintf(out, "%s\n\n", repo.FullName)
+
+	tw := newTabWriter(out)
+	if repo.GitHubID != nil {
+		fmt.Fprintf(tw, "GitHub ID:\t%d\n", *repo.GitHubID)
+	}
+	if strings.TrimSpace(repo.NodeID) != "" {
+		fmt.Fprintf(tw, "Node ID:\t%s\n", repo.NodeID)
+	}
+	if repo.Fork != nil {
+		fmt.Fprintf(tw, "Fork:\t%t\n", *repo.Fork)
+	}
+	fmt.Fprintf(tw, "Enabled:\t%t\n", repo.Enabled)
+	fmt.Fprintf(tw, "Sync mode:\t%s\n", repo.SyncMode)
+	fmt.Fprintf(tw, "Issues completeness:\t%s\n", repo.Completeness.Issues)
+	fmt.Fprintf(tw, "Pulls completeness:\t%s\n", repo.Completeness.Pulls)
+	fmt.Fprintf(tw, "Comments completeness:\t%s\n", repo.Completeness.Comments)
+	fmt.Fprintf(tw, "Reviews completeness:\t%s\n", repo.Completeness.Reviews)
+	fmt.Fprintf(tw, "Issue count:\t%d\n", repo.Coverage.Issues)
+	fmt.Fprintf(tw, "Pull count:\t%d\n", repo.Coverage.Pulls)
+	fmt.Fprintf(tw, "Issue comments:\t%d\n", repo.Coverage.IssueComments)
+	fmt.Fprintf(tw, "PR reviews:\t%d\n", repo.Coverage.PullRequestReviews)
+	fmt.Fprintf(tw, "PR review comments:\t%d\n", repo.Coverage.PullRequestReviewComments)
+	fmt.Fprintf(tw, "Last bootstrap:\t%s\n", humanTimePtr(repo.Timestamps.LastBootstrapAt))
+	fmt.Fprintf(tw, "Last crawl:\t%s\n", humanTimePtr(repo.Timestamps.LastCrawlAt))
+	fmt.Fprintf(tw, "Last webhook:\t%s\n", humanTimePtr(repo.Timestamps.LastWebhookAt))
+	_ = tw.Flush()
+}
+
+func printMirrorRepositoryStatus(out io.Writer, status MirrorRepositoryStatusResponse) {
+	fmt.Fprintf(out, "%s mirror status\n\n", status.Repository.FullName)
+
+	tw := newTabWriter(out)
+	fmt.Fprintf(tw, "State:\t%s\n", status.Sync.State)
+	fmt.Fprintf(tw, "Last error:\t%s\n", coalesce(status.Sync.LastError, "-"))
+	fmt.Fprintf(tw, "Open PR total:\t%d\n", status.PullRequestChanges.Total)
+	fmt.Fprintf(tw, "Open PR current:\t%d\n", status.PullRequestChanges.Current)
+	fmt.Fprintf(tw, "Open PR stale:\t%d\n", status.PullRequestChanges.Stale)
+	fmt.Fprintf(tw, "Open PR missing:\t%d\n", status.PullRequestChanges.Missing)
+	fmt.Fprintf(tw, "Inventory scan running:\t%t\n", status.Activity.InventoryScanRunning)
+	fmt.Fprintf(tw, "Backfill running:\t%t\n", status.Activity.BackfillRunning)
+	fmt.Fprintf(tw, "Targeted refresh pending:\t%t\n", status.Activity.TargetedRefreshPending)
+	fmt.Fprintf(tw, "Targeted refresh running:\t%t\n", status.Activity.TargetedRefreshRunning)
+	fmt.Fprintf(tw, "Inventory refresh requested:\t%t\n", status.Activity.InventoryRefreshRequested)
+	fmt.Fprintf(tw, "Last inventory scan started:\t%s\n", humanTimePtr(status.Timestamps.LastInventoryScanStartedAt))
+	fmt.Fprintf(tw, "Last inventory scan finished:\t%s\n", humanTimePtr(status.Timestamps.LastInventoryScanFinishedAt))
+	fmt.Fprintf(tw, "Last backfill started:\t%s\n", humanTimePtr(status.Timestamps.LastBackfillStartedAt))
+	fmt.Fprintf(tw, "Last backfill finished:\t%s\n", humanTimePtr(status.Timestamps.LastBackfillFinishedAt))
+	_ = tw.Flush()
+}
+
 func printIssueList(out io.Writer, issues []gh.IssueResponse) {
 	if len(issues) == 0 {
 		fmt.Fprintln(out, "no issues found")

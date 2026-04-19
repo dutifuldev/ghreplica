@@ -37,6 +37,29 @@ func TestRepoStatusHumanOutput(t *testing.T) {
 	require.Contains(t, stdout, "PR review comments:")
 }
 
+func TestMirrorCommands(t *testing.T) {
+	server := newTestServer(t)
+	cmd := NewRootCmd()
+
+	stdout, _, err := executeCommand(cmd, "--base-url", server.URL, "mirror", "list")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "FULL NAME")
+	require.Contains(t, stdout, "acme/widgets")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "mirror", "view")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets")
+	require.Contains(t, stdout, "Issues completeness:")
+
+	cmd = NewRootCmd()
+	stdout, _, err = executeCommand(cmd, "--base-url", server.URL, "--repo", "acme/widgets", "mirror", "status")
+	require.NoError(t, err)
+	require.Contains(t, stdout, "acme/widgets mirror status")
+	require.Contains(t, stdout, "Open PR total:")
+	require.Contains(t, stdout, "Inventory refresh requested:")
+}
+
 func TestIssueListHumanOutput(t *testing.T) {
 	server := newTestServer(t)
 	cmd := NewRootCmd()
@@ -456,6 +479,50 @@ func newTestServer(t *testing.T) *httptest.Server {
 			PullRequestReviewComments: 0,
 		},
 	}
+	mirrorRepo := MirrorRepositoryResponse{
+		Owner:    "acme",
+		Name:     "widgets",
+		FullName: "acme/widgets",
+		GitHubID: int64Ptr(101),
+		NodeID:   "R_kgDORepo",
+		Fork:     boolPtr(false),
+		Enabled:  true,
+		SyncMode: "webhook_only",
+		Completeness: MirrorCompletenessResponse{
+			Issues:   "sparse",
+			Pulls:    "sparse",
+			Comments: "sparse",
+			Reviews:  "sparse",
+		},
+		Coverage: MirrorCountsResponse{
+			Issues:                    1,
+			Pulls:                     1,
+			IssueComments:             1,
+			PullRequestReviews:        0,
+			PullRequestReviewComments: 0,
+		},
+	}
+	mirrorStatus := MirrorRepositoryStatusResponse{
+		Repository: MirrorRepositoryRefResponse{
+			Owner:    "acme",
+			Name:     "widgets",
+			FullName: "acme/widgets",
+		},
+		Sync: MirrorSyncResponse{
+			State: "running",
+		},
+		PullRequestChanges: MirrorPullRequestChangesResponse{
+			Total:   3,
+			Current: 1,
+			Stale:   1,
+			Missing: 1,
+		},
+		Activity: MirrorActivityResponse{
+			BackfillRunning:           true,
+			TargetedRefreshPending:    true,
+			InventoryRefreshRequested: true,
+		},
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/github/repos/acme/widgets", func(w http.ResponseWriter, r *http.Request) {
@@ -463,6 +530,15 @@ func newTestServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/v1/changes/repos/acme/widgets/mirror-status", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, status)
+	})
+	mux.HandleFunc("/v1/mirror/repos", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, []MirrorRepositoryResponse{mirrorRepo})
+	})
+	mux.HandleFunc("/v1/mirror/repos/acme/widgets", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, mirrorRepo)
+	})
+	mux.HandleFunc("/v1/mirror/repos/acme/widgets/status", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, mirrorStatus)
 	})
 	mux.HandleFunc("/v1/github/repos/acme/widgets/issues", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, issues)
@@ -620,6 +696,29 @@ func newOpenClawTestServer(t *testing.T) *httptest.Server {
 			PullRequestReviewComments: 2,
 		},
 	}
+	mirrorRepo := MirrorRepositoryResponse{
+		Owner:    "openclaw",
+		Name:     "openclaw",
+		FullName: "openclaw/openclaw",
+		GitHubID: int64Ptr(1213778837),
+		NodeID:   "R_kgDOOpenClaw",
+		Fork:     boolPtr(false),
+		Enabled:  true,
+		SyncMode: "webhook_only",
+		Completeness: MirrorCompletenessResponse{
+			Issues:   "sparse",
+			Pulls:    "sparse",
+			Comments: "sparse",
+			Reviews:  "sparse",
+		},
+		Coverage: MirrorCountsResponse{
+			Issues:                    2,
+			Pulls:                     1,
+			IssueComments:             2,
+			PullRequestReviews:        1,
+			PullRequestReviewComments: 2,
+		},
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/github/repos/openclaw/openclaw", func(w http.ResponseWriter, r *http.Request) {
@@ -627,6 +726,9 @@ func newOpenClawTestServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/v1/changes/repos/openclaw/openclaw/mirror-status", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, status)
+	})
+	mux.HandleFunc("/v1/mirror/repos/openclaw/openclaw", func(w http.ResponseWriter, r *http.Request) {
+		writeResponseJSON(t, w, mirrorRepo)
 	})
 	mux.HandleFunc("/v1/github/repos/openclaw/openclaw/issues", func(w http.ResponseWriter, r *http.Request) {
 		writeResponseJSON(t, w, []gh.IssueResponse{issue})
@@ -761,6 +863,8 @@ func pullFixture() gh.PullRequestResponse {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+func int64Ptr(v int64) *int64 { return &v }
 
 func pullRequestChangeSnapshotFixture() PullRequestChangeSnapshotResponse {
 	now := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)

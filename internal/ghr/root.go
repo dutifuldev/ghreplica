@@ -30,6 +30,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVarP(&opts.Repo, "repo", "R", "", "Select another repository using the OWNER/REPO format")
 
 	cmd.AddCommand(newRepoCmd(opts))
+	cmd.AddCommand(newMirrorCmd(opts))
 	cmd.AddCommand(newIssueCmd(opts))
 	cmd.AddCommand(newPRCmd(opts))
 	cmd.AddCommand(newChangesCmd(opts))
@@ -123,14 +124,116 @@ func newRepoStatusCmd(opts *RootOptions) *cobra.Command {
 				return err
 			}
 			client := clientFor(opts)
-			status, err := client.GetMirrorStatus(context.Background(), repo)
+			status, err := client.GetMirrorRepository(context.Background(), repo)
 			if err != nil {
 				return err
 			}
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
 			}
-			printRepoStatus(cmd.OutOrStdout(), status)
+			printMirrorRepository(cmd.OutOrStdout(), status)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
+	return cmd
+}
+
+func newMirrorCmd(opts *RootOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "mirror",
+		Short: "View mirror metadata and sync status",
+	}
+	cmd.AddCommand(newMirrorListCmd(opts))
+	cmd.AddCommand(newMirrorViewCmd(opts))
+	cmd.AddCommand(newMirrorStatusCmd(opts))
+	return cmd
+}
+
+func newMirrorListCmd(opts *RootOptions) *cobra.Command {
+	var (
+		page       int
+		perPage    int
+		jsonFields string
+	)
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List mirrored repositories",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client := clientFor(opts)
+			repos, err := client.ListMirrorRepositories(context.Background(), page, perPage)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(jsonFields) != "" {
+				return writeJSON(cmd.OutOrStdout(), repos, jsonFields)
+			}
+			printMirrorRepositoryList(cmd.OutOrStdout(), repos)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&page, "page", 1, "Page number")
+	cmd.Flags().IntVarP(&perPage, "per-page", "L", 30, "Page size")
+	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
+	return cmd
+}
+
+func newMirrorViewCmd(opts *RootOptions) *cobra.Command {
+	var jsonFields string
+	cmd := &cobra.Command{
+		Use:   "view [OWNER/REPO]",
+		Short: "View stable mirror metadata for a repository",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repoArg := ""
+			if len(args) == 1 {
+				repoArg = args[0]
+			}
+			repo, err := resolveRepo(repoArg, opts)
+			if err != nil {
+				return err
+			}
+			client := clientFor(opts)
+			status, err := client.GetMirrorRepository(context.Background(), repo)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(jsonFields) != "" {
+				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
+			}
+			printMirrorRepository(cmd.OutOrStdout(), status)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
+	return cmd
+}
+
+func newMirrorStatusCmd(opts *RootOptions) *cobra.Command {
+	var jsonFields string
+	cmd := &cobra.Command{
+		Use:   "status [OWNER/REPO]",
+		Short: "View live mirror sync status for a repository",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repoArg := ""
+			if len(args) == 1 {
+				repoArg = args[0]
+			}
+			repo, err := resolveRepo(repoArg, opts)
+			if err != nil {
+				return err
+			}
+			client := clientFor(opts)
+			status, err := client.GetMirrorRepositoryStatus(context.Background(), repo)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(jsonFields) != "" {
+				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
+			}
+			printMirrorRepositoryStatus(cmd.OutOrStdout(), status)
 			return nil
 		},
 	}

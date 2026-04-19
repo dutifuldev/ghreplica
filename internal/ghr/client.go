@@ -48,6 +48,74 @@ type MirrorStatusResponse struct {
 	Counts                   MirrorCountsResponse   `json:"counts"`
 }
 
+type MirrorCompletenessResponse struct {
+	Issues   string `json:"issues"`
+	Pulls    string `json:"pulls"`
+	Comments string `json:"comments"`
+	Reviews  string `json:"reviews"`
+}
+
+type MirrorMetadataTimestampsResponse struct {
+	LastWebhookAt   *time.Time `json:"last_webhook_at"`
+	LastBootstrapAt *time.Time `json:"last_bootstrap_at"`
+	LastCrawlAt     *time.Time `json:"last_crawl_at"`
+}
+
+type MirrorRepositoryResponse struct {
+	Owner        string                           `json:"owner"`
+	Name         string                           `json:"name"`
+	FullName     string                           `json:"full_name"`
+	GitHubID     *int64                           `json:"github_id"`
+	NodeID       string                           `json:"node_id"`
+	Fork         *bool                            `json:"fork"`
+	Enabled      bool                             `json:"enabled"`
+	SyncMode     string                           `json:"sync_mode"`
+	Completeness MirrorCompletenessResponse       `json:"completeness"`
+	Coverage     MirrorCountsResponse             `json:"coverage"`
+	Timestamps   MirrorMetadataTimestampsResponse `json:"timestamps"`
+}
+
+type MirrorRepositoryRefResponse struct {
+	Owner    string `json:"owner"`
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+}
+
+type MirrorSyncResponse struct {
+	State     string `json:"state"`
+	LastError string `json:"last_error"`
+}
+
+type MirrorPullRequestChangesResponse struct {
+	Total   int `json:"total"`
+	Current int `json:"current"`
+	Stale   int `json:"stale"`
+	Missing int `json:"missing"`
+}
+
+type MirrorActivityResponse struct {
+	InventoryScanRunning      bool `json:"inventory_scan_running"`
+	BackfillRunning           bool `json:"backfill_running"`
+	TargetedRefreshPending    bool `json:"targeted_refresh_pending"`
+	TargetedRefreshRunning    bool `json:"targeted_refresh_running"`
+	InventoryRefreshRequested bool `json:"inventory_refresh_requested"`
+}
+
+type MirrorStatusTimestampsResponse struct {
+	LastInventoryScanStartedAt  *time.Time `json:"last_inventory_scan_started_at"`
+	LastInventoryScanFinishedAt *time.Time `json:"last_inventory_scan_finished_at"`
+	LastBackfillStartedAt       *time.Time `json:"last_backfill_started_at"`
+	LastBackfillFinishedAt      *time.Time `json:"last_backfill_finished_at"`
+}
+
+type MirrorRepositoryStatusResponse struct {
+	Repository         MirrorRepositoryRefResponse      `json:"repository"`
+	Sync               MirrorSyncResponse               `json:"sync"`
+	PullRequestChanges MirrorPullRequestChangesResponse `json:"pull_request_changes"`
+	Activity           MirrorActivityResponse           `json:"activity"`
+	Timestamps         MirrorStatusTimestampsResponse   `json:"timestamps"`
+}
+
 func NewClient(baseURL string) *Client {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
@@ -70,6 +138,36 @@ func (c *Client) GetRepository(ctx context.Context, repo string) (gh.RepositoryR
 func (c *Client) GetMirrorStatus(ctx context.Context, repo string) (MirrorStatusResponse, error) {
 	var out MirrorStatusResponse
 	err := c.getJSON(ctx, "/v1/changes/repos/"+repo+"/mirror-status", &out)
+	return out, err
+}
+
+func (c *Client) ListMirrorRepositories(ctx context.Context, page, perPage int) ([]MirrorRepositoryResponse, error) {
+	path := "/v1/mirror/repos"
+	q := url.Values{}
+	if page > 0 {
+		q.Set("page", fmt.Sprintf("%d", page))
+	}
+	if perPage > 0 {
+		q.Set("per_page", fmt.Sprintf("%d", perPage))
+	}
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+
+	var out []MirrorRepositoryResponse
+	err := c.getJSON(ctx, path, &out)
+	return out, err
+}
+
+func (c *Client) GetMirrorRepository(ctx context.Context, repo string) (MirrorRepositoryResponse, error) {
+	var out MirrorRepositoryResponse
+	err := c.getJSON(ctx, "/v1/mirror/repos/"+repo, &out)
+	return out, err
+}
+
+func (c *Client) GetMirrorRepositoryStatus(ctx context.Context, repo string) (MirrorRepositoryStatusResponse, error) {
+	var out MirrorRepositoryStatusResponse
+	err := c.getJSON(ctx, "/v1/mirror/repos/"+repo+"/status", &out)
 	return out, err
 }
 
