@@ -123,7 +123,8 @@ These are the derived capabilities layered on top of the mirror and local Git in
 From the CLI:
 
 ```bash
-ghr repo status -R openclaw/openclaw
+ghr mirror view -R openclaw/openclaw
+ghr mirror status -R openclaw/openclaw
 ghr changes pr files -R openclaw/openclaw 59883
 ghr search related-prs -R openclaw/openclaw 59883 --mode path_overlap
 ghr search mentions -R openclaw/openclaw --query "acp" --mode fts --scope pull_requests --state all
@@ -133,7 +134,8 @@ ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --patt
 From the API:
 
 ```bash
-curl -fsS https://ghreplica.dutiful.dev/v1/changes/repos/openclaw/openclaw/mirror-status | jq
+curl -fsS https://ghreplica.dutiful.dev/v1/mirror/repos/openclaw/openclaw | jq
+curl -fsS https://ghreplica.dutiful.dev/v1/mirror/repos/openclaw/openclaw/status | jq
 curl -fsS https://ghreplica.dutiful.dev/v1/changes/repos/openclaw/openclaw/pulls/59883/files | jq
 curl -fsS 'https://ghreplica.dutiful.dev/v1/search/repos/openclaw/openclaw/pulls/59883/related?mode=path_overlap&state=all' | jq
 curl -fsS https://ghreplica.dutiful.dev/v1/search/repos/openclaw/openclaw/mentions \
@@ -206,7 +208,7 @@ If you want to sanity-check a local instance quickly, these endpoints are usuall
 
 - `GET http://127.0.0.1:8080/healthz`
 - `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica`
-- `GET http://127.0.0.1:8080/v1/changes/repos/dutifuldev/ghreplica/mirror-status`
+- `GET http://127.0.0.1:8080/v1/mirror/repos/dutifuldev/ghreplica`
 
 ## Self-Hosting Notes
 

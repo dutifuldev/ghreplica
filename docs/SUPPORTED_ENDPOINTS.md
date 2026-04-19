@@ -80,7 +80,6 @@ Current batch object-read rules:
 
 ## Change Endpoints
 
-- `GET /v1/changes/repos/{owner}/{repo}/mirror-status`
 - `GET /v1/changes/repos/{owner}/{repo}/status`
 - `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}`
 - `GET /v1/changes/repos/{owner}/{repo}/pulls/{number}/status`
@@ -88,6 +87,12 @@ Current batch object-read rules:
 - `GET /v1/changes/repos/{owner}/{repo}/commits/{sha}`
 - `GET /v1/changes/repos/{owner}/{repo}/commits/{sha}/files`
 - `GET /v1/changes/repos/{owner}/{repo}/compare/{base}...{head}`
+
+## Mirror Metadata Endpoints
+
+- `GET /v1/mirror/repos`
+- `GET /v1/mirror/repos/{owner}/{repo}`
+- `GET /v1/mirror/repos/{owner}/{repo}/status`
 
 Repository change-status response features:
 
@@ -204,7 +209,7 @@ See [CLI](./CLI.md) for the command mapping and examples.
 
 - compatibility is strongest for the repository, issue, and pull endpoints listed in [Compatibility Strategy](./COMPATIBILITY_STRATEGY.md)
 - comments and reviews are mirrored and served, but do not yet have the same breadth of contract coverage as the core read endpoints
-- `GET /v1/changes/repos/{owner}/{repo}/mirror-status` is intentionally `ghreplica`-specific and exposes mirror policy, completeness, and local counts
+- `GET /v1/mirror/repos/{owner}/{repo}` and `GET /v1/mirror/repos/{owner}/{repo}/status` are intentionally `ghreplica`-specific and expose mirror metadata and live sync state
 - the versioned path structure for new work is `/v1/github/...`, `/v1/changes/...`, and `/v1/search/...`
 - unsupported endpoints should be treated as out of scope until explicitly added here
 - text-search endpoints stay under `/v1/search/...`, not `/v1/github/...`
