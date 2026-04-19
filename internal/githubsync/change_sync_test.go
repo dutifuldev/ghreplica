@@ -215,12 +215,16 @@ func TestChangeSyncWorkerProcessesTargetedRefreshWithoutRescanningInventory(t *t
 
 	require.NoError(t, service.EnqueuePullRequestRefresh(ctx, state.RepositoryID, 101, time.Now().UTC()))
 
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.True(t, status.TargetedRefreshPending)
+
 	processed, err = worker.RunOnce(ctx)
 	require.NoError(t, err)
 	require.True(t, processed)
 	require.Equal(t, 1, server.ListPullCount())
 
-	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	status, err = service.GetRepoChangeStatus(ctx, "acme", "widgets")
 	require.NoError(t, err)
 	require.False(t, status.TargetedRefreshPending)
 
@@ -267,12 +271,16 @@ func TestChangeSyncWorkerDefersInventoryRefreshWhenSnapshotIsStillUsable(t *test
 	require.NoError(t, service.EnqueuePullRequestRefresh(ctx, state.RepositoryID, 101, seenAt))
 	require.NoError(t, service.MarkInventoryNeedsRefresh(ctx, state.RepositoryID, seenAt))
 
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.True(t, status.TargetedRefreshPending)
+
 	processed, err = worker.RunOnce(ctx)
 	require.NoError(t, err)
 	require.True(t, processed)
 	require.Equal(t, 1, server.ListPullCount())
 
-	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	status, err = service.GetRepoChangeStatus(ctx, "acme", "widgets")
 	require.NoError(t, err)
 	require.True(t, status.InventoryNeedsRefresh)
 	require.False(t, status.TargetedRefreshPending)

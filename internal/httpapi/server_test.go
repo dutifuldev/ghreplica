@@ -34,7 +34,7 @@ func (s stubChangeStatusProvider) GetPullRequestChangeStatus(ctx context.Context
 	return gitindex.PullRequestStatus{}, gorm.ErrRecordNotFound
 }
 
-func TestReadinessIgnoresHistoricalFailedJobsAndSupersededJobs(t *testing.T) {
+func TestReadinessReturnsCheapDatabaseHealth(t *testing.T) {
 	ctx := context.Background()
 
 	db, err := database.Open(testDatabaseURL(t))
@@ -74,9 +74,7 @@ func TestReadinessIgnoresHistoricalFailedJobsAndSupersededJobs(t *testing.T) {
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
 	require.Equal(t, "ready", payload["status"])
-	require.EqualValues(t, 0, payload["recent_failed_jobs"])
-	require.EqualValues(t, 1, payload["failed_jobs_total"])
-	require.EqualValues(t, 1, payload["superseded_jobs"])
+	require.Equal(t, "ok", payload["database"])
 }
 
 func TestMirrorStatusEndpoint(t *testing.T) {
