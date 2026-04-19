@@ -40,15 +40,11 @@ func (s *Server) handleListMirrorRepositories(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	counts, err := s.loadMirrorCountsByRepositoryID(c.Request().Context(), mapsKeys(repositories))
-	if err != nil {
-		return err
-	}
 
 	response := make([]mirrorRepositoryResponse, 0, len(tracked))
 	for _, item := range tracked {
 		repositoryID := trackedRepositoryRepositoryID(item)
-		response = append(response, newMirrorRepositoryResponse(item, repositories[repositoryID], counts[repositoryID]))
+		response = append(response, newMirrorRepositoryResponse(item, repositories[repositoryID]))
 	}
 	return c.JSON(http.StatusOK, response)
 }
@@ -62,15 +58,7 @@ func (s *Server) handleGetMirrorRepository(c echo.Context) error {
 		return err
 	}
 
-	var counts mirrorCountsResponse
-	if repo != nil {
-		counts, err = s.loadMirrorCounts(c.Request().Context(), repo.ID)
-		if err != nil {
-			return err
-		}
-	}
-
-	return c.JSON(http.StatusOK, newMirrorRepositoryResponse(*tracked, repo, counts))
+	return c.JSON(http.StatusOK, newMirrorRepositoryResponse(*tracked, repo))
 }
 
 func (s *Server) handleGetMirrorRepositoryStatus(c echo.Context) error {
@@ -286,7 +274,7 @@ func (s *Server) loadMirrorCountsByRepositoryID(ctx context.Context, repositoryI
 	return out, nil
 }
 
-func newMirrorRepositoryResponse(tracked database.TrackedRepository, repo *database.Repository, counts mirrorCountsResponse) mirrorRepositoryResponse {
+func newMirrorRepositoryResponse(tracked database.TrackedRepository, repo *database.Repository) mirrorRepositoryResponse {
 	response := mirrorRepositoryResponse{
 		Owner:    tracked.Owner,
 		Name:     tracked.Name,
@@ -299,7 +287,6 @@ func newMirrorRepositoryResponse(tracked database.TrackedRepository, repo *datab
 			Comments: tracked.CommentsCompleteness,
 			Reviews:  tracked.ReviewsCompleteness,
 		},
-		Coverage: counts,
 		Timestamps: mirrorMetadataTimestampsResponse{
 			LastWebhookAt:   utcTimePtr(tracked.LastWebhookAt),
 			LastBootstrapAt: utcTimePtr(tracked.LastBootstrapAt),

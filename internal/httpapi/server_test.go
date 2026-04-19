@@ -309,7 +309,6 @@ func TestMirrorRepositoryEndpoints(t *testing.T) {
 	require.NotContains(t, listed[0], "repository_id")
 	require.NotContains(t, listed[0], "tracked_repository_present")
 	require.Contains(t, listed[0], "completeness")
-	require.Contains(t, listed[0], "coverage")
 	require.Contains(t, listed[0], "timestamps")
 
 	req = httptest.NewRequest(http.MethodGet, "/v1/mirror/repos/acme/widgets", nil)

@@ -71,7 +71,6 @@ type MirrorRepositoryResponse struct {
 	Enabled      bool                             `json:"enabled"`
 	SyncMode     string                           `json:"sync_mode"`
 	Completeness MirrorCompletenessResponse       `json:"completeness"`
-	Coverage     MirrorCountsResponse             `json:"coverage"`
 	Timestamps   MirrorMetadataTimestampsResponse `json:"timestamps"`
 }
 
