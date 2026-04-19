@@ -21,6 +21,7 @@ It is not for changing sync behavior.
 - Keep these endpoints read-only.
 - Expose stable mirror facts separately from live sync status.
 - Do not leak raw internal scheduler details unless they are intentionally part of the product contract.
+- Do not put expensive live aggregate counts on the stable metadata path unless they are backed by durable cached state.
 
 ## Initial Endpoints
 
@@ -54,7 +55,6 @@ The response should include stable facts only, for example:
 - `enabled`
 - `sync_mode`
 - grouped completeness fields
-- grouped coverage counts
 - grouped metadata timestamps
 
 This endpoint should not include noisy live scheduler fields like active leases.
@@ -77,7 +77,6 @@ It should include the same stable fields as the list view, with room for a littl
 - whether the repo is enabled here
 - sync mode
 - completeness state
-- coverage counts
 - metadata timestamps
 
 ### `GET /v1/mirror/repos/:owner/:repo/status`
@@ -136,13 +135,6 @@ These endpoints should return one stable mirror object per repository:
     "pulls": "sparse",
     "comments": "sparse",
     "reviews": "sparse"
-  },
-  "coverage": {
-    "issues": 123,
-    "pulls": 6724,
-    "issue_comments": 456,
-    "pull_request_reviews": 789,
-    "pull_request_review_comments": 1011
   },
   "timestamps": {
     "last_webhook_at": "2026-04-19T00:00:00Z",

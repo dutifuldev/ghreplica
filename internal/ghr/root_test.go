@@ -34,7 +34,7 @@ func TestRepoStatusHumanOutput(t *testing.T) {
 	require.Contains(t, stdout, "acme/widgets")
 	require.Contains(t, stdout, "Sync mode:")
 	require.Contains(t, stdout, "webhook_only")
-	require.Contains(t, stdout, "PR review comments:")
+	require.Contains(t, stdout, "Reviews completeness:")
 }
 
 func TestMirrorCommands(t *testing.T) {
@@ -494,13 +494,6 @@ func newTestServer(t *testing.T) *httptest.Server {
 			Comments: "sparse",
 			Reviews:  "sparse",
 		},
-		Coverage: MirrorCountsResponse{
-			Issues:                    1,
-			Pulls:                     1,
-			IssueComments:             1,
-			PullRequestReviews:        0,
-			PullRequestReviewComments: 0,
-		},
 	}
 	mirrorStatus := MirrorRepositoryStatusResponse{
 		Repository: MirrorRepositoryRefResponse{
@@ -710,13 +703,6 @@ func newOpenClawTestServer(t *testing.T) *httptest.Server {
 			Pulls:    "sparse",
 			Comments: "sparse",
 			Reviews:  "sparse",
-		},
-		Coverage: MirrorCountsResponse{
-			Issues:                    2,
-			Pulls:                     1,
-			IssueComments:             2,
-			PullRequestReviews:        1,
-			PullRequestReviewComments: 2,
 		},
 	}
 

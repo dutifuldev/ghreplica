@@ -125,13 +125,12 @@ func printMirrorRepositoryList(out io.Writer, repos []MirrorRepositoryResponse) 
 	}
 
 	tw := newTabWriter(out)
-	fmt.Fprintln(tw, "FULL NAME\tENABLED\tSYNC MODE\tPULLS\tLAST WEBHOOK")
+	fmt.Fprintln(tw, "FULL NAME\tENABLED\tSYNC MODE\tLAST WEBHOOK")
 	for _, repo := range repos {
-		fmt.Fprintf(tw, "%s\t%t\t%s\t%d\t%s\n",
+		fmt.Fprintf(tw, "%s\t%t\t%s\t%s\n",
 			repo.FullName,
 			repo.Enabled,
 			repo.SyncMode,
-			repo.Coverage.Pulls,
 			humanTimePtr(repo.Timestamps.LastWebhookAt),
 		)
 	}
@@ -157,11 +156,6 @@ func printMirrorRepository(out io.Writer, repo MirrorRepositoryResponse) {
 	fmt.Fprintf(tw, "Pulls completeness:\t%s\n", repo.Completeness.Pulls)
 	fmt.Fprintf(tw, "Comments completeness:\t%s\n", repo.Completeness.Comments)
 	fmt.Fprintf(tw, "Reviews completeness:\t%s\n", repo.Completeness.Reviews)
-	fmt.Fprintf(tw, "Issue count:\t%d\n", repo.Coverage.Issues)
-	fmt.Fprintf(tw, "Pull count:\t%d\n", repo.Coverage.Pulls)
-	fmt.Fprintf(tw, "Issue comments:\t%d\n", repo.Coverage.IssueComments)
-	fmt.Fprintf(tw, "PR reviews:\t%d\n", repo.Coverage.PullRequestReviews)
-	fmt.Fprintf(tw, "PR review comments:\t%d\n", repo.Coverage.PullRequestReviewComments)
 	fmt.Fprintf(tw, "Last bootstrap:\t%s\n", humanTimePtr(repo.Timestamps.LastBootstrapAt))
 	fmt.Fprintf(tw, "Last crawl:\t%s\n", humanTimePtr(repo.Timestamps.LastCrawlAt))
 	fmt.Fprintf(tw, "Last webhook:\t%s\n", humanTimePtr(repo.Timestamps.LastWebhookAt))
