@@ -165,41 +165,44 @@ type PullRequestChangeHunk struct {
 }
 
 type RepoChangeSyncState struct {
-	ID                          uint `gorm:"primaryKey"`
-	RepositoryID                uint `gorm:"uniqueIndex"`
-	Repository                  Repository
-	Dirty                       bool `gorm:"index"`
-	DirtySince                  *time.Time
-	LastWebhookAt               *time.Time
-	LastRequestedFetchAt        *time.Time
-	LastFetchStartedAt          *time.Time
-	LastFetchFinishedAt         *time.Time
-	LastSuccessfulFetchAt       *time.Time
-	LastBackfillStartedAt       *time.Time
-	LastBackfillFinishedAt      *time.Time
-	LastOpenPRScanAt            *time.Time
-	InventoryGenerationCurrent  int
-	InventoryGenerationBuilding *int
-	InventoryLastCommittedAt    *time.Time
-	OpenPRTotal                 int
-	OpenPRCurrent               int
-	OpenPRStale                 int
-	BackfillGeneration          int
-	OpenPRCursorNumber          *int
-	OpenPRCursorUpdatedAt       *time.Time
-	BackfillMode                string `gorm:"index"`
-	BackfillPriority            int
-	FetchLeaseOwnerID           string `gorm:"index"`
-	FetchLeaseStartedAt         *time.Time
-	FetchLeaseHeartbeatAt       *time.Time `gorm:"index"`
-	FetchLeaseUntil             *time.Time `gorm:"index"`
-	BackfillLeaseOwnerID        string     `gorm:"index"`
-	BackfillLeaseStartedAt      *time.Time
-	BackfillLeaseHeartbeatAt    *time.Time `gorm:"index"`
-	BackfillLeaseUntil          *time.Time `gorm:"index"`
-	LastError                   string
-	CreatedAt                   time.Time
-	UpdatedAt                   time.Time
+	ID                              uint `gorm:"primaryKey"`
+	RepositoryID                    uint `gorm:"uniqueIndex"`
+	Repository                      Repository
+	Dirty                           bool `gorm:"index"`
+	DirtySince                      *time.Time
+	LastWebhookAt                   *time.Time
+	LastRequestedFetchAt            *time.Time
+	LastFetchStartedAt              *time.Time
+	LastFetchFinishedAt             *time.Time
+	LastSuccessfulFetchAt           *time.Time
+	LastBackfillStartedAt           *time.Time
+	LastBackfillFinishedAt          *time.Time
+	LastOpenPRScanAt                *time.Time
+	InventoryGenerationCurrent      int
+	InventoryGenerationBuilding     *int
+	InventoryLastCommittedAt        *time.Time
+	OpenPRTotal                     int
+	OpenPRCurrent                   int
+	OpenPRStale                     int
+	BackfillGeneration              int
+	OpenPRCursorNumber              *int
+	OpenPRCursorUpdatedAt           *time.Time
+	BackfillMode                    string `gorm:"index"`
+	BackfillPriority                int
+	FetchLeaseOwnerID               string `gorm:"index"`
+	FetchLeaseStartedAt             *time.Time
+	FetchLeaseHeartbeatAt           *time.Time `gorm:"index"`
+	FetchLeaseUntil                 *time.Time `gorm:"index"`
+	BackfillLeaseOwnerID            string     `gorm:"index"`
+	BackfillLeaseStartedAt          *time.Time
+	BackfillLeaseHeartbeatAt        *time.Time `gorm:"index"`
+	BackfillLeaseUntil              *time.Time `gorm:"index"`
+	TargetedRefreshPending          bool
+	TargetedRefreshLeaseHeartbeatAt *time.Time `gorm:"index"`
+	TargetedRefreshLeaseUntil       *time.Time `gorm:"index"`
+	LastError                       string
+	CreatedAt                       time.Time
+	UpdatedAt                       time.Time
 }
 
 type RepoOpenPullInventory struct {

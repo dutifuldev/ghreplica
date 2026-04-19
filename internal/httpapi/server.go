@@ -399,45 +399,26 @@ func (s *Server) handleListPullRequestReviewComments(c echo.Context) error {
 }
 
 func (s *Server) handleReadiness(c echo.Context) error {
-	ctx := c.Request().Context()
-	var pending int64
-	var processing int64
-	var recentFailed int64
-	var failedTotal int64
-	var superseded int64
-	cutoff := time.Now().UTC().Add(-15 * time.Minute)
-
-	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "pending").Count(&pending).Error; err != nil {
-		return err
-	}
-	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "processing").Count(&processing).Error; err != nil {
-		return err
-	}
-	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "failed").Count(&failedTotal).Error; err != nil {
-		return err
-	}
-	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).
-		Where("status = ? AND updated_at >= ?", "failed", cutoff).
-		Count(&recentFailed).Error; err != nil {
-		return err
-	}
-	if err := s.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Where("status = ?", "superseded").Count(&superseded).Error; err != nil {
-		return err
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]any{
+			"status":   "not_ready",
+			"database": "unavailable",
+		})
 	}
 
-	status := "ready"
-	if processing > 0 || recentFailed > 0 {
-		status = "degraded"
+	pingCtx, cancel := context.WithTimeout(c.Request().Context(), 2*time.Second)
+	defer cancel()
+	if err := sqlDB.PingContext(pingCtx); err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]any{
+			"status":   "not_ready",
+			"database": "unavailable",
+		})
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
-		"status":               status,
-		"pending_refresh":      pending,
-		"processing_jobs":      processing,
-		"recent_failed_jobs":   recentFailed,
-		"failed_jobs_total":    failedTotal,
-		"superseded_jobs":      superseded,
-		"failure_window_start": cutoff.Format(time.RFC3339),
+		"status":   "ready",
+		"database": "ok",
 	})
 }
 

@@ -2,6 +2,7 @@ package githubsync
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"sort"
@@ -240,73 +241,77 @@ func (s *Service) EnqueuePullRequestRefresh(ctx context.Context, repositoryID ui
 		return nil
 	}
 	seenAt = seenAt.UTC()
-	if err := s.NoteRepositoryWebhook(ctx, repositoryID, seenAt); err != nil {
-		return err
-	}
-	row := database.RepoTargetedPullRefresh{
-		RepositoryID:      repositoryID,
-		PullRequestNumber: number,
-		RequestedAt:       &seenAt,
-		LastWebhookAt:     &seenAt,
-	}
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "repository_id"}, {Name: "pull_request_number"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"requested_at":    seenAt,
-			"last_webhook_at": seenAt,
-			"updated_at":      seenAt,
-			"last_error":      "",
-		}),
-	}).Create(&row).Error
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		state := database.RepoChangeSyncState{
+			RepositoryID:           repositoryID,
+			LastWebhookAt:          &seenAt,
+			BackfillMode:           changeBackfillModeOff,
+			TargetedRefreshPending: true,
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "repository_id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"last_webhook_at":          seenAt,
+				"targeted_refresh_pending": true,
+				"updated_at":               seenAt,
+			}),
+		}).Create(&state).Error; err != nil {
+			return err
+		}
+
+		row := database.RepoTargetedPullRefresh{
+			RepositoryID:      repositoryID,
+			PullRequestNumber: number,
+			RequestedAt:       &seenAt,
+			LastWebhookAt:     &seenAt,
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "repository_id"}, {Name: "pull_request_number"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"requested_at":    seenAt,
+				"last_webhook_at": seenAt,
+				"updated_at":      seenAt,
+				"last_error":      "",
+			}),
+		}).Create(&row).Error
+	})
 }
 
 func (s *Service) GetRepoChangeStatus(ctx context.Context, owner, repo string) (gitindex.RepoStatus, error) {
-	repository, err := findRepositoryByName(ctx, s.db, owner, repo)
-	if err != nil {
-		return gitindex.RepoStatus{}, err
-	}
-	state, err := s.repoChangeStateOptional(ctx, repository.ID)
+	row, err := s.repoChangeStatusRow(ctx, owner, repo)
 	if err != nil {
 		return gitindex.RepoStatus{}, err
 	}
 
-	status := gitindex.RepoStatus{
-		RepositoryID: repository.ID,
-		FullName:     repository.FullName,
-		BackfillMode: changeBackfillModeOff,
-	}
-	if state != nil {
-		now := time.Now().UTC()
-		status.LastWebhookAt = state.LastWebhookAt
-		status.LastInventoryScanStartedAt = state.LastFetchStartedAt
-		status.LastInventoryScanFinishedAt = state.LastFetchFinishedAt
-		status.LastInventoryScanSucceededAt = state.LastSuccessfulFetchAt
-		status.LastBackfillStartedAt = state.LastBackfillStartedAt
-		status.LastBackfillFinishedAt = state.LastBackfillFinishedAt
-		status.BackfillMode = normalizeBackfillMode(state.BackfillMode)
-		status.BackfillPriority = state.BackfillPriority
-		status.InventoryGenerationCurrent = state.InventoryGenerationCurrent
-		status.InventoryGenerationBuilding = state.InventoryGenerationBuilding
-		status.InventoryNeedsRefresh = state.Dirty
-		status.InventoryLastCommittedAt = state.InventoryLastCommittedAt
-		status.InventoryScanRunning = leaseIsActive(now, state.FetchLeaseHeartbeatAt, state.FetchLeaseUntil)
-		status.BackfillRunning = leaseIsActive(now, state.BackfillLeaseHeartbeatAt, state.BackfillLeaseUntil)
-		status.BackfillGeneration = state.BackfillGeneration
-		status.OpenPRTotal = state.OpenPRTotal
-		status.OpenPRCurrent = state.OpenPRCurrent
-		status.OpenPRStale = state.OpenPRStale
-		status.OpenPRMissing = maxInt(0, state.OpenPRTotal-state.OpenPRCurrent-state.OpenPRStale)
-		status.BackfillCursor = state.OpenPRCursorNumber
-		status.BackfillCursorUpdatedAt = state.OpenPRCursorUpdatedAt
-		status.LastError = state.LastError
-	}
-	pending, running, err := s.targetedRefreshStatus(ctx, repository.ID)
-	if err != nil {
-		return gitindex.RepoStatus{}, err
-	}
-	status.TargetedRefreshPending = pending
-	status.TargetedRefreshRunning = running
-	return status, nil
+	now := time.Now().UTC()
+	return gitindex.RepoStatus{
+		RepositoryID:                 row.RepositoryID,
+		FullName:                     row.FullName,
+		LastWebhookAt:                row.LastWebhookAt,
+		LastInventoryScanStartedAt:   row.LastFetchStartedAt,
+		LastInventoryScanFinishedAt:  row.LastFetchFinishedAt,
+		LastInventoryScanSucceededAt: row.LastSuccessfulFetchAt,
+		LastBackfillStartedAt:        row.LastBackfillStartedAt,
+		LastBackfillFinishedAt:       row.LastBackfillFinishedAt,
+		BackfillMode:                 normalizeBackfillMode(row.BackfillMode),
+		BackfillPriority:             row.BackfillPriority,
+		TargetedRefreshPending:       row.TargetedRefreshPending,
+		TargetedRefreshRunning:       leaseIsActive(now, row.TargetedRefreshLeaseHeartbeatAt, row.TargetedRefreshLeaseUntil),
+		InventoryGenerationCurrent:   row.InventoryGenerationCurrent,
+		InventoryGenerationBuilding:  row.InventoryGenerationBuilding,
+		InventoryNeedsRefresh:        row.Dirty,
+		InventoryLastCommittedAt:     row.InventoryLastCommittedAt,
+		InventoryScanRunning:         leaseIsActive(now, row.FetchLeaseHeartbeatAt, row.FetchLeaseUntil),
+		BackfillRunning:              leaseIsActive(now, row.BackfillLeaseHeartbeatAt, row.BackfillLeaseUntil),
+		BackfillGeneration:           row.BackfillGeneration,
+		BackfillCursor:               row.OpenPRCursorNumber,
+		BackfillCursorUpdatedAt:      row.OpenPRCursorUpdatedAt,
+		OpenPRTotal:                  row.OpenPRTotal,
+		OpenPRCurrent:                row.OpenPRCurrent,
+		OpenPRStale:                  row.OpenPRStale,
+		OpenPRMissing:                maxInt(0, row.OpenPRTotal-row.OpenPRCurrent-row.OpenPRStale),
+		LastError:                    row.LastError,
+	}, nil
 }
 
 func (s *Service) GetPullRequestChangeStatus(ctx context.Context, owner, repo string, number int) (gitindex.PullRequestStatus, error) {
@@ -768,6 +773,16 @@ func (w *ChangeSyncWorker) acquireNextTargetedRefresh(ctx context.Context) (data
 	row.LeaseHeartbeatAt = &now
 	row.LeaseUntil = &leaseUntil
 	row.LastAttemptedAt = &now
+	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
+		Where("repository_id = ?", row.RepositoryID).
+		Updates(map[string]any{
+			"targeted_refresh_pending":            true,
+			"targeted_refresh_lease_heartbeat_at": now,
+			"targeted_refresh_lease_until":        leaseUntil,
+			"updated_at":                          now,
+		}).Error; err != nil {
+		return database.RepoTargetedPullRefresh{}, false, err
+	}
 	return row, true, nil
 }
 
@@ -801,43 +816,127 @@ func (w *ChangeSyncWorker) finishTargetedRefresh(ctx context.Context, row databa
 		updates["last_error"] = ""
 	} else {
 		updates["last_error"] = refreshErr.Error()
-		if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
-			Where("repository_id = ?", row.RepositoryID).
-			Updates(map[string]any{
-				"last_error": refreshErr.Error(),
-				"updated_at": now,
-			}).Error; err != nil {
+	}
+	if err := w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&database.RepoTargetedPullRefresh{}).
+			Where("id = ? AND lease_owner_id = ?", row.ID, w.leases.owner()).
+			Updates(updates).Error; err != nil {
 			return err
 		}
-	}
-	if err := w.db.WithContext(ctx).Model(&database.RepoTargetedPullRefresh{}).
-		Where("id = ? AND lease_owner_id = ?", row.ID, w.leases.owner()).
-		Updates(updates).Error; err != nil {
+		pending, err := targetedRefreshPendingExists(ctx, tx, row.RepositoryID)
+		if err != nil {
+			return err
+		}
+		stateUpdates := map[string]any{
+			"targeted_refresh_pending":            pending,
+			"targeted_refresh_lease_heartbeat_at": nil,
+			"targeted_refresh_lease_until":        nil,
+			"updated_at":                          now,
+		}
+		if refreshErr == nil {
+			stateUpdates["last_error"] = ""
+		} else {
+			stateUpdates["last_error"] = refreshErr.Error()
+		}
+		return tx.Model(&database.RepoChangeSyncState{}).
+			Where("repository_id = ?", row.RepositoryID).
+			Updates(stateUpdates).Error
+	}); err != nil {
 		return err
 	}
 	return refreshErr
 }
 
-func (s *Service) targetedRefreshStatus(ctx context.Context, repositoryID uint) (bool, bool, error) {
-	var pendingCount int64
-	if err := s.db.WithContext(ctx).Model(&database.RepoTargetedPullRefresh{}).
-		Where("repository_id = ?", repositoryID).
-		Where("requested_at IS NOT NULL").
-		Where("(last_completed_at IS NULL OR requested_at > last_completed_at)").
-		Count(&pendingCount).Error; err != nil {
-		return false, false, err
+func targetedRefreshPendingExists(ctx context.Context, db *gorm.DB, repositoryID uint) (bool, error) {
+	var pending sql.NullBool
+	if err := db.WithContext(ctx).Raw(
+		`SELECT EXISTS (
+			SELECT 1
+			FROM repo_targeted_pull_refreshes
+			WHERE repository_id = ?
+			  AND requested_at IS NOT NULL
+			  AND (last_completed_at IS NULL OR requested_at > last_completed_at)
+		)`,
+		repositoryID,
+	).Scan(&pending).Error; err != nil {
+		return false, err
 	}
-	now := time.Now().UTC()
-	staleAfter := maxDuration(3*changeSyncHeartbeatInterval(15*time.Minute), time.Second)
-	var runningCount int64
-	if err := s.db.WithContext(ctx).Model(&database.RepoTargetedPullRefresh{}).
-		Where("repository_id = ?", repositoryID).
-		Where("lease_until IS NOT NULL AND lease_until > ?", now).
-		Where("lease_heartbeat_at IS NOT NULL AND lease_heartbeat_at > ?", now.Add(-staleAfter)).
-		Count(&runningCount).Error; err != nil {
-		return false, false, err
+	return pending.Bool, nil
+}
+
+type repoChangeStatusRow struct {
+	RepositoryID                    uint       `gorm:"column:repository_id"`
+	FullName                        string     `gorm:"column:full_name"`
+	Dirty                           bool       `gorm:"column:dirty"`
+	LastWebhookAt                   *time.Time `gorm:"column:last_webhook_at"`
+	LastFetchStartedAt              *time.Time `gorm:"column:last_fetch_started_at"`
+	LastFetchFinishedAt             *time.Time `gorm:"column:last_fetch_finished_at"`
+	LastSuccessfulFetchAt           *time.Time `gorm:"column:last_successful_fetch_at"`
+	LastBackfillStartedAt           *time.Time `gorm:"column:last_backfill_started_at"`
+	LastBackfillFinishedAt          *time.Time `gorm:"column:last_backfill_finished_at"`
+	InventoryGenerationCurrent      int        `gorm:"column:inventory_generation_current"`
+	InventoryGenerationBuilding     *int       `gorm:"column:inventory_generation_building"`
+	InventoryLastCommittedAt        *time.Time `gorm:"column:inventory_last_committed_at"`
+	OpenPRTotal                     int        `gorm:"column:open_pr_total"`
+	OpenPRCurrent                   int        `gorm:"column:open_pr_current"`
+	OpenPRStale                     int        `gorm:"column:open_pr_stale"`
+	BackfillGeneration              int        `gorm:"column:backfill_generation"`
+	OpenPRCursorNumber              *int       `gorm:"column:open_pr_cursor_number"`
+	OpenPRCursorUpdatedAt           *time.Time `gorm:"column:open_pr_cursor_updated_at"`
+	BackfillMode                    string     `gorm:"column:backfill_mode"`
+	BackfillPriority                int        `gorm:"column:backfill_priority"`
+	FetchLeaseHeartbeatAt           *time.Time `gorm:"column:fetch_lease_heartbeat_at"`
+	FetchLeaseUntil                 *time.Time `gorm:"column:fetch_lease_until"`
+	BackfillLeaseHeartbeatAt        *time.Time `gorm:"column:backfill_lease_heartbeat_at"`
+	BackfillLeaseUntil              *time.Time `gorm:"column:backfill_lease_until"`
+	TargetedRefreshPending          bool       `gorm:"column:targeted_refresh_pending"`
+	TargetedRefreshLeaseHeartbeatAt *time.Time `gorm:"column:targeted_refresh_lease_heartbeat_at"`
+	TargetedRefreshLeaseUntil       *time.Time `gorm:"column:targeted_refresh_lease_until"`
+	LastError                       string     `gorm:"column:last_error"`
+}
+
+func (s *Service) repoChangeStatusRow(ctx context.Context, owner, repo string) (repoChangeStatusRow, error) {
+	fullName := strings.TrimSpace(owner) + "/" + strings.TrimSpace(repo)
+	var row repoChangeStatusRow
+	result := s.db.WithContext(ctx).
+		Table("repositories").
+		Select(`
+			repositories.id AS repository_id,
+			repositories.full_name AS full_name,
+			COALESCE(repo_change_sync_states.dirty, FALSE) AS dirty,
+			repo_change_sync_states.last_webhook_at AS last_webhook_at,
+			repo_change_sync_states.last_fetch_started_at AS last_fetch_started_at,
+			repo_change_sync_states.last_fetch_finished_at AS last_fetch_finished_at,
+			repo_change_sync_states.last_successful_fetch_at AS last_successful_fetch_at,
+			repo_change_sync_states.last_backfill_started_at AS last_backfill_started_at,
+			repo_change_sync_states.last_backfill_finished_at AS last_backfill_finished_at,
+			COALESCE(repo_change_sync_states.inventory_generation_current, 0) AS inventory_generation_current,
+			repo_change_sync_states.inventory_generation_building AS inventory_generation_building,
+			repo_change_sync_states.inventory_last_committed_at AS inventory_last_committed_at,
+			COALESCE(repo_change_sync_states.open_pr_total, 0) AS open_pr_total,
+			COALESCE(repo_change_sync_states.open_pr_current, 0) AS open_pr_current,
+			COALESCE(repo_change_sync_states.open_pr_stale, 0) AS open_pr_stale,
+			COALESCE(repo_change_sync_states.backfill_generation, 0) AS backfill_generation,
+			repo_change_sync_states.open_pr_cursor_number AS open_pr_cursor_number,
+			repo_change_sync_states.open_pr_cursor_updated_at AS open_pr_cursor_updated_at,
+			COALESCE(repo_change_sync_states.backfill_mode, '') AS backfill_mode,
+			COALESCE(repo_change_sync_states.backfill_priority, 0) AS backfill_priority,
+			repo_change_sync_states.fetch_lease_heartbeat_at AS fetch_lease_heartbeat_at,
+			repo_change_sync_states.fetch_lease_until AS fetch_lease_until,
+			repo_change_sync_states.backfill_lease_heartbeat_at AS backfill_lease_heartbeat_at,
+			repo_change_sync_states.backfill_lease_until AS backfill_lease_until,
+			COALESCE(repo_change_sync_states.targeted_refresh_pending, FALSE) AS targeted_refresh_pending,
+			repo_change_sync_states.targeted_refresh_lease_heartbeat_at AS targeted_refresh_lease_heartbeat_at,
+			repo_change_sync_states.targeted_refresh_lease_until AS targeted_refresh_lease_until,
+			COALESCE(repo_change_sync_states.last_error, '') AS last_error
+		`).
+		Joins("LEFT JOIN repo_change_sync_states ON repo_change_sync_states.repository_id = repositories.id").
+		Where("repositories.full_name = ?", fullName).
+		Take(&row)
+	if result.Error != nil {
+		return repoChangeStatusRow{}, result.Error
 	}
-	return pendingCount > 0, runningCount > 0, nil
+	return row, nil
 }
 
 func (s *Service) repoChangeStateByRepositoryID(ctx context.Context, repositoryID uint) (database.RepoChangeSyncState, error) {
