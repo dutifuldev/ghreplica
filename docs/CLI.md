@@ -61,6 +61,9 @@ Current command shape:
 - `ghr pr view`
 - `ghr pr reviews`
 - `ghr pr comments`
+- `ghr mirror list`
+- `ghr mirror view`
+- `ghr mirror status`
 - `ghr repo status`
 - `ghr repo view`
 - `ghr changes repo status`
@@ -84,6 +87,8 @@ Examples:
 ```bash
 ghr repo view openclaw/openclaw
 ghr repo status -R openclaw/openclaw
+ghr mirror list
+ghr mirror status -R openclaw/openclaw
 ghr issue list -R openclaw/openclaw --state all
 ghr issue view -R openclaw/openclaw 66797 --comments
 ghr issue comments -R openclaw/openclaw 66797
@@ -125,7 +130,13 @@ That keeps GitHub-shaped reads separate from normalized git-change reads and `gh
 - `ghr repo view <owner>/<repo>`
   - `GET /v1/github/repos/{owner}/{repo}`
 - `ghr repo status -R <owner>/<repo>`
-  - `GET /v1/changes/repos/{owner}/{repo}/mirror-status`
+  - `GET /v1/mirror/repos/{owner}/{repo}`
+- `ghr mirror list`
+  - `GET /v1/mirror/repos`
+- `ghr mirror view -R <owner>/<repo>`
+  - `GET /v1/mirror/repos/{owner}/{repo}`
+- `ghr mirror status -R <owner>/<repo>`
+  - `GET /v1/mirror/repos/{owner}/{repo}/status`
 - `ghr issue list -R <owner>/<repo>`
   - `GET /v1/github/repos/{owner}/{repo}/issues`
 - `ghr issue view -R <owner>/<repo> <number>`

@@ -7,16 +7,32 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/github"
 	"github.com/dutifuldev/ghreplica/internal/githubsync"
+	"github.com/dutifuldev/ghreplica/internal/gitindex"
 	"github.com/dutifuldev/ghreplica/internal/httpapi"
 	"github.com/dutifuldev/ghreplica/internal/testfixtures"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+type stubChangeStatusProvider struct {
+	repoStatus gitindex.RepoStatus
+	repoErr    error
+}
+
+func (s stubChangeStatusProvider) GetRepoChangeStatus(ctx context.Context, owner, repo string) (gitindex.RepoStatus, error) {
+	return s.repoStatus, s.repoErr
+}
+
+func (s stubChangeStatusProvider) GetPullRequestChangeStatus(ctx context.Context, owner, repo string, number int) (gitindex.PullRequestStatus, error) {
+	return gitindex.PullRequestStatus{}, gorm.ErrRecordNotFound
+}
 
 func TestReadinessIgnoresHistoricalFailedJobsAndSupersededJobs(t *testing.T) {
 	ctx := context.Background()
@@ -193,6 +209,169 @@ func TestMirrorStatusEndpoint(t *testing.T) {
 	require.EqualValues(t, 1, counts["issue_comments"])
 	require.EqualValues(t, 1, counts["pull_request_reviews"])
 	require.EqualValues(t, 1, counts["pull_request_review_comments"])
+}
+
+func TestMirrorRepositoryEndpoints(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	owner := &database.User{
+		GitHubID: 11,
+		Login:    "acme",
+		Type:     "Organization",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(owner).Error)
+
+	repo := &database.Repository{
+		GitHubID:      101,
+		NodeID:        "R_kgDORepo",
+		OwnerID:       &owner.ID,
+		OwnerLogin:    "acme",
+		Name:          "widgets",
+		FullName:      "acme/widgets",
+		DefaultBranch: "main",
+		Visibility:    "public",
+		Fork:          false,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(repo).Error)
+
+	now := time.Now().UTC()
+	require.NoError(t, db.WithContext(ctx).Create(&database.TrackedRepository{
+		Owner:                    "acme",
+		Name:                     "widgets",
+		FullName:                 "acme/widgets",
+		RepositoryID:             &repo.ID,
+		SyncMode:                 "webhook_only",
+		WebhookProjectionEnabled: true,
+		AllowManualBackfill:      true,
+		IssuesCompleteness:       "sparse",
+		PullsCompleteness:        "sparse",
+		CommentsCompleteness:     "sparse",
+		ReviewsCompleteness:      "sparse",
+		Enabled:                  true,
+		LastWebhookAt:            &now,
+	}).Error)
+
+	issue := &database.Issue{
+		RepositoryID:    repo.ID,
+		GitHubID:        201,
+		Number:          1,
+		Title:           "Broken thing",
+		State:           "open",
+		CommentsCount:   1,
+		GitHubCreatedAt: now,
+		GitHubUpdatedAt: now,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(issue).Error)
+	require.NoError(t, db.WithContext(ctx).Create(&database.PullRequest{
+		IssueID:         issue.ID,
+		RepositoryID:    repo.ID,
+		GitHubID:        202,
+		Number:          1,
+		State:           "open",
+		HeadRef:         "fix/thing",
+		HeadSHA:         "abc123",
+		BaseRef:         "main",
+		BaseSHA:         "def456",
+		GitHubCreatedAt: now,
+		GitHubUpdatedAt: now,
+	}).Error)
+
+	server := httpapi.NewServer(db, httpapi.Options{
+		ChangeStatus: stubChangeStatusProvider{
+			repoStatus: gitindex.RepoStatus{
+				FullName:                   "acme/widgets",
+				TargetedRefreshPending:     true,
+				InventoryNeedsRefresh:      true,
+				BackfillRunning:            true,
+				OpenPRTotal:                10,
+				OpenPRCurrent:              6,
+				OpenPRStale:                1,
+				OpenPRMissing:              3,
+				LastBackfillStartedAt:      &now,
+				LastInventoryScanStartedAt: &now,
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/mirror/repos", nil)
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var listed []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listed))
+	require.Len(t, listed, 1)
+	require.Equal(t, "acme/widgets", listed[0]["full_name"])
+	require.Equal(t, true, listed[0]["enabled"])
+	require.NotContains(t, listed[0], "repository_id")
+	require.NotContains(t, listed[0], "tracked_repository_present")
+	require.Contains(t, listed[0], "completeness")
+	require.Contains(t, listed[0], "coverage")
+	require.Contains(t, listed[0], "timestamps")
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/mirror/repos/acme/widgets", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var mirrorRepo map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &mirrorRepo))
+	require.Equal(t, "acme/widgets", mirrorRepo["full_name"])
+	require.EqualValues(t, 101, mirrorRepo["github_id"])
+	require.Equal(t, false, mirrorRepo["fork"])
+	require.NotContains(t, mirrorRepo, "repository_present")
+	require.NotContains(t, mirrorRepo, "tracked_repository_id")
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/mirror/repos/acme/widgets/status", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var status map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &status))
+	require.Equal(t, "running", status["sync"].(map[string]any)["state"])
+	require.EqualValues(t, 10, status["pull_request_changes"].(map[string]any)["total"])
+	require.Equal(t, true, status["activity"].(map[string]any)["backfill_running"])
+	require.NotContains(t, status, "inventory_generation_current")
+	require.NotContains(t, status, "backfill_generation")
+}
+
+func TestMirrorRepositoryListPagination(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	for _, fullName := range []string{"acme/a", "acme/b", "acme/c"} {
+		parts := strings.SplitN(fullName, "/", 2)
+		require.NoError(t, db.WithContext(ctx).Create(&database.TrackedRepository{
+			Owner:                parts[0],
+			Name:                 parts[1],
+			FullName:             fullName,
+			SyncMode:             "webhook_only",
+			IssuesCompleteness:   "sparse",
+			PullsCompleteness:    "sparse",
+			CommentsCompleteness: "sparse",
+			ReviewsCompleteness:  "sparse",
+			Enabled:              true,
+		}).Error)
+	}
+
+	server := httpapi.NewServer(db, httpapi.Options{})
+	req := httptest.NewRequest(http.MethodGet, "/v1/mirror/repos?page=2&per_page=1", nil)
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Header().Get("Link"), `page=1`)
+	require.Contains(t, rec.Header().Get("Link"), `page=3`)
+
+	var payload []map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
+	require.Len(t, payload, 1)
+	require.Equal(t, "acme/b", payload[0]["full_name"])
 }
 
 func TestMirrorStatusEndpointResolvesTrackedRepositoryAcrossRename(t *testing.T) {

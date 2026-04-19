@@ -146,6 +146,74 @@ type mirrorStatusResponse struct {
 	Counts                   mirrorCountsResponse `json:"counts"`
 }
 
+type mirrorCompletenessResponse struct {
+	Issues   string `json:"issues"`
+	Pulls    string `json:"pulls"`
+	Comments string `json:"comments"`
+	Reviews  string `json:"reviews"`
+}
+
+type mirrorMetadataTimestampsResponse struct {
+	LastWebhookAt   *time.Time `json:"last_webhook_at,omitempty"`
+	LastBootstrapAt *time.Time `json:"last_bootstrap_at,omitempty"`
+	LastCrawlAt     *time.Time `json:"last_crawl_at,omitempty"`
+}
+
+type mirrorRepositoryResponse struct {
+	Owner        string                           `json:"owner"`
+	Name         string                           `json:"name"`
+	FullName     string                           `json:"full_name"`
+	GitHubID     *int64                           `json:"github_id,omitempty"`
+	NodeID       string                           `json:"node_id,omitempty"`
+	Fork         *bool                            `json:"fork,omitempty"`
+	Enabled      bool                             `json:"enabled"`
+	SyncMode     string                           `json:"sync_mode"`
+	Completeness mirrorCompletenessResponse       `json:"completeness"`
+	Coverage     mirrorCountsResponse             `json:"coverage"`
+	Timestamps   mirrorMetadataTimestampsResponse `json:"timestamps"`
+}
+
+type mirrorRepositoryRefResponse struct {
+	Owner    string `json:"owner"`
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+}
+
+type mirrorSyncResponse struct {
+	State     string `json:"state"`
+	LastError string `json:"last_error,omitempty"`
+}
+
+type mirrorPullRequestChangesResponse struct {
+	Total   int `json:"total"`
+	Current int `json:"current"`
+	Stale   int `json:"stale"`
+	Missing int `json:"missing"`
+}
+
+type mirrorActivityResponse struct {
+	InventoryScanRunning      bool `json:"inventory_scan_running"`
+	BackfillRunning           bool `json:"backfill_running"`
+	TargetedRefreshPending    bool `json:"targeted_refresh_pending"`
+	TargetedRefreshRunning    bool `json:"targeted_refresh_running"`
+	InventoryRefreshRequested bool `json:"inventory_refresh_requested"`
+}
+
+type mirrorStatusTimestampsResponse struct {
+	LastInventoryScanStartedAt  *time.Time `json:"last_inventory_scan_started_at,omitempty"`
+	LastInventoryScanFinishedAt *time.Time `json:"last_inventory_scan_finished_at,omitempty"`
+	LastBackfillStartedAt       *time.Time `json:"last_backfill_started_at,omitempty"`
+	LastBackfillFinishedAt      *time.Time `json:"last_backfill_finished_at,omitempty"`
+}
+
+type mirrorRepositoryStatusResponse struct {
+	Repository         mirrorRepositoryRefResponse      `json:"repository"`
+	Sync               mirrorSyncResponse               `json:"sync"`
+	PullRequestChanges mirrorPullRequestChangesResponse `json:"pull_request_changes"`
+	Activity           mirrorActivityResponse           `json:"activity"`
+	Timestamps         mirrorStatusTimestampsResponse   `json:"timestamps"`
+}
+
 func newRepositoryResponse(repo database.Repository) repositoryResponse {
 	return repositoryResponse{
 		ID:            repo.GitHubID,
