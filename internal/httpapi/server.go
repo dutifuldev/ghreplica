@@ -314,7 +314,7 @@ func (s *Server) handleListPullRequests(c echo.Context) error {
 }
 
 func (s *Server) handleGetPullRequest(c echo.Context) error {
-	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	repoID, err := findRepositoryID(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
@@ -329,7 +329,8 @@ func (s *Server) handleGetPullRequest(c echo.Context) error {
 
 	var pull database.PullRequest
 	if err := s.db.WithContext(c.Request().Context()).
-		Where("repository_id = ? AND number = ?", repo.ID, number).
+		Select("raw_json").
+		Where("repository_id = ? AND number = ?", repoID, number).
 		First(&pull).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
@@ -337,11 +338,7 @@ func (s *Server) handleGetPullRequest(c echo.Context) error {
 		return err
 	}
 
-	payload, err := decodeStoredJSON(pull.RawJSON)
-	if err != nil {
-		return err
-	}
-	return c.JSON(http.StatusOK, payload)
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSONCharsetUTF8, pull.RawJSON)
 }
 
 func (s *Server) handleListIssueComments(c echo.Context) error {
@@ -467,6 +464,18 @@ func findRepository(ctx context.Context, db *gorm.DB, owner, repo string) (datab
 	var out database.Repository
 	err := db.WithContext(ctx).Preload("Owner").Where("owner_login = ? AND name = ?", owner, repo).First(&out).Error
 	return out, err
+}
+
+func findRepositoryID(ctx context.Context, db *gorm.DB, owner, repo string) (uint, error) {
+	var out struct {
+		ID uint
+	}
+	err := db.WithContext(ctx).
+		Model(&database.Repository{}).
+		Select("id").
+		Where("owner_login = ? AND name = ?", owner, repo).
+		First(&out).Error
+	return out.ID, err
 }
 
 func applyStateFilter(query *gorm.DB, state string) *gorm.DB {

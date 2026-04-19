@@ -432,10 +432,17 @@ func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 
 	server := httpapi.NewServer(db, httpapi.Options{})
 
+	var storedPull database.PullRequest
+	require.NoError(t, db.WithContext(ctx).
+		Select("raw_json").
+		Where("repository_id = (SELECT id FROM repositories WHERE owner_login = ? AND name = ?) AND number = ?", "openclaw", "openclaw", 66863).
+		First(&storedPull).Error)
+
 	req := httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/pulls/66863", nil)
 	rec := httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, string(storedPull.RawJSON), rec.Body.String())
 
 	var pull map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &pull))
