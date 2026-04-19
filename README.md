@@ -33,6 +33,24 @@ Current public instance:
 - API: `https://ghreplica.dutiful.dev`
 - CLI: `ghr`
 
+## Install CLI
+
+`ghr` is shipped through GitHub Releases.
+
+Download the archive for your OS and architecture from the latest release, unpack it, and place the `ghr` binary on your `PATH`.
+
+Release page:
+
+- https://github.com/dutifuldev/ghreplica/releases
+
+Linux example:
+
+```bash
+curl -fsSLO https://github.com/dutifuldev/ghreplica/releases/download/v0.1.0/ghr_0.1.0_Linux_x86_64.tar.gz
+tar -xzf ghr_0.1.0_Linux_x86_64.tar.gz
+sudo install ghr /usr/local/bin/ghr
+```
+
 ## Why
 
 Most tools that need GitHub data end up rebuilding the same fragile stack. They poll GitHub, keep partial caches of issues and pull requests, handle webhooks inconsistently, and then discover later that they also need search, change overlap, or indexing status. That usually produces systems that are hard to reason about and even harder to trust.
