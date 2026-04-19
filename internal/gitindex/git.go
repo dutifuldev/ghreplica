@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -56,11 +54,11 @@ func (s *Service) withRepoLock(ctx context.Context, owner, repo string, fn func(
 	defer lockFile.Close()
 
 	for {
-		err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err := lockRepoFile(lockFile)
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+		if !lockWouldBlock(err) {
 			return err
 		}
 		select {
@@ -69,7 +67,7 @@ func (s *Service) withRepoLock(ctx context.Context, owner, repo string, fn func(
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer unlockRepoFile(lockFile)
 
 	return fn()
 }
