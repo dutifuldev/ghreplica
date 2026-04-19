@@ -98,7 +98,6 @@ The first version should not add:
 - Scoop
 - Winget
 - npm distribution
-- installer scripts
 - package repositories
 
 Those can come later.
@@ -114,5 +113,6 @@ Once this is implemented, the README should include a short install section that
 - the latest GitHub Release
 - the supported platforms
 - the expected binary name
+- the one-command installer script
 
 That install section should stay short and direct.

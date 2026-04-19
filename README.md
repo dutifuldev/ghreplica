@@ -37,18 +37,28 @@ Current public instance:
 
 `ghr` is shipped through GitHub Releases.
 
-Download the archive for your OS and architecture from the latest release, unpack it, and place the `ghr` binary on your `PATH`.
+The easiest install path is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dutifuldev/ghreplica/main/scripts/install-ghr.sh | bash
+```
+
+That script detects Linux versus macOS, picks the right release archive, and installs `ghr` into `/usr/local/bin` when possible or `~/.local/bin` otherwise.
 
 Release page:
 
 - https://github.com/dutifuldev/ghreplica/releases
 
-Linux example:
+If you want to install a specific version:
 
 ```bash
-curl -fsSLO https://github.com/dutifuldev/ghreplica/releases/download/v0.1.0/ghr_0.1.0_Linux_x86_64.tar.gz
-tar -xzf ghr_0.1.0_Linux_x86_64.tar.gz
-sudo install ghr /usr/local/bin/ghr
+curl -fsSL https://raw.githubusercontent.com/dutifuldev/ghreplica/main/scripts/install-ghr.sh | bash -s -- --version v0.1.0
+```
+
+If you want to install into a custom directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dutifuldev/ghreplica/main/scripts/install-ghr.sh | bash -s -- --bin-dir "$HOME/.local/bin"
 ```
 
 ## Why
