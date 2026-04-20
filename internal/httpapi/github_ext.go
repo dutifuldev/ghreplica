@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -26,14 +27,14 @@ type batchObjectReadResponse struct {
 }
 
 type batchObjectReadResult struct {
-	Type   string `json:"type"`
-	Number int    `json:"number"`
-	Found  bool   `json:"found"`
-	Object any    `json:"object,omitempty"`
+	Type   string          `json:"type"`
+	Number int             `json:"number"`
+	Found  bool            `json:"found"`
+	Object json.RawMessage `json:"object,omitempty"`
 }
 
 func (s *Server) handleBatchReadObjects(c echo.Context) error {
-	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	repoID, err := findRepositoryID(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
@@ -77,11 +78,11 @@ func (s *Server) handleBatchReadObjects(c echo.Context) error {
 		}
 	}
 
-	issuesByNumber, err := s.loadIssuesByNumber(c.Request().Context(), repo.ID, issueNumbers)
+	issuesByNumber, err := s.loadIssuesByNumber(c.Request().Context(), repoID, issueNumbers)
 	if err != nil {
 		return err
 	}
-	pullsByNumber, err := s.loadPullRequestsByNumber(c.Request().Context(), repo.ID, pullNumbers)
+	pullsByNumber, err := s.loadPullRequestsByNumber(c.Request().Context(), repoID, pullNumbers)
 	if err != nil {
 		return err
 	}
@@ -94,24 +95,16 @@ func (s *Server) handleBatchReadObjects(c echo.Context) error {
 		}
 		switch object.Type {
 		case "issue":
-			issue, ok := issuesByNumber[object.Number]
+			raw, ok := issuesByNumber[object.Number]
 			if ok {
-				payload, err := decodeStoredJSON(issue.RawJSON)
-				if err != nil {
-					return err
-				}
 				result.Found = true
-				result.Object = payload
+				result.Object = raw
 			}
 		case "pull_request":
-			pull, ok := pullsByNumber[object.Number]
+			raw, ok := pullsByNumber[object.Number]
 			if ok {
-				payload, err := decodeStoredJSON(pull.RawJSON)
-				if err != nil {
-					return err
-				}
 				result.Found = true
-				result.Object = payload
+				result.Object = raw
 			}
 		}
 		results = append(results, result)
@@ -120,36 +113,46 @@ func (s *Server) handleBatchReadObjects(c echo.Context) error {
 	return c.JSON(http.StatusOK, batchObjectReadResponse{Results: results})
 }
 
-func (s *Server) loadIssuesByNumber(ctx context.Context, repositoryID uint, numbers []int) (map[int]database.Issue, error) {
+func (s *Server) loadIssuesByNumber(ctx context.Context, repositoryID uint, numbers []int) (map[int]json.RawMessage, error) {
 	if len(numbers) == 0 {
-		return map[int]database.Issue{}, nil
+		return map[int]json.RawMessage{}, nil
 	}
-	var issues []database.Issue
+	var issues []struct {
+		Number  int    `gorm:"column:number"`
+		RawJSON []byte `gorm:"column:raw_json"`
+	}
 	if err := s.db.WithContext(ctx).
+		Model(&database.Issue{}).
+		Select("number", "raw_json").
 		Where("repository_id = ? AND number IN ?", repositoryID, numbers).
 		Find(&issues).Error; err != nil {
 		return nil, err
 	}
-	out := make(map[int]database.Issue, len(issues))
+	out := make(map[int]json.RawMessage, len(issues))
 	for _, issue := range issues {
-		out[issue.Number] = issue
+		out[issue.Number] = json.RawMessage(issue.RawJSON)
 	}
 	return out, nil
 }
 
-func (s *Server) loadPullRequestsByNumber(ctx context.Context, repositoryID uint, numbers []int) (map[int]database.PullRequest, error) {
+func (s *Server) loadPullRequestsByNumber(ctx context.Context, repositoryID uint, numbers []int) (map[int]json.RawMessage, error) {
 	if len(numbers) == 0 {
-		return map[int]database.PullRequest{}, nil
+		return map[int]json.RawMessage{}, nil
 	}
-	var pulls []database.PullRequest
+	var pulls []struct {
+		Number  int    `gorm:"column:number"`
+		RawJSON []byte `gorm:"column:raw_json"`
+	}
 	if err := s.db.WithContext(ctx).
+		Model(&database.PullRequest{}).
+		Select("number", "raw_json").
 		Where("repository_id = ? AND number IN ?", repositoryID, numbers).
 		Find(&pulls).Error; err != nil {
 		return nil, err
 	}
-	out := make(map[int]database.PullRequest, len(pulls))
+	out := make(map[int]json.RawMessage, len(pulls))
 	for _, pull := range pulls {
-		out[pull.Number] = pull
+		out[pull.Number] = json.RawMessage(pull.RawJSON)
 	}
 	return out, nil
 }
