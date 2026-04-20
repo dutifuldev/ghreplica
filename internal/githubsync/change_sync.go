@@ -52,9 +52,12 @@ type RepoBackfillResult struct {
 }
 
 type recentPRRepairResult struct {
-	Repaired  int
-	Completed bool
-	NextPage  int
+	PullsChecked   int
+	IssuesChecked  int
+	PullsRepaired  int
+	IssuesRepaired int
+	Completed      bool
+	NextPage       int
 }
 
 type backfillCandidate struct {
@@ -594,21 +597,24 @@ func (s *Service) RepairRecentPullRequests(ctx context.Context, owner, repo stri
 		if err != nil {
 			return result, err
 		}
-		if len(pulls) == 0 {
+		pullDone, err := s.repairRecentPullRequestPage(ctx, owner, repo, repository.ID, pulls, cutoff, &result)
+		if err != nil {
+			return result, err
+		}
+
+		issues, err := s.github.ListIssuesPage(ctx, owner, repo, "all", "updated", "desc", page, perPage)
+		if err != nil {
+			return result, err
+		}
+		issueDone, err := s.repairRecentIssuePage(ctx, owner, repo, repository.ID, issues, cutoff, &result)
+		if err != nil {
+			return result, err
+		}
+
+		if pullDone && issueDone {
 			result.Completed = true
 			result.NextPage = 1
 			return result, nil
-		}
-		for _, pull := range pulls {
-			if pull.UpdatedAt.UTC().Before(cutoff) {
-				result.Completed = true
-				result.NextPage = 1
-				return result, nil
-			}
-			if _, err := s.syncPullRequestCore(ctx, owner, repo, repository, pull.Number); err != nil {
-				return result, err
-			}
-			result.Repaired++
 		}
 		result.NextPage = page + 1
 	}
@@ -634,11 +640,25 @@ func (s *Service) RepairPullRequestHistoryPage(ctx context.Context, owner, repo 
 		return 0, true, nil
 	}
 	repaired := 0
+	numbers := make([]int, 0, len(pulls))
 	for _, pull := range pulls {
-		if _, err := s.syncPullRequestCore(ctx, owner, repo, repository, pull.Number); err != nil {
+		numbers = append(numbers, pull.Number)
+	}
+	storedPulls, err := s.loadStoredPullRequestsByNumber(ctx, repository.ID, numbers)
+	if err != nil {
+		return 0, false, err
+	}
+	storedIssues, err := s.loadStoredIssuesByNumber(ctx, repository.ID, numbers)
+	if err != nil {
+		return 0, false, err
+	}
+	for _, pull := range pulls {
+		if err := s.repairPullRequestIfStale(ctx, owner, repo, repository.ID, pull, storedPulls, storedIssues); err != nil {
 			return repaired, false, err
 		}
-		repaired++
+		if storedPull, ok := storedPulls[pull.Number]; !ok || storedPull.GitHubUpdatedAt.Before(pull.UpdatedAt.UTC()) {
+			repaired++
+		}
 	}
 	return repaired, false, nil
 }
@@ -659,6 +679,131 @@ func (s *Service) syncPullRequestCore(ctx context.Context, owner, repo string, c
 		return gh.PullRequestResponse{}, err
 	}
 	return pull, nil
+}
+
+func (s *Service) repairIssueObject(ctx context.Context, owner, repo string, repositoryID uint, number int) error {
+	repair := s.withoutSearch()
+	issue, err := repair.github.GetIssue(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	_, err = repair.upsertIssue(ctx, repositoryID, issue)
+	return err
+}
+
+func (s *Service) repairPullRequestObject(ctx context.Context, owner, repo string, repositoryID uint, number int) error {
+	repair := s.withoutSearch()
+	pull, err := repair.github.GetPullRequest(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	return repair.upsertPullRequest(ctx, repositoryID, pull)
+}
+
+func (s *Service) repairRecentPullRequestPage(ctx context.Context, owner, repo string, repositoryID uint, pulls []gh.PullRequestResponse, cutoff time.Time, result *recentPRRepairResult) (bool, error) {
+	if len(pulls) == 0 {
+		return true, nil
+	}
+
+	current := make([]gh.PullRequestResponse, 0, len(pulls))
+	numbers := make([]int, 0, len(pulls))
+	pageDone := false
+	for _, pull := range pulls {
+		if pull.UpdatedAt.UTC().Before(cutoff) {
+			pageDone = true
+			break
+		}
+		current = append(current, pull)
+		numbers = append(numbers, pull.Number)
+	}
+	if len(current) == 0 {
+		return true, nil
+	}
+
+	storedPulls, err := s.loadStoredPullRequestsByNumber(ctx, repositoryID, numbers)
+	if err != nil {
+		return false, err
+	}
+	storedIssues, err := s.loadStoredIssuesByNumber(ctx, repositoryID, numbers)
+	if err != nil {
+		return false, err
+	}
+
+	for _, pull := range current {
+		result.PullsChecked++
+		storedPull, ok := storedPulls[pull.Number]
+		if ok && !storedPull.GitHubUpdatedAt.Before(pull.UpdatedAt.UTC()) {
+			continue
+		}
+		if _, issueExists := storedIssues[pull.Number]; !issueExists {
+			if err := s.repairIssueObject(ctx, owner, repo, repositoryID, pull.Number); err != nil {
+				return false, err
+			}
+			result.IssuesRepaired++
+		}
+		if err := s.repairPullRequestObject(ctx, owner, repo, repositoryID, pull.Number); err != nil {
+			return false, err
+		}
+		result.PullsRepaired++
+	}
+
+	return pageDone, nil
+}
+
+func (s *Service) repairRecentIssuePage(ctx context.Context, owner, repo string, repositoryID uint, issues []gh.IssueResponse, cutoff time.Time, result *recentPRRepairResult) (bool, error) {
+	if len(issues) == 0 {
+		return true, nil
+	}
+
+	pageDone := false
+	current := make([]gh.IssueResponse, 0, len(issues))
+	numbers := make([]int, 0, len(issues))
+	for _, issue := range issues {
+		if issue.UpdatedAt.UTC().Before(cutoff) {
+			pageDone = true
+			break
+		}
+		if issue.PullRequest == nil {
+			continue
+		}
+		current = append(current, issue)
+		numbers = append(numbers, issue.Number)
+	}
+	if len(current) == 0 {
+		return pageDone, nil
+	}
+
+	storedIssues, err := s.loadStoredIssuesByNumber(ctx, repositoryID, numbers)
+	if err != nil {
+		return false, err
+	}
+
+	for _, issue := range current {
+		result.IssuesChecked++
+		storedIssue, ok := storedIssues[issue.Number]
+		if ok && !storedIssue.GitHubUpdatedAt.Before(issue.UpdatedAt.UTC()) {
+			continue
+		}
+		if err := s.repairIssueObject(ctx, owner, repo, repositoryID, issue.Number); err != nil {
+			return false, err
+		}
+		result.IssuesRepaired++
+	}
+
+	return pageDone, nil
+}
+
+func (s *Service) repairPullRequestIfStale(ctx context.Context, owner, repo string, repositoryID uint, pull gh.PullRequestResponse, storedPulls map[int]database.PullRequest, storedIssues map[int]database.Issue) error {
+	storedPull, ok := storedPulls[pull.Number]
+	if ok && !storedPull.GitHubUpdatedAt.Before(pull.UpdatedAt.UTC()) {
+		return nil
+	}
+	if _, issueExists := storedIssues[pull.Number]; !issueExists {
+		if err := s.repairIssueObject(ctx, owner, repo, repositoryID, pull.Number); err != nil {
+			return err
+		}
+	}
+	return s.repairPullRequestObject(ctx, owner, repo, repositoryID, pull.Number)
 }
 
 func (s *Service) syncPullRequestChangeOnly(ctx context.Context, owner, repo string, canonicalRepo database.Repository, number int) (gh.PullRequestResponse, error) {
@@ -1061,7 +1206,18 @@ func (w *ChangeSyncWorker) completeRecentPRRepairPass(ctx context.Context, state
 	if err := w.leases.release(ctx, state.ID, recentPRRepairLeaseKind, updates); err != nil {
 		return err
 	}
-	slog.Info("recent PR repair pass completed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "repaired", result.Repaired, "completed", result.Completed, "next_page", updates["recent_pr_repair_cursor_page"])
+	slog.Info(
+		"recent PR repair pass completed",
+		"state_id", state.ID,
+		"repository_id", state.RepositoryID,
+		"owner_id", w.leases.owner(),
+		"pulls_checked", result.PullsChecked,
+		"issues_checked", result.IssuesChecked,
+		"pulls_repaired", result.PullsRepaired,
+		"issues_repaired", result.IssuesRepaired,
+		"completed", result.Completed,
+		"next_page", updates["recent_pr_repair_cursor_page"],
+	)
 	return nil
 }
 

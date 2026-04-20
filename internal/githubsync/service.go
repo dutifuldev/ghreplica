@@ -34,6 +34,12 @@ func NewService(db *gorm.DB, githubClient *gh.Client, gitIndex ...*gitindex.Serv
 	return &Service{db: db, github: githubClient, git: indexer, search: searchindex.NewService(db)}
 }
 
+func (s *Service) withoutSearch() *Service {
+	clone := *s
+	clone.search = nil
+	return &clone
+}
+
 func (s *Service) UpsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
 	return s.upsertRepository(ctx, repo)
 }
@@ -56,6 +62,61 @@ func (s *Service) UpsertPullRequestReview(ctx context.Context, repositoryID uint
 
 func (s *Service) UpsertPullRequestReviewComment(ctx context.Context, repositoryID uint, pullNumber int, comment gh.PullRequestReviewCommentResponse) error {
 	return s.upsertPullRequestReviewComment(ctx, repositoryID, pullNumber, comment)
+}
+
+func (s *Service) loadStoredIssuesByNumber(ctx context.Context, repositoryID uint, numbers []int) (map[int]database.Issue, error) {
+	if len(numbers) == 0 {
+		return map[int]database.Issue{}, nil
+	}
+
+	var issues []database.Issue
+	if err := s.db.WithContext(ctx).
+		Where("repository_id = ? AND number IN ?", repositoryID, uniqueInts(numbers)).
+		Find(&issues).Error; err != nil {
+		return nil, err
+	}
+
+	result := make(map[int]database.Issue, len(issues))
+	for _, issue := range issues {
+		result[issue.Number] = issue
+	}
+	return result, nil
+}
+
+func (s *Service) loadStoredPullRequestsByNumber(ctx context.Context, repositoryID uint, numbers []int) (map[int]database.PullRequest, error) {
+	if len(numbers) == 0 {
+		return map[int]database.PullRequest{}, nil
+	}
+
+	var pulls []database.PullRequest
+	if err := s.db.WithContext(ctx).
+		Where("repository_id = ? AND number IN ?", repositoryID, uniqueInts(numbers)).
+		Find(&pulls).Error; err != nil {
+		return nil, err
+	}
+
+	result := make(map[int]database.PullRequest, len(pulls))
+	for _, pull := range pulls {
+		result[pull.Number] = pull
+	}
+	return result, nil
+}
+
+func uniqueInts(values []int) []int {
+	if len(values) == 0 {
+		return nil
+	}
+
+	seen := make(map[int]struct{}, len(values))
+	result := make([]int, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) error {
