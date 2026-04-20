@@ -19,9 +19,18 @@ import (
 const (
 	changeBackfillModeOff                 = "off"
 	changeBackfillModeOpenOnly            = "open_only"
+	changeBackfillModeOpenAndRecent       = "open_and_recent"
+	changeBackfillModeFullHistory         = "full_history"
 	defaultTargetedRefreshBurstMaxPRs     = 50
 	defaultTargetedRefreshBurstMaxRuntime = 30 * time.Second
 	defaultInventoryWriteBatchSize        = 100
+	defaultRecentPRRepairInterval         = 24 * time.Hour
+	defaultRecentPRRepairWindow           = 7 * 24 * time.Hour
+	defaultRecentPRRepairMaxPages         = 10
+	defaultRecentPRRepairPerPage          = 100
+	defaultFullHistoryRepairInterval      = 10 * time.Minute
+	defaultFullHistoryRepairMaxPages      = 10
+	defaultFullHistoryRepairPerPage       = 100
 )
 
 type RepoBackfillOptions struct {
@@ -47,17 +56,24 @@ type backfillCandidate struct {
 }
 
 type ChangeSyncWorker struct {
-	db                      *gorm.DB
-	service                 *Service
-	leases                  *repoLeaseManager
-	pollInterval            time.Duration
-	webhookRefreshDebounce  time.Duration
-	openPRInventoryMaxAge   time.Duration
-	leaseTTL                time.Duration
-	backfillMaxRuntime      time.Duration
-	backfillMaxPRsPerPass   int
-	targetedBurstMaxRuntime time.Duration
-	targetedBurstMaxPRs     int
+	db                        *gorm.DB
+	service                   *Service
+	leases                    *repoLeaseManager
+	pollInterval              time.Duration
+	webhookRefreshDebounce    time.Duration
+	openPRInventoryMaxAge     time.Duration
+	leaseTTL                  time.Duration
+	backfillMaxRuntime        time.Duration
+	backfillMaxPRsPerPass     int
+	targetedBurstMaxRuntime   time.Duration
+	targetedBurstMaxPRs       int
+	recentPRRepairInterval    time.Duration
+	recentPRRepairWindow      time.Duration
+	recentPRRepairMaxPages    int
+	recentPRRepairPerPage     int
+	fullHistoryRepairInterval time.Duration
+	fullHistoryRepairMaxPages int
+	fullHistoryRepairPerPage  int
 }
 
 func NewChangeSyncWorker(db *gorm.DB, service *Service, pollInterval, webhookRefreshDebounce, openPRInventoryMaxAge, leaseTTL, backfillMaxRuntime time.Duration, backfillMaxPRsPerPass int) *ChangeSyncWorker {
@@ -80,17 +96,24 @@ func NewChangeSyncWorker(db *gorm.DB, service *Service, pollInterval, webhookRef
 		backfillMaxPRsPerPass = 1000
 	}
 	return &ChangeSyncWorker{
-		db:                      db,
-		service:                 service,
-		leases:                  newRepoLeaseManager(db, leaseTTL),
-		pollInterval:            pollInterval,
-		webhookRefreshDebounce:  webhookRefreshDebounce,
-		openPRInventoryMaxAge:   openPRInventoryMaxAge,
-		leaseTTL:                leaseTTL,
-		backfillMaxRuntime:      backfillMaxRuntime,
-		backfillMaxPRsPerPass:   backfillMaxPRsPerPass,
-		targetedBurstMaxRuntime: defaultTargetedRefreshBurstMaxRuntime,
-		targetedBurstMaxPRs:     defaultTargetedRefreshBurstMaxPRs,
+		db:                        db,
+		service:                   service,
+		leases:                    newRepoLeaseManager(db, leaseTTL),
+		pollInterval:              pollInterval,
+		webhookRefreshDebounce:    webhookRefreshDebounce,
+		openPRInventoryMaxAge:     openPRInventoryMaxAge,
+		leaseTTL:                  leaseTTL,
+		backfillMaxRuntime:        backfillMaxRuntime,
+		backfillMaxPRsPerPass:     backfillMaxPRsPerPass,
+		targetedBurstMaxRuntime:   defaultTargetedRefreshBurstMaxRuntime,
+		targetedBurstMaxPRs:       defaultTargetedRefreshBurstMaxPRs,
+		recentPRRepairInterval:    defaultRecentPRRepairInterval,
+		recentPRRepairWindow:      defaultRecentPRRepairWindow,
+		recentPRRepairMaxPages:    defaultRecentPRRepairMaxPages,
+		recentPRRepairPerPage:     defaultRecentPRRepairPerPage,
+		fullHistoryRepairInterval: defaultFullHistoryRepairInterval,
+		fullHistoryRepairMaxPages: defaultFullHistoryRepairMaxPages,
+		fullHistoryRepairPerPage:  defaultFullHistoryRepairPerPage,
 	}
 }
 
@@ -123,6 +146,11 @@ func (w *ChangeSyncWorker) RunOnce(ctx context.Context) (bool, error) {
 	} else if processed {
 		processedAny = true
 	}
+	if processed, err := w.processRecentPRRepair(ctx); err != nil {
+		return processedAny || processed, err
+	} else if processed {
+		return true, nil
+	}
 	if processed, err := w.processInventoryScan(ctx, false); err != nil {
 		return processedAny || processed, err
 	} else if processed {
@@ -132,6 +160,14 @@ func (w *ChangeSyncWorker) RunOnce(ctx context.Context) (bool, error) {
 		return processedAny || processed, err
 	} else if processed {
 		return true, nil
+	}
+	if processedAny {
+		return true, nil
+	}
+	if processed, err := w.processFullHistoryRepair(ctx); err != nil {
+		return processed, err
+	} else if processed {
+		processedAny = true
 	}
 	if processedAny {
 		return true, nil
@@ -156,23 +192,54 @@ func (s *Service) ConfigureRepoBackfill(ctx context.Context, owner, repo, mode s
 	}
 	now := time.Now().UTC()
 	state := database.RepoChangeSyncState{
-		RepositoryID:         canonicalRepo.ID,
-		Dirty:                true,
-		DirtySince:           &now,
-		LastRequestedFetchAt: &now,
-		BackfillMode:         mode,
-		BackfillPriority:     priority,
+		RepositoryID:          canonicalRepo.ID,
+		Dirty:                 true,
+		DirtySince:            &now,
+		LastRequestedFetchAt:  &now,
+		BackfillMode:          mode,
+		BackfillPriority:      priority,
+		FullHistoryCursorPage: 1,
 	}
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "repository_id"}},
 		DoUpdates: clause.Assignments(map[string]any{
-			"dirty":                   true,
-			"dirty_since":             now,
-			"last_requested_fetch_at": now,
-			"backfill_mode":           mode,
-			"backfill_priority":       priority,
-			"updated_at":              now,
-			"last_error":              "",
+			"dirty":                    true,
+			"dirty_since":              now,
+			"last_requested_fetch_at":  now,
+			"backfill_mode":            mode,
+			"backfill_priority":        priority,
+			"full_history_cursor_page": gorm.Expr("CASE WHEN full_history_cursor_page <= 0 THEN 1 ELSE full_history_cursor_page END"),
+			"updated_at":               now,
+			"last_error":               "",
+		}),
+	}).Create(&state).Error; err != nil {
+		return database.RepoChangeSyncState{}, err
+	}
+	return s.repoChangeStateByRepositoryID(ctx, canonicalRepo.ID)
+}
+
+func (s *Service) RequestRecentPRRepair(ctx context.Context, owner, repo string) (database.RepoChangeSyncState, error) {
+	repoResp, err := s.github.GetRepository(ctx, owner, repo)
+	if err != nil {
+		return database.RepoChangeSyncState{}, err
+	}
+	canonicalRepo, err := s.upsertRepository(ctx, repoResp)
+	if err != nil {
+		return database.RepoChangeSyncState{}, err
+	}
+	now := time.Now().UTC()
+	state := database.RepoChangeSyncState{
+		RepositoryID:                  canonicalRepo.ID,
+		BackfillMode:                  changeBackfillModeOff,
+		LastRecentPRRepairRequestedAt: &now,
+		FullHistoryCursorPage:         1,
+	}
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "repository_id"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"last_recent_pr_repair_requested_at": now,
+			"updated_at":                         now,
+			"last_error":                         "",
 		}),
 	}).Create(&state).Error; err != nil {
 		return database.RepoChangeSyncState{}, err
@@ -285,32 +352,43 @@ func (s *Service) GetRepoChangeStatus(ctx context.Context, owner, repo string) (
 
 	now := time.Now().UTC()
 	return gitindex.RepoStatus{
-		RepositoryID:                 row.RepositoryID,
-		FullName:                     row.FullName,
-		LastWebhookAt:                row.LastWebhookAt,
-		LastInventoryScanStartedAt:   row.LastFetchStartedAt,
-		LastInventoryScanFinishedAt:  row.LastFetchFinishedAt,
-		LastInventoryScanSucceededAt: row.LastSuccessfulFetchAt,
-		LastBackfillStartedAt:        row.LastBackfillStartedAt,
-		LastBackfillFinishedAt:       row.LastBackfillFinishedAt,
-		BackfillMode:                 normalizeBackfillMode(row.BackfillMode),
-		BackfillPriority:             row.BackfillPriority,
-		TargetedRefreshPending:       row.TargetedRefreshPending,
-		TargetedRefreshRunning:       leaseIsActive(now, row.TargetedRefreshLeaseHeartbeatAt, row.TargetedRefreshLeaseUntil),
-		InventoryGenerationCurrent:   row.InventoryGenerationCurrent,
-		InventoryGenerationBuilding:  row.InventoryGenerationBuilding,
-		InventoryNeedsRefresh:        row.Dirty,
-		InventoryLastCommittedAt:     row.InventoryLastCommittedAt,
-		InventoryScanRunning:         leaseIsActive(now, row.FetchLeaseHeartbeatAt, row.FetchLeaseUntil),
-		BackfillRunning:              leaseIsActive(now, row.BackfillLeaseHeartbeatAt, row.BackfillLeaseUntil),
-		BackfillGeneration:           row.BackfillGeneration,
-		BackfillCursor:               row.OpenPRCursorNumber,
-		BackfillCursorUpdatedAt:      row.OpenPRCursorUpdatedAt,
-		OpenPRTotal:                  row.OpenPRTotal,
-		OpenPRCurrent:                row.OpenPRCurrent,
-		OpenPRStale:                  row.OpenPRStale,
-		OpenPRMissing:                maxInt(0, row.OpenPRTotal-row.OpenPRCurrent-row.OpenPRStale),
-		LastError:                    row.LastError,
+		RepositoryID:                      row.RepositoryID,
+		FullName:                          row.FullName,
+		LastWebhookAt:                     row.LastWebhookAt,
+		LastInventoryScanStartedAt:        row.LastFetchStartedAt,
+		LastInventoryScanFinishedAt:       row.LastFetchFinishedAt,
+		LastInventoryScanSucceededAt:      row.LastSuccessfulFetchAt,
+		LastBackfillStartedAt:             row.LastBackfillStartedAt,
+		LastBackfillFinishedAt:            row.LastBackfillFinishedAt,
+		BackfillMode:                      normalizeBackfillMode(row.BackfillMode),
+		BackfillPriority:                  row.BackfillPriority,
+		TargetedRefreshPending:            row.TargetedRefreshPending,
+		TargetedRefreshRunning:            leaseIsActive(now, row.TargetedRefreshLeaseHeartbeatAt, row.TargetedRefreshLeaseUntil),
+		InventoryGenerationCurrent:        row.InventoryGenerationCurrent,
+		InventoryGenerationBuilding:       row.InventoryGenerationBuilding,
+		InventoryNeedsRefresh:             row.Dirty,
+		InventoryLastCommittedAt:          row.InventoryLastCommittedAt,
+		InventoryScanRunning:              leaseIsActive(now, row.FetchLeaseHeartbeatAt, row.FetchLeaseUntil),
+		BackfillRunning:                   leaseIsActive(now, row.BackfillLeaseHeartbeatAt, row.BackfillLeaseUntil),
+		RecentPRRepairPending:             recentPRRepairPending(row),
+		RecentPRRepairRunning:             leaseIsActive(now, row.RecentPRRepairLeaseHeartbeatAt, row.RecentPRRepairLeaseUntil),
+		LastRecentPRRepairRequestedAt:     row.LastRecentPRRepairRequestedAt,
+		LastRecentPRRepairStartedAt:       row.LastRecentPRRepairStartedAt,
+		LastRecentPRRepairFinishedAt:      row.LastRecentPRRepairFinishedAt,
+		LastSuccessfulRecentPRRepairAt:    row.LastSuccessfulRecentPRRepairAt,
+		FullHistoryRepairRunning:          leaseIsActive(now, row.FullHistoryRepairLeaseHeartbeatAt, row.FullHistoryRepairLeaseUntil),
+		FullHistoryCursorPage:             row.FullHistoryCursorPage,
+		LastFullHistoryRepairStartedAt:    row.LastFullHistoryRepairStartedAt,
+		LastFullHistoryRepairFinishedAt:   row.LastFullHistoryRepairFinishedAt,
+		LastSuccessfulFullHistoryRepairAt: row.LastSuccessfulFullHistoryRepairAt,
+		BackfillGeneration:                row.BackfillGeneration,
+		BackfillCursor:                    row.OpenPRCursorNumber,
+		BackfillCursorUpdatedAt:           row.OpenPRCursorUpdatedAt,
+		OpenPRTotal:                       row.OpenPRTotal,
+		OpenPRCurrent:                     row.OpenPRCurrent,
+		OpenPRStale:                       row.OpenPRStale,
+		OpenPRMissing:                     maxInt(0, row.OpenPRTotal-row.OpenPRCurrent-row.OpenPRStale),
+		LastError:                         row.LastError,
 	}, nil
 }
 
@@ -484,7 +562,70 @@ func (s *Service) BackfillOpenPullRequests(ctx context.Context, owner, repo stri
 	return result, nil
 }
 
-func (s *Service) syncPullRequestChangeOnly(ctx context.Context, owner, repo string, canonicalRepo database.Repository, number int) (gh.PullRequestResponse, error) {
+func (s *Service) RepairRecentPullRequests(ctx context.Context, owner, repo string, since time.Time, maxPages, perPage int) (int, bool, error) {
+	repository, err := findRepositoryByName(ctx, s.db, owner, repo)
+	if err != nil {
+		return 0, false, err
+	}
+	if maxPages <= 0 {
+		maxPages = defaultRecentPRRepairMaxPages
+	}
+	if perPage <= 0 {
+		perPage = defaultRecentPRRepairPerPage
+	}
+
+	repaired := 0
+	cutoff := since.UTC()
+	for page := 1; page <= maxPages; page++ {
+		pulls, err := s.github.ListPullRequestsPage(ctx, owner, repo, "all", "updated", "desc", page, perPage)
+		if err != nil {
+			return repaired, false, err
+		}
+		if len(pulls) == 0 {
+			return repaired, true, nil
+		}
+		for _, pull := range pulls {
+			if pull.UpdatedAt.UTC().Before(cutoff) {
+				return repaired, true, nil
+			}
+			if _, err := s.syncPullRequestCore(ctx, owner, repo, repository, pull.Number); err != nil {
+				return repaired, false, err
+			}
+			repaired++
+		}
+	}
+	return repaired, false, nil
+}
+
+func (s *Service) RepairPullRequestHistoryPage(ctx context.Context, owner, repo string, page, perPage int) (int, bool, error) {
+	repository, err := findRepositoryByName(ctx, s.db, owner, repo)
+	if err != nil {
+		return 0, false, err
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if perPage <= 0 {
+		perPage = defaultFullHistoryRepairPerPage
+	}
+	pulls, err := s.github.ListPullRequestsPage(ctx, owner, repo, "all", "updated", "desc", page, perPage)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(pulls) == 0 {
+		return 0, true, nil
+	}
+	repaired := 0
+	for _, pull := range pulls {
+		if _, err := s.syncPullRequestCore(ctx, owner, repo, repository, pull.Number); err != nil {
+			return repaired, false, err
+		}
+		repaired++
+	}
+	return repaired, false, nil
+}
+
+func (s *Service) syncPullRequestCore(ctx context.Context, owner, repo string, canonicalRepo database.Repository, number int) (gh.PullRequestResponse, error) {
 	issue, err := s.github.GetIssue(ctx, owner, repo, number)
 	if err != nil {
 		return gh.PullRequestResponse{}, err
@@ -497,6 +638,14 @@ func (s *Service) syncPullRequestChangeOnly(ctx context.Context, owner, repo str
 		return gh.PullRequestResponse{}, err
 	}
 	if err := s.upsertPullRequest(ctx, canonicalRepo.ID, pull); err != nil {
+		return gh.PullRequestResponse{}, err
+	}
+	return pull, nil
+}
+
+func (s *Service) syncPullRequestChangeOnly(ctx context.Context, owner, repo string, canonicalRepo database.Repository, number int) (gh.PullRequestResponse, error) {
+	pull, err := s.syncPullRequestCore(ctx, owner, repo, canonicalRepo, number)
+	if err != nil {
 		return gh.PullRequestResponse{}, err
 	}
 	if err := s.SyncPullRequestIndex(ctx, owner, repo, canonicalRepo.ID, pull); err != nil {
@@ -525,6 +674,102 @@ func (w *ChangeSyncWorker) processTargetedRefreshBurst(ctx context.Context) (boo
 		}
 	}
 	return processedAny, nil
+}
+
+func (w *ChangeSyncWorker) processRecentPRRepair(ctx context.Context) (bool, error) {
+	now := time.Now().UTC()
+	recentAvailableSQL, recentAvailableArgs := w.leases.reclaimableSQL(recentPRRepairLeaseKind, now)
+	backfillAvailableSQL, backfillAvailableArgs := w.leases.reclaimableSQL(backfillLeaseKind, now)
+	fetchAvailableSQL, fetchAvailableArgs := w.leases.reclaimableSQL(fetchLeaseKind, now)
+
+	var state database.RepoChangeSyncState
+	err := w.db.WithContext(ctx).
+		Where(recentAvailableSQL, recentAvailableArgs...).
+		Where(backfillAvailableSQL, backfillAvailableArgs...).
+		Where(fetchAvailableSQL, fetchAvailableArgs...).
+		Where(
+			"(last_recent_pr_repair_requested_at IS NOT NULL AND (last_recent_pr_repair_finished_at IS NULL OR last_recent_pr_repair_requested_at >= last_recent_pr_repair_finished_at)) OR "+
+				"(backfill_mode IN ? AND (last_successful_recent_pr_repair_at IS NULL OR last_successful_recent_pr_repair_at <= ?))",
+			[]string{changeBackfillModeOpenAndRecent, changeBackfillModeFullHistory},
+			now.Add(-w.recentPRRepairInterval),
+		).
+		Order("last_recent_pr_repair_requested_at DESC NULLS LAST, backfill_priority DESC, last_successful_recent_pr_repair_at ASC NULLS FIRST, repository_id ASC").
+		First(&state).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	acquired, leasedUntil, err := w.leases.acquire(ctx, state.ID, recentPRRepairLeaseKind, now)
+	if err != nil {
+		return false, err
+	}
+	if !acquired {
+		return false, nil
+	}
+	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
+		Where("id = ? AND recent_pr_repair_lease_owner_id = ?", state.ID, w.leases.owner()).
+		Updates(map[string]any{
+			"last_recent_pr_repair_started_at": now,
+			"updated_at":                       now,
+		}).Error; err != nil {
+		return false, err
+	}
+	slog.Info("recent PR repair lease acquired", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "lease_until", leasedUntil)
+	state.RecentPRRepairLeaseOwnerID = w.leases.owner()
+	state.RecentPRRepairLeaseStartedAt = &now
+	state.RecentPRRepairLeaseHeartbeatAt = &now
+	state.RecentPRRepairLeaseUntil = leasedUntil
+	return true, w.runRecentPRRepairPass(ctx, state)
+}
+
+func (w *ChangeSyncWorker) processFullHistoryRepair(ctx context.Context) (bool, error) {
+	now := time.Now().UTC()
+	fullHistoryAvailableSQL, fullHistoryAvailableArgs := w.leases.reclaimableSQL(fullHistoryRepairLeaseKind, now)
+	recentAvailableSQL, recentAvailableArgs := w.leases.reclaimableSQL(recentPRRepairLeaseKind, now)
+	backfillAvailableSQL, backfillAvailableArgs := w.leases.reclaimableSQL(backfillLeaseKind, now)
+	fetchAvailableSQL, fetchAvailableArgs := w.leases.reclaimableSQL(fetchLeaseKind, now)
+
+	var state database.RepoChangeSyncState
+	err := w.db.WithContext(ctx).
+		Where("backfill_mode = ?", changeBackfillModeFullHistory).
+		Where(fullHistoryAvailableSQL, fullHistoryAvailableArgs...).
+		Where(recentAvailableSQL, recentAvailableArgs...).
+		Where(backfillAvailableSQL, backfillAvailableArgs...).
+		Where(fetchAvailableSQL, fetchAvailableArgs...).
+		Where("(last_successful_full_history_repair_at IS NULL OR last_successful_full_history_repair_at <= ?)", now.Add(-w.fullHistoryRepairInterval)).
+		Order("backfill_priority DESC, last_successful_full_history_repair_at ASC NULLS FIRST, repository_id ASC").
+		First(&state).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	acquired, leasedUntil, err := w.leases.acquire(ctx, state.ID, fullHistoryRepairLeaseKind, now)
+	if err != nil {
+		return false, err
+	}
+	if !acquired {
+		return false, nil
+	}
+	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
+		Where("id = ? AND full_history_repair_lease_owner_id = ?", state.ID, w.leases.owner()).
+		Updates(map[string]any{
+			"last_full_history_repair_started_at": now,
+			"updated_at":                          now,
+		}).Error; err != nil {
+		return false, err
+	}
+	slog.Info("full history repair lease acquired", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "lease_until", leasedUntil)
+	state.FullHistoryRepairLeaseOwnerID = w.leases.owner()
+	state.FullHistoryRepairLeaseStartedAt = &now
+	state.FullHistoryRepairLeaseHeartbeatAt = &now
+	state.FullHistoryRepairLeaseUntil = leasedUntil
+	return true, w.runFullHistoryRepairPass(ctx, state)
 }
 
 func (w *ChangeSyncWorker) processInventoryScan(ctx context.Context, ageOnly bool) (bool, error) {
@@ -679,6 +924,71 @@ func (w *ChangeSyncWorker) runBackfillPass(ctx context.Context, state database.R
 	return w.completeBackfillPass(ctx, state, updates)
 }
 
+func (w *ChangeSyncWorker) runRecentPRRepairPass(ctx context.Context, state database.RepoChangeSyncState) error {
+	var repaired int
+	var completed bool
+	runErr := w.runWithLeaseHeartbeat(ctx, state.ID, recentPRRepairLeaseKind, func(passCtx context.Context) error {
+		repository, err := repositoryByID(passCtx, w.db, state.RepositoryID)
+		if err != nil {
+			return err
+		}
+		owner, name, err := splitFullName(repository.FullName)
+		if err != nil {
+			return err
+		}
+		repaired, completed, err = w.service.RepairRecentPullRequests(
+			passCtx,
+			owner,
+			name,
+			time.Now().UTC().Add(-w.recentPRRepairWindow),
+			w.recentPRRepairMaxPages,
+			w.recentPRRepairPerPage,
+		)
+		return err
+	})
+	if runErr != nil {
+		return w.finishRecentPRRepairWithError(ctx, state, runErr)
+	}
+	return w.completeRecentPRRepairPass(ctx, state, repaired, completed)
+}
+
+func (w *ChangeSyncWorker) runFullHistoryRepairPass(ctx context.Context, state database.RepoChangeSyncState) error {
+	var repaired int
+	var completed bool
+	runErr := w.runWithLeaseHeartbeat(ctx, state.ID, fullHistoryRepairLeaseKind, func(passCtx context.Context) error {
+		repository, err := repositoryByID(passCtx, w.db, state.RepositoryID)
+		if err != nil {
+			return err
+		}
+		owner, name, err := splitFullName(repository.FullName)
+		if err != nil {
+			return err
+		}
+		page := state.FullHistoryCursorPage
+		if page <= 0 {
+			page = 1
+		}
+		for i := 0; i < w.fullHistoryRepairMaxPages; i++ {
+			count, done, err := w.service.RepairPullRequestHistoryPage(passCtx, owner, name, page, w.fullHistoryRepairPerPage)
+			repaired += count
+			if err != nil {
+				return err
+			}
+			if done {
+				completed = true
+				break
+			}
+			page++
+		}
+		state.FullHistoryCursorPage = page
+		return nil
+	})
+	if runErr != nil {
+		return w.finishFullHistoryRepairWithError(ctx, state, runErr)
+	}
+	return w.completeFullHistoryRepairPass(ctx, state, repaired, completed)
+}
+
 func (w *ChangeSyncWorker) completeFetchPass(ctx context.Context, state database.RepoChangeSyncState, result RepoBackfillResult) error {
 	now := time.Now().UTC()
 	updates := map[string]any{
@@ -702,6 +1012,44 @@ func (w *ChangeSyncWorker) completeBackfillPass(ctx context.Context, state datab
 		return err
 	}
 	slog.Info("change sync backfill pass completed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner())
+	return nil
+}
+
+func (w *ChangeSyncWorker) completeRecentPRRepairPass(ctx context.Context, state database.RepoChangeSyncState, repaired int, completed bool) error {
+	now := time.Now().UTC()
+	updates := map[string]any{
+		"last_error":                        "",
+		"last_recent_pr_repair_finished_at": now,
+	}
+	if completed {
+		updates["last_recent_pr_repair_requested_at"] = nil
+		updates["last_successful_recent_pr_repair_at"] = now
+	} else {
+		updates["last_recent_pr_repair_requested_at"] = now
+	}
+	if err := w.leases.release(ctx, state.ID, recentPRRepairLeaseKind, updates); err != nil {
+		return err
+	}
+	slog.Info("recent PR repair pass completed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "repaired", repaired, "completed", completed)
+	return nil
+}
+
+func (w *ChangeSyncWorker) completeFullHistoryRepairPass(ctx context.Context, state database.RepoChangeSyncState, repaired int, completed bool) error {
+	now := time.Now().UTC()
+	nextPage := state.FullHistoryCursorPage
+	if completed || nextPage <= 0 {
+		nextPage = 1
+	}
+	updates := map[string]any{
+		"last_error":                             "",
+		"last_full_history_repair_finished_at":   now,
+		"last_successful_full_history_repair_at": now,
+		"full_history_cursor_page":               nextPage,
+	}
+	if err := w.leases.release(ctx, state.ID, fullHistoryRepairLeaseKind, updates); err != nil {
+		return err
+	}
+	slog.Info("full history repair pass completed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "repaired", repaired, "completed", completed, "next_page", nextPage)
 	return nil
 }
 
@@ -729,6 +1077,32 @@ func (w *ChangeSyncWorker) finishBackfillStateWithError(ctx context.Context, sta
 		return err
 	}
 	slog.Warn("change sync backfill pass failed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "error", runErr)
+	return runErr
+}
+
+func (w *ChangeSyncWorker) finishRecentPRRepairWithError(ctx context.Context, state database.RepoChangeSyncState, runErr error) error {
+	now := time.Now().UTC()
+	updates := map[string]any{
+		"last_error":                        runErr.Error(),
+		"last_recent_pr_repair_finished_at": now,
+	}
+	if err := w.leases.release(ctx, state.ID, recentPRRepairLeaseKind, updates); err != nil {
+		return err
+	}
+	slog.Warn("recent PR repair pass failed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "error", runErr)
+	return runErr
+}
+
+func (w *ChangeSyncWorker) finishFullHistoryRepairWithError(ctx context.Context, state database.RepoChangeSyncState, runErr error) error {
+	now := time.Now().UTC()
+	updates := map[string]any{
+		"last_error":                           runErr.Error(),
+		"last_full_history_repair_finished_at": now,
+	}
+	if err := w.leases.release(ctx, state.ID, fullHistoryRepairLeaseKind, updates); err != nil {
+		return err
+	}
+	slog.Warn("full history repair pass failed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "error", runErr)
 	return runErr
 }
 
@@ -865,34 +1239,46 @@ func targetedRefreshPendingExists(ctx context.Context, db *gorm.DB, repositoryID
 }
 
 type repoChangeStatusRow struct {
-	RepositoryID                    uint       `gorm:"column:repository_id"`
-	FullName                        string     `gorm:"column:full_name"`
-	Dirty                           bool       `gorm:"column:dirty"`
-	LastWebhookAt                   *time.Time `gorm:"column:last_webhook_at"`
-	LastFetchStartedAt              *time.Time `gorm:"column:last_fetch_started_at"`
-	LastFetchFinishedAt             *time.Time `gorm:"column:last_fetch_finished_at"`
-	LastSuccessfulFetchAt           *time.Time `gorm:"column:last_successful_fetch_at"`
-	LastBackfillStartedAt           *time.Time `gorm:"column:last_backfill_started_at"`
-	LastBackfillFinishedAt          *time.Time `gorm:"column:last_backfill_finished_at"`
-	InventoryGenerationCurrent      int        `gorm:"column:inventory_generation_current"`
-	InventoryGenerationBuilding     *int       `gorm:"column:inventory_generation_building"`
-	InventoryLastCommittedAt        *time.Time `gorm:"column:inventory_last_committed_at"`
-	OpenPRTotal                     int        `gorm:"column:open_pr_total"`
-	OpenPRCurrent                   int        `gorm:"column:open_pr_current"`
-	OpenPRStale                     int        `gorm:"column:open_pr_stale"`
-	BackfillGeneration              int        `gorm:"column:backfill_generation"`
-	OpenPRCursorNumber              *int       `gorm:"column:open_pr_cursor_number"`
-	OpenPRCursorUpdatedAt           *time.Time `gorm:"column:open_pr_cursor_updated_at"`
-	BackfillMode                    string     `gorm:"column:backfill_mode"`
-	BackfillPriority                int        `gorm:"column:backfill_priority"`
-	FetchLeaseHeartbeatAt           *time.Time `gorm:"column:fetch_lease_heartbeat_at"`
-	FetchLeaseUntil                 *time.Time `gorm:"column:fetch_lease_until"`
-	BackfillLeaseHeartbeatAt        *time.Time `gorm:"column:backfill_lease_heartbeat_at"`
-	BackfillLeaseUntil              *time.Time `gorm:"column:backfill_lease_until"`
-	TargetedRefreshPending          bool       `gorm:"column:targeted_refresh_pending"`
-	TargetedRefreshLeaseHeartbeatAt *time.Time `gorm:"column:targeted_refresh_lease_heartbeat_at"`
-	TargetedRefreshLeaseUntil       *time.Time `gorm:"column:targeted_refresh_lease_until"`
-	LastError                       string     `gorm:"column:last_error"`
+	RepositoryID                      uint       `gorm:"column:repository_id"`
+	FullName                          string     `gorm:"column:full_name"`
+	Dirty                             bool       `gorm:"column:dirty"`
+	LastWebhookAt                     *time.Time `gorm:"column:last_webhook_at"`
+	LastFetchStartedAt                *time.Time `gorm:"column:last_fetch_started_at"`
+	LastFetchFinishedAt               *time.Time `gorm:"column:last_fetch_finished_at"`
+	LastSuccessfulFetchAt             *time.Time `gorm:"column:last_successful_fetch_at"`
+	LastBackfillStartedAt             *time.Time `gorm:"column:last_backfill_started_at"`
+	LastBackfillFinishedAt            *time.Time `gorm:"column:last_backfill_finished_at"`
+	LastRecentPRRepairRequestedAt     *time.Time `gorm:"column:last_recent_pr_repair_requested_at"`
+	LastRecentPRRepairStartedAt       *time.Time `gorm:"column:last_recent_pr_repair_started_at"`
+	LastRecentPRRepairFinishedAt      *time.Time `gorm:"column:last_recent_pr_repair_finished_at"`
+	LastSuccessfulRecentPRRepairAt    *time.Time `gorm:"column:last_successful_recent_pr_repair_at"`
+	LastFullHistoryRepairStartedAt    *time.Time `gorm:"column:last_full_history_repair_started_at"`
+	LastFullHistoryRepairFinishedAt   *time.Time `gorm:"column:last_full_history_repair_finished_at"`
+	LastSuccessfulFullHistoryRepairAt *time.Time `gorm:"column:last_successful_full_history_repair_at"`
+	InventoryGenerationCurrent        int        `gorm:"column:inventory_generation_current"`
+	InventoryGenerationBuilding       *int       `gorm:"column:inventory_generation_building"`
+	InventoryLastCommittedAt          *time.Time `gorm:"column:inventory_last_committed_at"`
+	OpenPRTotal                       int        `gorm:"column:open_pr_total"`
+	OpenPRCurrent                     int        `gorm:"column:open_pr_current"`
+	OpenPRStale                       int        `gorm:"column:open_pr_stale"`
+	BackfillGeneration                int        `gorm:"column:backfill_generation"`
+	OpenPRCursorNumber                *int       `gorm:"column:open_pr_cursor_number"`
+	OpenPRCursorUpdatedAt             *time.Time `gorm:"column:open_pr_cursor_updated_at"`
+	BackfillMode                      string     `gorm:"column:backfill_mode"`
+	BackfillPriority                  int        `gorm:"column:backfill_priority"`
+	FullHistoryCursorPage             int        `gorm:"column:full_history_cursor_page"`
+	FetchLeaseHeartbeatAt             *time.Time `gorm:"column:fetch_lease_heartbeat_at"`
+	FetchLeaseUntil                   *time.Time `gorm:"column:fetch_lease_until"`
+	BackfillLeaseHeartbeatAt          *time.Time `gorm:"column:backfill_lease_heartbeat_at"`
+	BackfillLeaseUntil                *time.Time `gorm:"column:backfill_lease_until"`
+	RecentPRRepairLeaseHeartbeatAt    *time.Time `gorm:"column:recent_pr_repair_lease_heartbeat_at"`
+	RecentPRRepairLeaseUntil          *time.Time `gorm:"column:recent_pr_repair_lease_until"`
+	FullHistoryRepairLeaseHeartbeatAt *time.Time `gorm:"column:full_history_repair_lease_heartbeat_at"`
+	FullHistoryRepairLeaseUntil       *time.Time `gorm:"column:full_history_repair_lease_until"`
+	TargetedRefreshPending            bool       `gorm:"column:targeted_refresh_pending"`
+	TargetedRefreshLeaseHeartbeatAt   *time.Time `gorm:"column:targeted_refresh_lease_heartbeat_at"`
+	TargetedRefreshLeaseUntil         *time.Time `gorm:"column:targeted_refresh_lease_until"`
+	LastError                         string     `gorm:"column:last_error"`
 }
 
 func (s *Service) repoChangeStatusRow(ctx context.Context, owner, repo string) (repoChangeStatusRow, error) {
@@ -910,6 +1296,13 @@ func (s *Service) repoChangeStatusRow(ctx context.Context, owner, repo string) (
 			repo_change_sync_states.last_successful_fetch_at AS last_successful_fetch_at,
 			repo_change_sync_states.last_backfill_started_at AS last_backfill_started_at,
 			repo_change_sync_states.last_backfill_finished_at AS last_backfill_finished_at,
+			repo_change_sync_states.last_recent_pr_repair_requested_at AS last_recent_pr_repair_requested_at,
+			repo_change_sync_states.last_recent_pr_repair_started_at AS last_recent_pr_repair_started_at,
+			repo_change_sync_states.last_recent_pr_repair_finished_at AS last_recent_pr_repair_finished_at,
+			repo_change_sync_states.last_successful_recent_pr_repair_at AS last_successful_recent_pr_repair_at,
+			repo_change_sync_states.last_full_history_repair_started_at AS last_full_history_repair_started_at,
+			repo_change_sync_states.last_full_history_repair_finished_at AS last_full_history_repair_finished_at,
+			repo_change_sync_states.last_successful_full_history_repair_at AS last_successful_full_history_repair_at,
 			COALESCE(repo_change_sync_states.inventory_generation_current, 0) AS inventory_generation_current,
 			repo_change_sync_states.inventory_generation_building AS inventory_generation_building,
 			repo_change_sync_states.inventory_last_committed_at AS inventory_last_committed_at,
@@ -921,10 +1314,15 @@ func (s *Service) repoChangeStatusRow(ctx context.Context, owner, repo string) (
 			repo_change_sync_states.open_pr_cursor_updated_at AS open_pr_cursor_updated_at,
 			COALESCE(repo_change_sync_states.backfill_mode, '') AS backfill_mode,
 			COALESCE(repo_change_sync_states.backfill_priority, 0) AS backfill_priority,
+			COALESCE(repo_change_sync_states.full_history_cursor_page, 1) AS full_history_cursor_page,
 			repo_change_sync_states.fetch_lease_heartbeat_at AS fetch_lease_heartbeat_at,
 			repo_change_sync_states.fetch_lease_until AS fetch_lease_until,
 			repo_change_sync_states.backfill_lease_heartbeat_at AS backfill_lease_heartbeat_at,
 			repo_change_sync_states.backfill_lease_until AS backfill_lease_until,
+			repo_change_sync_states.recent_pr_repair_lease_heartbeat_at AS recent_pr_repair_lease_heartbeat_at,
+			repo_change_sync_states.recent_pr_repair_lease_until AS recent_pr_repair_lease_until,
+			repo_change_sync_states.full_history_repair_lease_heartbeat_at AS full_history_repair_lease_heartbeat_at,
+			repo_change_sync_states.full_history_repair_lease_until AS full_history_repair_lease_until,
 			COALESCE(repo_change_sync_states.targeted_refresh_pending, FALSE) AS targeted_refresh_pending,
 			repo_change_sync_states.targeted_refresh_lease_heartbeat_at AS targeted_refresh_lease_heartbeat_at,
 			repo_change_sync_states.targeted_refresh_lease_until AS targeted_refresh_lease_until,
@@ -937,6 +1335,16 @@ func (s *Service) repoChangeStatusRow(ctx context.Context, owner, repo string) (
 		return repoChangeStatusRow{}, result.Error
 	}
 	return row, nil
+}
+
+func recentPRRepairPending(row repoChangeStatusRow) bool {
+	if row.LastRecentPRRepairRequestedAt == nil {
+		return false
+	}
+	if row.LastRecentPRRepairFinishedAt == nil {
+		return true
+	}
+	return !row.LastRecentPRRepairRequestedAt.Before(row.LastRecentPRRepairFinishedAt.UTC())
 }
 
 func (s *Service) repoChangeStateByRepositoryID(ctx context.Context, repositoryID uint) (database.RepoChangeSyncState, error) {
@@ -1009,6 +1417,10 @@ func normalizeBackfillMode(mode string) string {
 		return changeBackfillModeOff
 	case changeBackfillModeOpenOnly:
 		return changeBackfillModeOpenOnly
+	case changeBackfillModeOpenAndRecent:
+		return changeBackfillModeOpenAndRecent
+	case changeBackfillModeFullHistory:
+		return changeBackfillModeFullHistory
 	default:
 		return changeBackfillModeOpenOnly
 	}

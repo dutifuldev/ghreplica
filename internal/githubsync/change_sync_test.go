@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -205,7 +206,7 @@ func TestChangeSyncWorkerProcessesTargetedRefreshWithoutRescanningInventory(t *t
 		time.Hour,
 		time.Second,
 		time.Minute,
-		1,
+		3,
 	)
 
 	processed, err := worker.RunOnce(ctx)
@@ -259,7 +260,7 @@ func TestChangeSyncWorkerDefersInventoryRefreshWhenSnapshotIsStillUsable(t *test
 		time.Hour,
 		time.Second,
 		time.Minute,
-		1,
+		3,
 	)
 
 	processed, err := worker.RunOnce(ctx)
@@ -684,11 +685,108 @@ func TestChangeSyncWorkerStartRecoversStaleLeasesOnStartup(t *testing.T) {
 	require.Nil(t, refreshed.BackfillLeaseUntil)
 }
 
+func TestChangeSyncWorkerRecentPRRepairClosesStalePullRequest(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "open_only", 5)
+	require.NoError(t, err)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	staleAt := time.Now().UTC().Add(-2 * time.Hour)
+	issue := database.Issue{
+		ID:                10101,
+		RepositoryID:      state.RepositoryID,
+		GitHubID:          1101,
+		NodeID:            "I_101",
+		Number:            101,
+		Title:             "PR 101",
+		Body:              "stale open issue",
+		State:             "open",
+		IsPullRequest:     true,
+		PullRequestAPIURL: "https://api.github.test/repos/acme/widgets/pulls/101",
+		HTMLURL:           "https://github.com/acme/widgets/pull/101",
+		APIURL:            "https://api.github.test/repos/acme/widgets/issues/101",
+		GitHubCreatedAt:   staleAt,
+		GitHubUpdatedAt:   staleAt,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(&issue).Error)
+
+	seedPull := database.PullRequest{
+		IssueID:         issue.ID,
+		RepositoryID:    state.RepositoryID,
+		GitHubID:        2101,
+		NodeID:          "PR_101",
+		Number:          101,
+		State:           "open",
+		HeadRef:         fixture.Pulls[101].HeadRef,
+		HeadSHA:         fixture.Pulls[101].HeadSHA,
+		BaseRef:         "main",
+		BaseSHA:         fixture.BaseSHA,
+		ChangedFiles:    2,
+		CommitsCount:    1,
+		HTMLURL:         "https://github.com/acme/widgets/pull/101",
+		APIURL:          "https://api.github.test/repos/acme/widgets/pulls/101",
+		GitHubCreatedAt: staleAt,
+		GitHubUpdatedAt: staleAt,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(&seedPull).Error)
+
+	repairAt := time.Now().UTC().Add(2 * time.Hour)
+	server.SetPullState(101, "closed", repairAt)
+
+	_, err = service.RequestRecentPRRepair(ctx, "acme", "widgets")
+	require.NoError(t, err)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	prStatus, err := service.GetPullRequestChangeStatus(ctx, "acme", "widgets", 101)
+	require.NoError(t, err)
+	require.Equal(t, "closed", prStatus.State)
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.False(t, status.RecentPRRepairPending)
+	require.NotNil(t, status.LastRecentPRRepairStartedAt)
+	require.NotNil(t, status.LastRecentPRRepairFinishedAt)
+	require.NotNil(t, status.LastSuccessfulRecentPRRepairAt)
+
+	var pull database.PullRequest
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND number = ?", state.RepositoryID, 101).
+		First(&pull).Error)
+	require.Equal(t, "closed", pull.State)
+}
+
 type backfillGitHubServer struct {
 	*httptest.Server
 	mu            sync.Mutex
 	listPullCount int
 	onListPull    func()
+	pulls         map[int]github.PullRequestResponse
+	issues        map[int]github.IssueResponse
 }
 
 func (s *backfillGitHubServer) recordListPull() {
@@ -701,6 +799,26 @@ func (s *backfillGitHubServer) ListPullCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.listPullCount
+}
+
+func (s *backfillGitHubServer) SetPullState(number int, state string, updatedAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pull := s.pulls[number]
+	pull.State = state
+	pull.UpdatedAt = updatedAt.UTC()
+	s.pulls[number] = pull
+
+	issue := s.issues[number]
+	issue.State = state
+	issue.UpdatedAt = pull.UpdatedAt
+	if state == "closed" {
+		issue.ClosedAt = &pull.UpdatedAt
+	} else {
+		issue.ClosedAt = nil
+	}
+	s.issues[number] = issue
 }
 
 func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *backfillGitHubServer {
@@ -787,7 +905,10 @@ func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *
 		}
 	}
 
-	server := &backfillGitHubServer{}
+	server := &backfillGitHubServer{
+		pulls:  pulls,
+		issues: issues,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/repos/acme/widgets", func(w http.ResponseWriter, r *http.Request) {
 		writeBackfillJSON(t, w, repo)
@@ -797,17 +918,71 @@ func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *
 		if server.onListPull != nil {
 			server.onListPull()
 		}
-		writeBackfillJSON(t, w, []github.PullRequestResponse{pulls[103], pulls[102], pulls[101]})
+		server.mu.Lock()
+		defer server.mu.Unlock()
+
+		allPulls := make([]github.PullRequestResponse, 0, len(server.pulls))
+		for _, pull := range server.pulls {
+			allPulls = append(allPulls, pull)
+		}
+		sort.Slice(allPulls, func(i, j int) bool {
+			if allPulls[i].UpdatedAt.Equal(allPulls[j].UpdatedAt) {
+				return allPulls[i].Number > allPulls[j].Number
+			}
+			return allPulls[i].UpdatedAt.After(allPulls[j].UpdatedAt)
+		})
+
+		stateFilter := strings.TrimSpace(r.URL.Query().Get("state"))
+		if stateFilter != "" && stateFilter != "all" {
+			filtered := allPulls[:0]
+			for _, pull := range allPulls {
+				if pull.State == stateFilter {
+					filtered = append(filtered, pull)
+				}
+			}
+			allPulls = filtered
+		}
+
+		page := 1
+		if raw := strings.TrimSpace(r.URL.Query().Get("page")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			require.NoError(t, err)
+			if parsed > 0 {
+				page = parsed
+			}
+		}
+		perPage := 100
+		if raw := strings.TrimSpace(r.URL.Query().Get("per_page")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			require.NoError(t, err)
+			if parsed > 0 {
+				perPage = parsed
+			}
+		}
+		start := (page - 1) * perPage
+		if start >= len(allPulls) {
+			writeBackfillJSON(t, w, []github.PullRequestResponse{})
+			return
+		}
+		end := start + perPage
+		if end > len(allPulls) {
+			end = len(allPulls)
+		}
+		writeBackfillJSON(t, w, allPulls[start:end])
 	})
 	mux.HandleFunc("/repos/acme/widgets/issues/", func(w http.ResponseWriter, r *http.Request) {
 		number, ok := tailNumber(r.URL.Path, "/repos/acme/widgets/issues/")
 		require.True(t, ok)
-		writeBackfillJSON(t, w, issues[number])
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		writeBackfillJSON(t, w, server.issues[number])
 	})
 	mux.HandleFunc("/repos/acme/widgets/pulls/", func(w http.ResponseWriter, r *http.Request) {
 		number, ok := tailNumber(r.URL.Path, "/repos/acme/widgets/pulls/")
 		require.True(t, ok)
-		writeBackfillJSON(t, w, pulls[number])
+		server.mu.Lock()
+		defer server.mu.Unlock()
+		writeBackfillJSON(t, w, server.pulls[number])
 	})
 
 	server.Server = httptest.NewServer(mux)
