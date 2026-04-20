@@ -53,20 +53,26 @@ Example opt-ins:
 
 ## How It Works
 
-When `backfill_mode` is `open_and_recent` or `full_history`, the worker should run a daily repair pass over a bounded window of recently updated pull requests for that repository, even if those pull requests are no longer open.
+When `backfill_mode` is `open_and_recent` or `full_history`, the worker should run a daily repair pass over a bounded window of recently updated pull requests and pull-request-backed issues for that repository, even if those pull requests are no longer open.
 
-The worker should:
+The repair pass should work in two stages:
 
 1. keep the existing webhook projection flow
 2. keep the existing open-PR inventory and backfill flow
-3. add a separate repair pass that walks recent PRs ordered by `updated_at desc`
-4. upsert the canonical PR row directly from GitHub data
-5. advance a repair cursor so the work stays bounded and incremental
+3. list recent pull requests from GitHub using `state=all`, sorted by `updated desc`
+4. list recent issues from GitHub using `state=all`, sorted by `updated desc`, limited to issue rows that correspond to pull requests
+5. compare GitHub `updated_at` with the stored `pull_requests.github_updated_at` and `issues.github_updated_at`
+6. fetch the full PR resource only when the PR row is missing or stale
+7. fetch the full issue resource only when the issue row is missing or stale
+8. update only the rows whose GitHub object actually changed
+9. advance a repair cursor so the work stays bounded and incremental
 
 Recommended starting policy:
 
 - run once per day
 - cover PRs updated in the last 7 days
+- use the list endpoints only as a cheap stale detector
+- fetch full objects only for stale PR rows or stale issue rows
 - keep the window configurable per repo if needed later
 
 This repair path should also be manually triggerable for one repository, even if that repository is not opted into the automatic daily mode.
@@ -76,13 +82,22 @@ That gives operators two paths:
 - automatic daily repair for opted-in repos
 - an immediate repair run when stale PR state needs to be corrected now
 
-This repair pass should update:
+This repair pass should repair the GitHub PR object and the matching GitHub issue object.
+
+That means it should cover fields that can change on either side, including:
 
 - PR state
 - merged state
 - merged timestamp
 - close timestamp
+- title and body
+- labels, assignees, and similar issue-backed metadata
 - head and base metadata that GitHub returns on the PR object
+- the stored `updated_at` values on both rows
+
+This should stay a metadata repair path, not a full rebuild of every PR-adjacent resource.
+
+It should not refresh comments, reviews, review comments, search documents, or other heavier derived data as part of the daily recent repair pass.
 
 ## Why This Is The Right Shape
 
@@ -92,6 +107,10 @@ It avoids the two bad extremes:
 
 - depending entirely on webhook delivery for close-state correctness
 - re-enabling full-history PR crawling for every tracked repository
+
+It also avoids a third bad shape:
+
+- fully re-projecting every recent PR even when GitHub `updated_at` shows nothing changed
 
 It gives stronger correctness only to repositories that need it, without adding constant background pressure.
 
@@ -103,6 +122,7 @@ This mode should not:
 - trigger whole-repo scans on every webhook
 - replace the current open-PR inventory logic
 - promise full historical completeness for all PR-adjacent resources
+- fully re-sync every recent PR object on every pass
 
 ## Repository Policy
 
@@ -120,15 +140,17 @@ Initial target:
 A successful rollout should show:
 
 - known stale PRs flipping from `open` to `closed`
+- known stale PR-backed issue rows flipping from `open` to `closed`
 - no broad increase in repo-wide sync cost
 - no regression in existing webhook or open-PR repair behavior
 
 Good verification examples:
 
 - compare several known stale PRs against GitHub before the change
+- compare both the PR row and the matching issue row against GitHub before the change
 - enable `open_and_recent` or `full_history` for one repo
 - wait for at least one repair cycle
-- confirm those PRs now match GitHub state in `ghreplica`
+- confirm those PRs and issue rows now match GitHub state in `ghreplica`
 
 ## Operational Rule
 
