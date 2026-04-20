@@ -889,25 +889,44 @@ func (w *ChangeSyncWorker) processRecentPRRepair(ctx context.Context) (bool, err
 	state.RecentPRRepairLeaseStartedAt = &now
 	state.RecentPRRepairLeaseHeartbeatAt = &now
 	state.RecentPRRepairLeaseUntil = leasedUntil
-	return true, w.runRecentPRRepairPass(ctx, state)
+	result, err := w.runRecentPRRepairPass(ctx, state)
+	if err != nil {
+		return true, err
+	}
+	if state.BackfillMode == changeBackfillModeFullHistory && !result.Completed {
+		if processed, err := w.processFullHistoryRepairForRepository(ctx, state.RepositoryID); err != nil {
+			return true, err
+		} else if processed {
+			return true, nil
+		}
+	}
+	return true, nil
 }
 
 func (w *ChangeSyncWorker) processFullHistoryRepair(ctx context.Context) (bool, error) {
+	return w.processFullHistoryRepairForRepository(ctx, 0)
+}
+
+func (w *ChangeSyncWorker) processFullHistoryRepairForRepository(ctx context.Context, repositoryID uint) (bool, error) {
 	now := time.Now().UTC()
 	fullHistoryAvailableSQL, fullHistoryAvailableArgs := w.leases.reclaimableSQL(fullHistoryRepairLeaseKind, now)
 	recentAvailableSQL, recentAvailableArgs := w.leases.reclaimableSQL(recentPRRepairLeaseKind, now)
 	backfillAvailableSQL, backfillAvailableArgs := w.leases.reclaimableSQL(backfillLeaseKind, now)
 	fetchAvailableSQL, fetchAvailableArgs := w.leases.reclaimableSQL(fetchLeaseKind, now)
 
-	var state database.RepoChangeSyncState
-	err := w.db.WithContext(ctx).
+	query := w.db.WithContext(ctx).
 		Where("backfill_mode = ?", changeBackfillModeFullHistory).
 		Where(fullHistoryAvailableSQL, fullHistoryAvailableArgs...).
 		Where(recentAvailableSQL, recentAvailableArgs...).
 		Where(backfillAvailableSQL, backfillAvailableArgs...).
 		Where(fetchAvailableSQL, fetchAvailableArgs...).
-		Where("(last_successful_full_history_repair_at IS NULL OR last_successful_full_history_repair_at <= ?)", now.Add(-w.fullHistoryRepairInterval)).
-		Order("backfill_priority DESC, last_successful_full_history_repair_at ASC NULLS FIRST, repository_id ASC").
+		Where("(last_successful_full_history_repair_at IS NULL OR last_successful_full_history_repair_at <= ?)", now.Add(-w.fullHistoryRepairInterval))
+	if repositoryID != 0 {
+		query = query.Where("repository_id = ?", repositoryID)
+	}
+
+	var state database.RepoChangeSyncState
+	err := query.Order("backfill_priority DESC, last_successful_full_history_repair_at ASC NULLS FIRST, repository_id ASC").
 		First(&state).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1091,7 +1110,7 @@ func (w *ChangeSyncWorker) runBackfillPass(ctx context.Context, state database.R
 	return w.completeBackfillPass(ctx, state, updates)
 }
 
-func (w *ChangeSyncWorker) runRecentPRRepairPass(ctx context.Context, state database.RepoChangeSyncState) error {
+func (w *ChangeSyncWorker) runRecentPRRepairPass(ctx context.Context, state database.RepoChangeSyncState) (recentPRRepairResult, error) {
 	var result recentPRRepairResult
 	runErr := w.runWithLeaseHeartbeat(ctx, state.ID, recentPRRepairLeaseKind, func(passCtx context.Context) error {
 		repository, err := repositoryByID(passCtx, w.db, state.RepositoryID)
@@ -1114,9 +1133,9 @@ func (w *ChangeSyncWorker) runRecentPRRepairPass(ctx context.Context, state data
 		return err
 	})
 	if runErr != nil {
-		return w.finishRecentPRRepairWithError(ctx, state, runErr)
+		return recentPRRepairResult{}, w.finishRecentPRRepairWithError(ctx, state, runErr)
 	}
-	return w.completeRecentPRRepairPass(ctx, state, result)
+	return result, w.completeRecentPRRepairPass(ctx, state, result)
 }
 
 func (w *ChangeSyncWorker) runFullHistoryRepairPass(ctx context.Context, state database.RepoChangeSyncState) error {

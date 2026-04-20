@@ -975,6 +975,58 @@ func TestChangeSyncWorkerRecentPRRepairAdvancesCursorAcrossPages(t *testing.T) {
 	require.Equal(t, "closed", pr102.State)
 }
 
+func TestChangeSyncWorkerFullHistoryModeHandsOffToFullHistoryAfterIncompleteRecentRepair(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "full_history", 5)
+	require.NoError(t, err)
+
+	staleAt := time.Now().UTC().Add(-2 * time.Hour)
+	for _, number := range []int{101, 102, 103} {
+		seedStalePull(t, ctx, db, fixture, state.RepositoryID, number, staleAt)
+		server.SetPullState(number, "closed", time.Now().UTC().Add(2*time.Hour+time.Duration(number)*time.Minute))
+	}
+
+	_, err = service.RequestRecentPRRepair(ctx, "acme", "widgets")
+	require.NoError(t, err)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+	workerRecentMaxPages(worker, 1, 1)
+	workerFullHistoryMaxPages(worker, 1, 1)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, 2, server.ListPullCount())
+	require.Equal(t, 1, server.ListIssueCount())
+
+	var refreshed database.RepoChangeSyncState
+	require.NoError(t, db.WithContext(ctx).Where("id = ?", state.ID).First(&refreshed).Error)
+	require.Equal(t, 2, refreshed.RecentPRRepairCursorPage)
+	require.NotNil(t, refreshed.LastRecentPRRepairFinishedAt)
+	require.NotNil(t, refreshed.LastFullHistoryRepairFinishedAt)
+}
+
 func TestChangeSyncWorkerFullHistoryRepairRunsBeforeTargetedRefreshBurst(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
@@ -1187,6 +1239,12 @@ func workerRecentMaxPages(worker *githubsync.ChangeSyncWorker, maxPages, perPage
 	workerValue := reflect.ValueOf(worker).Elem()
 	setUnexportedInt(workerValue.FieldByName("recentPRRepairMaxPages"), int64(maxPages))
 	setUnexportedInt(workerValue.FieldByName("recentPRRepairPerPage"), int64(perPage))
+}
+
+func workerFullHistoryMaxPages(worker *githubsync.ChangeSyncWorker, maxPages, perPage int) {
+	workerValue := reflect.ValueOf(worker).Elem()
+	setUnexportedInt(workerValue.FieldByName("fullHistoryRepairMaxPages"), int64(maxPages))
+	setUnexportedInt(workerValue.FieldByName("fullHistoryRepairPerPage"), int64(perPage))
 }
 
 func setUnexportedInt(field reflect.Value, value int64) {
