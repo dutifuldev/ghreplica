@@ -7,6 +7,8 @@ description: Explain ghreplica and teach how to use the ghr CLI for mirrored Git
 
 Use this skill when you need to explain what `ghreplica` is, show how to use the `ghr` CLI, or guide someone through the mirrored read, change, and search surfaces in this repository.
 
+`ghreplica` should be treated as a general GitHub mirror, not as a component shaped around one downstream tool or product.
+
 ## What ghreplica is
 
 `ghreplica` is a GitHub mirror with three separate read surfaces:
