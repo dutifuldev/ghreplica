@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -48,6 +49,10 @@ type changeStatusProvider interface {
 
 type structuralSearchProvider interface {
 	SearchStructural(ctx context.Context, owner, repo string, request gitindex.StructuralSearchRequest) (gitindex.StructuralSearchResponse, error)
+}
+
+type rawJSONRow struct {
+	RawJSON []byte `gorm:"column:raw_json"`
 }
 
 func NewServer(db *gorm.DB, options Options) *Server {
@@ -170,23 +175,24 @@ func (s *Server) handleGitHubWebhook(c echo.Context) error {
 }
 
 func (s *Server) handleGetRepository(c echo.Context) error {
-	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
-	if err != nil {
+	var repo struct {
+		RawJSON []byte `gorm:"column:raw_json"`
+	}
+	if err := s.db.WithContext(c.Request().Context()).
+		Model(&database.Repository{}).
+		Select("raw_json").
+		Where("owner_login = ? AND name = ?", c.Param("owner"), c.Param("repo")).
+		First(&repo).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
 		}
 		return err
 	}
-
-	payload, err := decodeStoredJSON(repo.RawJSON)
-	if err != nil {
-		return err
-	}
-	return c.JSON(http.StatusOK, payload)
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSONCharsetUTF8, repo.RawJSON)
 }
 
 func (s *Server) handleGetIssue(c echo.Context) error {
-	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	repoID, err := findRepositoryID(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
@@ -199,9 +205,11 @@ func (s *Server) handleGetIssue(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid issue number"})
 	}
 
-	var issue database.Issue
+	var issue rawJSONRow
 	if err := s.db.WithContext(c.Request().Context()).
-		Where("repository_id = ? AND number = ?", repo.ID, number).
+		Model(&database.Issue{}).
+		Select("raw_json").
+		Where("repository_id = ? AND number = ?", repoID, number).
 		First(&issue).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
@@ -209,15 +217,11 @@ func (s *Server) handleGetIssue(c echo.Context) error {
 		return err
 	}
 
-	payload, err := decodeStoredJSON(issue.RawJSON)
-	if err != nil {
-		return err
-	}
-	return c.JSON(http.StatusOK, payload)
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSONCharsetUTF8, issue.RawJSON)
 }
 
 func (s *Server) handleListIssues(c echo.Context) error {
-	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	repoID, err := findRepositoryID(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
@@ -233,14 +237,14 @@ func (s *Server) handleListIssues(c echo.Context) error {
 	perPage := clamp(parsePositiveInt(c.QueryParam("per_page"), 30), 1, 100)
 
 	var total int64
-	query := s.db.WithContext(c.Request().Context()).Model(&database.Issue{}).Where("repository_id = ?", repo.ID)
+	query := s.db.WithContext(c.Request().Context()).Model(&database.Issue{}).Where("repository_id = ?", repoID)
 	query = applyStateFilter(query, state)
 	if err := query.Count(&total).Error; err != nil {
 		return err
 	}
 
-	var issues []database.Issue
-	if err := query.Preload("Author").Order("github_created_at DESC").Limit(perPage).Offset((page - 1) * perPage).Find(&issues).Error; err != nil {
+	var issues []rawJSONRow
+	if err := query.Select("raw_json").Order("github_created_at DESC").Limit(perPage).Offset((page - 1) * perPage).Find(&issues).Error; err != nil {
 		return err
 	}
 
@@ -253,15 +257,13 @@ func (s *Server) handleListIssues(c echo.Context) error {
 		c.Response().Header().Set("Link", link)
 	}
 
-	response, err := decodeStoredJSONArrayIssues(issues)
-	if err != nil {
-		return err
-	}
-	return c.JSON(http.StatusOK, response)
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSONCharsetUTF8, encodeRawJSONArray(issues, func(issue rawJSONRow) []byte {
+		return issue.RawJSON
+	}))
 }
 
 func (s *Server) handleListPullRequests(c echo.Context) error {
-	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	repoID, err := findRepositoryID(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
@@ -277,19 +279,15 @@ func (s *Server) handleListPullRequests(c echo.Context) error {
 	perPage := clamp(parsePositiveInt(c.QueryParam("per_page"), 30), 1, 100)
 
 	var total int64
-	query := s.db.WithContext(c.Request().Context()).Model(&database.PullRequest{}).Where("repository_id = ?", repo.ID)
+	query := s.db.WithContext(c.Request().Context()).Model(&database.PullRequest{}).Where("repository_id = ?", repoID)
 	query = applyStateFilter(query, state)
 	if err := query.Count(&total).Error; err != nil {
 		return err
 	}
 
-	var pulls []database.PullRequest
+	var pulls []rawJSONRow
 	if err := query.
-		Preload("Issue").
-		Preload("Issue.Author").
-		Preload("MergedBy").
-		Preload("HeadRepo.Owner").
-		Preload("BaseRepo.Owner").
+		Select("raw_json").
 		Order("github_created_at DESC").
 		Limit(perPage).
 		Offset((page - 1) * perPage).
@@ -306,11 +304,9 @@ func (s *Server) handleListPullRequests(c echo.Context) error {
 		c.Response().Header().Set("Link", link)
 	}
 
-	response, err := decodeStoredJSONArrayPullRequests(pulls)
-	if err != nil {
-		return err
-	}
-	return c.JSON(http.StatusOK, response)
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSONCharsetUTF8, encodeRawJSONArray(pulls, func(pull rawJSONRow) []byte {
+		return pull.RawJSON
+	}))
 }
 
 func (s *Server) handleGetPullRequest(c echo.Context) error {
@@ -476,6 +472,20 @@ func findRepositoryID(ctx context.Context, db *gorm.DB, owner, repo string) (uin
 		Where("owner_login = ? AND name = ?", owner, repo).
 		First(&out).Error
 	return out.ID, err
+}
+
+func encodeRawJSONArray[T any](items []T, raw func(T) []byte) []byte {
+	var buf bytes.Buffer
+	buf.Grow(2 + len(items)*2)
+	buf.WriteByte('[')
+	for i, item := range items {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.Write(raw(item))
+	}
+	buf.WriteByte(']')
+	return buf.Bytes()
 }
 
 func applyStateFilter(query *gorm.DB, state string) *gorm.DB {

@@ -26,6 +26,10 @@ type stubChangeStatusProvider struct {
 	repoErr    error
 }
 
+type testRawJSONRow struct {
+	RawJSON []byte `gorm:"column:raw_json"`
+}
+
 func (s stubChangeStatusProvider) GetRepoChangeStatus(ctx context.Context, owner, repo string) (gitindex.RepoStatus, error) {
 	return s.repoStatus, s.repoErr
 }
@@ -432,14 +436,40 @@ func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 
 	server := httpapi.NewServer(db, httpapi.Options{})
 
+	var storedRepo testRawJSONRow
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.Repository{}).
+		Select("raw_json").
+		Where("owner_login = ? AND name = ?", "openclaw", "openclaw").
+		First(&storedRepo).Error)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw", nil)
+	rec := httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, string(storedRepo.RawJSON), rec.Body.String())
+
+	var storedIssue testRawJSONRow
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.Issue{}).
+		Select("raw_json").
+		Where("repository_id = (SELECT id FROM repositories WHERE owner_login = ? AND name = ?) AND number = ?", "openclaw", "openclaw", 66797).
+		First(&storedIssue).Error)
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/issues/66797", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, string(storedIssue.RawJSON), rec.Body.String())
+
 	var storedPull database.PullRequest
 	require.NoError(t, db.WithContext(ctx).
 		Select("raw_json").
 		Where("repository_id = (SELECT id FROM repositories WHERE owner_login = ? AND name = ?) AND number = ?", "openclaw", "openclaw", 66863).
 		First(&storedPull).Error)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/pulls/66863", nil)
-	rec := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/pulls/66863", nil)
+	rec = httptest.NewRecorder()
 	server.Echo().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, string(storedPull.RawJSON), rec.Body.String())
@@ -453,6 +483,44 @@ func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 	require.Equal(t, "Yellowfish23/openclaw", head["repo"].(map[string]any)["full_name"])
 	require.Equal(t, "openclaw/openclaw", base["repo"].(map[string]any)["full_name"])
 	require.Equal(t, "Yellowfish23", pull["user"].(map[string]any)["login"])
+
+	var storedIssues []testRawJSONRow
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.Issue{}).
+		Select("raw_json").
+		Where("repository_id = (SELECT id FROM repositories WHERE owner_login = ? AND name = ?)", "openclaw", "openclaw").
+		Order("github_created_at DESC").
+		Find(&storedIssues).Error)
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/issues?state=all", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var issues []json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &issues))
+	require.Len(t, issues, len(storedIssues))
+	for i, stored := range storedIssues {
+		require.JSONEq(t, string(stored.RawJSON), string(issues[i]))
+	}
+
+	var storedPulls []testRawJSONRow
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.PullRequest{}).
+		Select("raw_json").
+		Where("repository_id = (SELECT id FROM repositories WHERE owner_login = ? AND name = ?)", "openclaw", "openclaw").
+		Order("github_created_at DESC").
+		Find(&storedPulls).Error)
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/pulls?state=all", nil)
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var pulls []json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &pulls))
+	require.Len(t, pulls, len(storedPulls))
+	for i, stored := range storedPulls {
+		require.JSONEq(t, string(stored.RawJSON), string(pulls[i]))
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/v1/github/repos/openclaw/openclaw/pulls/66863/reviews", nil)
 	rec = httptest.NewRecorder()
@@ -517,32 +585,50 @@ func TestGitHubExtensionBatchReadObjects(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 
+	var storedIssueBatch testRawJSONRow
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.Issue{}).
+		Select("raw_json").
+		Where("repository_id = (SELECT id FROM repositories WHERE owner_login = ? AND name = ?) AND number = ?", "openclaw", "openclaw", 66797).
+		First(&storedIssueBatch).Error)
+
+	var storedPullBatch testRawJSONRow
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.PullRequest{}).
+		Select("raw_json").
+		Where("repository_id = (SELECT id FROM repositories WHERE owner_login = ? AND name = ?) AND number = ?", "openclaw", "openclaw", 66863).
+		First(&storedPullBatch).Error)
+
 	var payload struct {
-		Results []map[string]any `json:"results"`
+		Results []struct {
+			Type   string          `json:"type"`
+			Number int             `json:"number"`
+			Found  bool            `json:"found"`
+			Object json.RawMessage `json:"object"`
+		} `json:"results"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &payload))
 	require.Len(t, payload.Results, 4)
 
-	require.Equal(t, "issue", payload.Results[0]["type"])
-	require.EqualValues(t, 66797, payload.Results[0]["number"])
-	require.Equal(t, true, payload.Results[0]["found"])
-	require.EqualValues(t, 66797, payload.Results[0]["object"].(map[string]any)["number"])
+	require.Equal(t, "issue", payload.Results[0].Type)
+	require.EqualValues(t, 66797, payload.Results[0].Number)
+	require.Equal(t, true, payload.Results[0].Found)
+	require.JSONEq(t, string(storedIssueBatch.RawJSON), string(payload.Results[0].Object))
 
-	require.Equal(t, "pull_request", payload.Results[1]["type"])
-	require.EqualValues(t, 66863, payload.Results[1]["number"])
-	require.Equal(t, true, payload.Results[1]["found"])
-	require.EqualValues(t, 66863, payload.Results[1]["object"].(map[string]any)["number"])
+	require.Equal(t, "pull_request", payload.Results[1].Type)
+	require.EqualValues(t, 66863, payload.Results[1].Number)
+	require.Equal(t, true, payload.Results[1].Found)
+	require.JSONEq(t, string(storedPullBatch.RawJSON), string(payload.Results[1].Object))
 
-	require.Equal(t, "pull_request", payload.Results[2]["type"])
-	require.EqualValues(t, 999999, payload.Results[2]["number"])
-	require.Equal(t, false, payload.Results[2]["found"])
-	_, ok := payload.Results[2]["object"]
-	require.False(t, ok)
+	require.Equal(t, "pull_request", payload.Results[2].Type)
+	require.EqualValues(t, 999999, payload.Results[2].Number)
+	require.Equal(t, false, payload.Results[2].Found)
+	require.Nil(t, payload.Results[2].Object)
 
-	require.Equal(t, "issue", payload.Results[3]["type"])
-	require.EqualValues(t, 66797, payload.Results[3]["number"])
-	require.Equal(t, true, payload.Results[3]["found"])
-	require.EqualValues(t, 66797, payload.Results[3]["object"].(map[string]any)["number"])
+	require.Equal(t, "issue", payload.Results[3].Type)
+	require.EqualValues(t, 66797, payload.Results[3].Number)
+	require.Equal(t, true, payload.Results[3].Found)
+	require.JSONEq(t, string(storedIssueBatch.RawJSON), string(payload.Results[3].Object))
 }
 
 func TestGitHubExtensionBatchReadObjectsRejectsInvalidInput(t *testing.T) {
