@@ -6,6 +6,12 @@
 
 The project should let downstream systems work against GitHub-shaped data without each tool needing to build and maintain its own partial sync layer. The mirror should be reliable, explicit about completeness, and practical to operate for both small repos and large active repos.
 
+`ghreplica` should stay agnostic of any one downstream consumer.
+
+Do not shape `ghreplica` around a particular external project or product unless there is a strong general reason that improves the mirror itself.
+
+If some downstream tool needs product-specific behavior or metadata, keep that behavior outside `ghreplica` or behind clearly separate extension surfaces.
+
 The intended long-term shape is:
 
 - webhook-first ingestion

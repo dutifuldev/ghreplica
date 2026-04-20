@@ -7,27 +7,6 @@ description: Explain ghreplica and teach how to use the ghr CLI for mirrored Git
 
 Use this skill when you need to explain what `ghreplica` is, show how to use the `ghr` CLI, or guide someone through the mirrored read, change, and search surfaces in this repository.
 
-## Boundary with `prtags`
-
-`ghreplica` is the GitHub-shaped mirror.
-
-`prtags` is the curation layer on top of mirrored GitHub objects.
-
-Use this rule of thumb:
-
-- if the question is about mirrored GitHub repositories, issues, pull requests, reviews, comments, or git-backed change truth, start with `ghreplica`
-- if the question is about groups, annotations, or `prtags` request behavior, start with `prtags`
-- if the question crosses both services, keep the boundary explicit when you explain the behavior or propose a fix
-
-Current `prtags` behavior that matters when debugging cross-service flows:
-
-- `group get` is refs-only by default
-- metadata is opt-in:
-  - CLI: `--include-metadata`
-  - HTTP: `?include=metadata`
-- metadata reads are cache-first from `target_projections`
-- group member writes should not block on live `ghreplica` reads before succeeding
-
 ## What ghreplica is
 
 `ghreplica` is a GitHub mirror with three separate read surfaces:
@@ -43,7 +22,7 @@ The `ghr` CLI is a thin client over those APIs.
 
 ## Performance measurement rule
 
-When checking whether a `ghreplica` or `prtags` fetch is actually fast:
+When checking whether a `ghreplica` fetch is actually fast:
 
 1. measure the direct HTTP endpoint first
 2. measure the exact CLI command separately
