@@ -201,6 +201,7 @@ type RepoChangeSyncState struct {
 	LastRecentPRRepairStartedAt       *time.Time
 	LastRecentPRRepairFinishedAt      *time.Time
 	LastSuccessfulRecentPRRepairAt    *time.Time
+	RecentPRRepairCursorPage          int
 	RecentPRRepairLeaseOwnerID        string `gorm:"index"`
 	RecentPRRepairLeaseStartedAt      *time.Time
 	RecentPRRepairLeaseHeartbeatAt    *time.Time `gorm:"index"`

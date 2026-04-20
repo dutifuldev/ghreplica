@@ -3,6 +3,7 @@ ALTER TABLE repo_change_sync_states
     ADD COLUMN IF NOT EXISTS last_recent_pr_repair_started_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS last_recent_pr_repair_finished_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS last_successful_recent_pr_repair_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS recent_pr_repair_cursor_page INTEGER NOT NULL DEFAULT 1,
     ADD COLUMN IF NOT EXISTS recent_pr_repair_lease_owner_id TEXT NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS recent_pr_repair_lease_started_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS recent_pr_repair_lease_heartbeat_at TIMESTAMPTZ,
