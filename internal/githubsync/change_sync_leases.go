@@ -15,8 +15,10 @@ import (
 type repoLeaseKind string
 
 const (
-	fetchLeaseKind    repoLeaseKind = "fetch"
-	backfillLeaseKind repoLeaseKind = "backfill"
+	fetchLeaseKind             repoLeaseKind = "fetch"
+	backfillLeaseKind          repoLeaseKind = "backfill"
+	recentPRRepairLeaseKind    repoLeaseKind = "recent_pr_repair"
+	fullHistoryRepairLeaseKind repoLeaseKind = "full_history_repair"
 )
 
 type repoLeaseManager struct {
@@ -28,8 +30,10 @@ type repoLeaseManager struct {
 }
 
 type leaseRecoveryResult struct {
-	FetchCleared    int64
-	BackfillCleared int64
+	FetchCleared             int64
+	BackfillCleared          int64
+	RecentPRRepairCleared    int64
+	FullHistoryRepairCleared int64
 }
 
 func newRepoLeaseManager(db *gorm.DB, leaseTTL time.Duration) *repoLeaseManager {
@@ -131,7 +135,20 @@ func (m *repoLeaseManager) recoverStale(ctx context.Context) (leaseRecoveryResul
 	if err != nil {
 		return leaseRecoveryResult{}, err
 	}
-	return leaseRecoveryResult{FetchCleared: fetchCleared, BackfillCleared: backfillCleared}, nil
+	recentPRRepairCleared, err := m.clearStaleKind(ctx, recentPRRepairLeaseKind, now, staleBefore)
+	if err != nil {
+		return leaseRecoveryResult{}, err
+	}
+	fullHistoryRepairCleared, err := m.clearStaleKind(ctx, fullHistoryRepairLeaseKind, now, staleBefore)
+	if err != nil {
+		return leaseRecoveryResult{}, err
+	}
+	return leaseRecoveryResult{
+		FetchCleared:             fetchCleared,
+		BackfillCleared:          backfillCleared,
+		RecentPRRepairCleared:    recentPRRepairCleared,
+		FullHistoryRepairCleared: fullHistoryRepairCleared,
+	}, nil
 }
 
 func (m *repoLeaseManager) clearStaleKind(ctx context.Context, kind repoLeaseKind, now, staleBefore time.Time) (int64, error) {
@@ -167,6 +184,10 @@ func leaseColumns(kind repoLeaseKind) (ownerCol, startedCol, heartbeatCol, until
 		return "fetch_lease_owner_id", "fetch_lease_started_at", "fetch_lease_heartbeat_at", "fetch_lease_until"
 	case backfillLeaseKind:
 		return "backfill_lease_owner_id", "backfill_lease_started_at", "backfill_lease_heartbeat_at", "backfill_lease_until"
+	case recentPRRepairLeaseKind:
+		return "recent_pr_repair_lease_owner_id", "recent_pr_repair_lease_started_at", "recent_pr_repair_lease_heartbeat_at", "recent_pr_repair_lease_until"
+	case fullHistoryRepairLeaseKind:
+		return "full_history_repair_lease_owner_id", "full_history_repair_lease_started_at", "full_history_repair_lease_heartbeat_at", "full_history_repair_lease_until"
 	default:
 		panic("unknown repo lease kind")
 	}
@@ -224,11 +245,18 @@ func (w *ChangeSyncWorker) recoverLeases(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if result.FetchCleared == 0 && result.BackfillCleared == 0 {
+	if result.FetchCleared == 0 && result.BackfillCleared == 0 && result.RecentPRRepairCleared == 0 && result.FullHistoryRepairCleared == 0 {
 		slog.Info("change sync lease recovery complete", "owner_id", w.leases.owner())
 		return nil
 	}
-	slog.Info("change sync lease recovery complete", "owner_id", w.leases.owner(), "fetch_cleared", result.FetchCleared, "backfill_cleared", result.BackfillCleared)
+	slog.Info(
+		"change sync lease recovery complete",
+		"owner_id", w.leases.owner(),
+		"fetch_cleared", result.FetchCleared,
+		"backfill_cleared", result.BackfillCleared,
+		"recent_pr_repair_cleared", result.RecentPRRepairCleared,
+		"full_history_repair_cleared", result.FullHistoryRepairCleared,
+	)
 	return nil
 }
 

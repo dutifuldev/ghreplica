@@ -39,6 +39,8 @@ func run(args []string) error {
 		return runBackfill(cfg, args[1:])
 	case "refresh":
 		return runRefresh(cfg, args[1:])
+	case "repair":
+		return runRepair(cfg, args[1:])
 	case "sync":
 		return runSync(cfg, args[1:])
 	case "search-index":
@@ -173,7 +175,7 @@ func runBackfill(cfg config.Config, args []string) error {
 
 	rest := append(targetArgs, backfillFlags.Args()...)
 	if len(rest) != 2 || rest[0] != "repo" {
-		return errors.New("usage: ghreplica backfill repo <owner>/<repo> [--mode open_only] [--priority N]")
+		return errors.New("usage: ghreplica backfill repo <owner>/<repo> [--mode open_only|open_and_recent|full_history] [--priority N]")
 	}
 
 	owner, repo, err := config.ParseFullName(rest[1])
@@ -193,6 +195,37 @@ func runBackfill(cfg config.Config, args []string) error {
 	client := app.NewGitHubClient(cfg)
 	service := githubsync.NewService(dbHandle.DB, client, app.NewGitIndexService(dbHandle.DB, client, cfg))
 	_, err = service.ConfigureRepoBackfill(context.Background(), owner, repo, *mode, *priority)
+	return err
+}
+
+func runRepair(cfg config.Config, args []string) error {
+	repairFlags := flag.NewFlagSet("repair", flag.ContinueOnError)
+	if err := repairFlags.Parse(args); err != nil {
+		return err
+	}
+
+	rest := repairFlags.Args()
+	if len(rest) != 3 || rest[0] != "recent" || rest[1] != "repo" {
+		return errors.New("usage: ghreplica repair recent repo <owner>/<repo>")
+	}
+	if err := cfg.ValidateDatabase(); err != nil {
+		return err
+	}
+
+	owner, repo, err := config.ParseFullName(rest[2])
+	if err != nil {
+		return err
+	}
+
+	dbHandle, err := app.OpenDatabaseHandle(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dbHandle.Close() }()
+
+	client := app.NewGitHubClient(cfg)
+	service := githubsync.NewService(dbHandle.DB, client, app.NewGitIndexService(dbHandle.DB, client, cfg))
+	_, err = service.RequestRecentPRRepair(context.Background(), owner, repo)
 	return err
 }
 
@@ -228,7 +261,8 @@ func usageError() error {
 	fmt.Fprintf(os.Stderr, "usage:\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica serve\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica migrate up\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica backfill repo <owner>/<repo> [--mode open_only] [--priority N]\n")
+	fmt.Fprintf(os.Stderr, "  ghreplica backfill repo <owner>/<repo> [--mode open_only|open_and_recent|full_history] [--priority N]\n")
+	fmt.Fprintf(os.Stderr, "  ghreplica repair recent repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica refresh repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica search-index repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica sync repo <owner>/<repo>\n")

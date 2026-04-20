@@ -97,14 +97,22 @@ type MirrorActivityResponse struct {
 	BackfillRunning           bool `json:"backfill_running"`
 	TargetedRefreshPending    bool `json:"targeted_refresh_pending"`
 	TargetedRefreshRunning    bool `json:"targeted_refresh_running"`
+	RecentPRRepairPending     bool `json:"recent_pr_repair_pending"`
+	RecentPRRepairRunning     bool `json:"recent_pr_repair_running"`
+	FullHistoryRepairRunning  bool `json:"full_history_repair_running"`
 	InventoryRefreshRequested bool `json:"inventory_refresh_requested"`
 }
 
 type MirrorStatusTimestampsResponse struct {
-	LastInventoryScanStartedAt  *time.Time `json:"last_inventory_scan_started_at"`
-	LastInventoryScanFinishedAt *time.Time `json:"last_inventory_scan_finished_at"`
-	LastBackfillStartedAt       *time.Time `json:"last_backfill_started_at"`
-	LastBackfillFinishedAt      *time.Time `json:"last_backfill_finished_at"`
+	LastInventoryScanStartedAt      *time.Time `json:"last_inventory_scan_started_at"`
+	LastInventoryScanFinishedAt     *time.Time `json:"last_inventory_scan_finished_at"`
+	LastBackfillStartedAt           *time.Time `json:"last_backfill_started_at"`
+	LastBackfillFinishedAt          *time.Time `json:"last_backfill_finished_at"`
+	LastRecentPRRepairRequestedAt   *time.Time `json:"last_recent_pr_repair_requested_at"`
+	LastRecentPRRepairStartedAt     *time.Time `json:"last_recent_pr_repair_started_at"`
+	LastRecentPRRepairFinishedAt    *time.Time `json:"last_recent_pr_repair_finished_at"`
+	LastFullHistoryRepairStartedAt  *time.Time `json:"last_full_history_repair_started_at"`
+	LastFullHistoryRepairFinishedAt *time.Time `json:"last_full_history_repair_finished_at"`
 }
 
 type MirrorRepositoryStatusResponse struct {

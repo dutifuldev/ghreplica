@@ -28,6 +28,20 @@ func TestRunBackfillAcceptsFlagsBeforeTarget(t *testing.T) {
 	require.EqualError(t, err, "DATABASE_URL is required")
 }
 
+func TestRunBackfillAcceptsNewRepairModes(t *testing.T) {
+	for _, mode := range []string{"open_and_recent", "full_history"} {
+		err := runBackfill(config.Config{}, []string{"repo", "acme/widgets", "--mode", mode})
+		require.Error(t, err)
+		require.EqualError(t, err, "DATABASE_URL is required")
+	}
+}
+
+func TestRunRepairAcceptsDocumentedArguments(t *testing.T) {
+	err := runRepair(config.Config{}, []string{"recent", "repo", "acme/widgets"})
+	require.Error(t, err)
+	require.EqualError(t, err, "DATABASE_URL is required")
+}
+
 func TestRunSearchIndexAcceptsDocumentedArguments(t *testing.T) {
 	err := runSearchIndex(config.Config{}, []string{"repo", "acme/widgets"})
 	require.Error(t, err)
