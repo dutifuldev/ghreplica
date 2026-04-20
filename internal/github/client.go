@@ -66,6 +66,40 @@ func (c *Client) ListIssues(ctx context.Context, owner, repo, state string) ([]I
 	return listAll[IssueResponse](ctx, c, path)
 }
 
+func (c *Client) ListIssuesPage(ctx context.Context, owner, repo, state, sortField, direction string, page, perPage int) ([]IssueResponse, error) {
+	if strings.TrimSpace(state) == "" {
+		state = "open"
+	}
+	if strings.TrimSpace(sortField) == "" {
+		sortField = "updated"
+	}
+	if strings.TrimSpace(direction) == "" {
+		direction = "desc"
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if perPage <= 0 {
+		perPage = 100
+	}
+
+	path := fmt.Sprintf(
+		"/repos/%s/%s/issues?state=%s&sort=%s&direction=%s&page=%d&per_page=%d",
+		owner,
+		repo,
+		url.QueryEscape(state),
+		url.QueryEscape(sortField),
+		url.QueryEscape(direction),
+		page,
+		perPage,
+	)
+	var out []IssueResponse
+	if err := c.getJSON(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) ListPullRequests(ctx context.Context, owner, repo, state string) ([]PullRequestResponse, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls?state=%s&per_page=100", owner, repo, url.QueryEscape(state))
 	return listAll[PullRequestResponse](ctx, c, path)
