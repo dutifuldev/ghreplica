@@ -852,6 +852,54 @@ func TestChangeSyncWorkerRecentPRRepairSkipsUnchangedRows(t *testing.T) {
 	require.GreaterOrEqual(t, server.ListIssueCount(), 1)
 }
 
+func TestChangeSyncWorkerRecentPRRepairRunsBeforeTargetedRefreshBurst(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "open_only", 5)
+	require.NoError(t, err)
+
+	for _, number := range []int{101, 102, 103} {
+		seedServerPullState(t, ctx, service, state.RepositoryID, server, number)
+	}
+
+	_, err = service.RequestRecentPRRepair(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.NoError(t, service.EnqueuePullRequestRefresh(ctx, state.RepositoryID, 101, time.Now().UTC()))
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.Equal(t, 0, server.GetPullCount())
+	require.Equal(t, 0, server.GetIssueCount())
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.False(t, status.RecentPRRepairPending)
+	require.True(t, status.TargetedRefreshPending)
+}
+
 func TestChangeSyncWorkerRecentPRRepairAdvancesCursorAcrossPages(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
@@ -925,6 +973,64 @@ func TestChangeSyncWorkerRecentPRRepairAdvancesCursorAcrossPages(t *testing.T) {
 		Where("repository_id = ? AND number = ?", state.RepositoryID, 102).
 		First(&pr102).Error)
 	require.Equal(t, "closed", pr102.State)
+}
+
+func TestChangeSyncWorkerFullHistoryRepairRunsBeforeTargetedRefreshBurst(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "full_history", 5)
+	require.NoError(t, err)
+
+	staleAt := time.Now().UTC().Add(-2 * time.Hour)
+	for _, number := range []int{101, 102, 103} {
+		seedServerPullState(t, ctx, service, state.RepositoryID, server, number)
+	}
+	server.SetPullState(101, "closed", time.Now().UTC().Add(2*time.Hour))
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.PullRequest{}).
+		Where("repository_id = ? AND number = ?", state.RepositoryID, 101).
+		Updates(map[string]any{
+			"state":             "open",
+			"github_updated_at": staleAt,
+		}).Error)
+	require.NoError(t, service.EnqueuePullRequestRefresh(ctx, state.RepositoryID, 101, time.Now().UTC()))
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+	require.GreaterOrEqual(t, server.GetPullCount(), 1)
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.True(t, status.TargetedRefreshPending)
+
+	var pull database.PullRequest
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND number = ?", state.RepositoryID, 101).
+		First(&pull).Error)
+	require.Equal(t, "closed", pull.State)
 }
 
 type backfillGitHubServer struct {

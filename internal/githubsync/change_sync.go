@@ -160,6 +160,11 @@ func (w *ChangeSyncWorker) RunOnce(ctx context.Context) (bool, error) {
 	} else if processed {
 		return true, nil
 	}
+	if processed, err := w.processFullHistoryRepair(ctx); err != nil {
+		return processedAny || processed, err
+	} else if processed {
+		return true, nil
+	}
 	if processed, err := w.processInventoryScan(ctx, false); err != nil {
 		return processedAny || processed, err
 	} else if processed {
@@ -169,14 +174,6 @@ func (w *ChangeSyncWorker) RunOnce(ctx context.Context) (bool, error) {
 		return processedAny || processed, err
 	} else if processed {
 		return true, nil
-	}
-	if processedAny {
-		return true, nil
-	}
-	if processed, err := w.processFullHistoryRepair(ctx); err != nil {
-		return processed, err
-	} else if processed {
-		processedAny = true
 	}
 	if processedAny {
 		return true, nil
@@ -1297,13 +1294,31 @@ func (w *ChangeSyncWorker) acquireNextTargetedRefresh(ctx context.Context) (data
 	now := time.Now().UTC()
 	staleBefore := now.Add(-w.leases.staleAfter)
 	retryBefore := now.Add(-time.Minute)
+	recentDueBefore := now.Add(-w.recentPRRepairInterval)
+	fullHistoryDueBefore := now.Add(-w.fullHistoryRepairInterval)
 	var row database.RepoTargetedPullRefresh
 	err := w.db.WithContext(ctx).
+		Joins("LEFT JOIN repo_change_sync_states ON repo_change_sync_states.repository_id = repo_targeted_pull_refreshes.repository_id").
 		Where("requested_at IS NOT NULL").
 		Where("(last_completed_at IS NULL OR requested_at > last_completed_at)").
 		Where("(last_attempted_at IS NULL OR last_attempted_at <= ?)", retryBefore).
 		Where("(lease_until IS NULL OR lease_until <= ? OR lease_heartbeat_at IS NULL OR lease_heartbeat_at <= ?)", now, staleBefore).
-		Order("requested_at ASC, repository_id ASC, pull_request_number ASC").
+		Where(
+			`repo_change_sync_states.repository_id IS NULL OR NOT (
+				((repo_change_sync_states.last_recent_pr_repair_requested_at IS NOT NULL AND
+					(repo_change_sync_states.last_recent_pr_repair_finished_at IS NULL OR repo_change_sync_states.last_recent_pr_repair_requested_at >= repo_change_sync_states.last_recent_pr_repair_finished_at)) OR
+				 (repo_change_sync_states.backfill_mode IN ? AND
+					(repo_change_sync_states.last_successful_recent_pr_repair_at IS NULL OR repo_change_sync_states.last_successful_recent_pr_repair_at <= ?)))
+				OR
+				(repo_change_sync_states.backfill_mode = ? AND
+					(repo_change_sync_states.last_successful_full_history_repair_at IS NULL OR repo_change_sync_states.last_successful_full_history_repair_at <= ?))
+			)`,
+			[]string{changeBackfillModeOpenAndRecent, changeBackfillModeFullHistory},
+			recentDueBefore,
+			changeBackfillModeFullHistory,
+			fullHistoryDueBefore,
+		).
+		Order("repo_targeted_pull_refreshes.requested_at ASC, repo_targeted_pull_refreshes.repository_id ASC, repo_targeted_pull_refreshes.pull_request_number ASC").
 		First(&row).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
