@@ -55,6 +55,11 @@ func RunServe(cfg config.Config) error {
 		}
 	}()
 	go func() {
+		if err := runtime.WebhookCleanupWorker.Start(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("webhook cleanup worker stopped", "error", err)
+		}
+	}()
+	go func() {
 		if err := runtime.ChangeSyncWorker.Start(ctx); err != nil && ctx.Err() == nil {
 			slog.Error("change sync worker stopped", "error", err)
 			stop()
