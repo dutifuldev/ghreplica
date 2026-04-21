@@ -72,11 +72,6 @@ func TestRunRefreshInventoryExecutesDirectScan(t *testing.T) {
 		FullName:   "acme/widgets",
 	}
 	require.NoError(t, db.Create(&repository).Error)
-	require.NoError(t, db.Create(&database.RepoChangeSyncState{
-		RepositoryID: repository.ID,
-		Dirty:        true,
-		BackfillMode: "open_only",
-	}).Error)
 
 	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/repos/acme/widgets/pulls" {
