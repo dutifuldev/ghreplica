@@ -20,7 +20,7 @@ func TestIndexPullRequestTimesOutWaitingForRepoLock(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "gitindex-timeout.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	repo, pull := seedGitIndexRepositoryAndPullRequest(t, db, fixture, 101)

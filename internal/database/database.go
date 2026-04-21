@@ -222,7 +222,7 @@ type PullRequestReviewComment struct {
 }
 
 type WebhookDelivery struct {
-	ID           uint   `gorm:"primaryKey"`
+	ID           uint   `gorm:"primaryKey;index:idx_webhook_deliveries_cleanup,priority:2,where:processed_at IS NOT NULL"`
 	DeliveryID   string `gorm:"uniqueIndex"`
 	Event        string
 	Action       string
@@ -230,7 +230,7 @@ type WebhookDelivery struct {
 	HeadersJSON  datatypes.JSON `gorm:"type:jsonb"`
 	PayloadJSON  datatypes.JSON `gorm:"type:jsonb"`
 	ReceivedAt   time.Time
-	ProcessedAt  *time.Time
+	ProcessedAt  *time.Time `gorm:"index:idx_webhook_deliveries_cleanup,priority:1,where:processed_at IS NOT NULL"`
 	CompactedAt  *time.Time
 }
 
@@ -381,34 +381,6 @@ func postgresDialector(databaseURL string) gorm.Dialector {
 
 func IsSQLiteURL(databaseURL string) bool {
 	return strings.HasPrefix(databaseURL, "sqlite://")
-}
-
-func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(
-		&TrackedRepository{},
-		&User{},
-		&Repository{},
-		&Issue{},
-		&PullRequest{},
-		&IssueComment{},
-		&PullRequestReview{},
-		&PullRequestReviewComment{},
-		&GitRef{},
-		&GitCommit{},
-		&GitCommitParent{},
-		&GitCommitParentFile{},
-		&GitCommitParentHunk{},
-		&PullRequestChangeSnapshot{},
-		&PullRequestChangeFile{},
-		&PullRequestChangeHunk{},
-		&SearchDocument{},
-		&RepoTextSearchState{},
-		&RepoChangeSyncState{},
-		&RepoOpenPullInventory{},
-		&RepoTargetedPullRefresh{},
-		&WebhookDelivery{},
-		&RepositoryRefreshJob{},
-	)
 }
 
 func RunMigrations(db *gorm.DB, dir string) error {

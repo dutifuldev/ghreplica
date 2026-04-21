@@ -14,7 +14,7 @@ import (
 func TestDeliveryCleanupWorkerCompactsOnlyOldProcessedRows(t *testing.T) {
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 	ctx := context.Background()
 	now := time.Now().UTC()
 	oldProcessedAt := now.Add(-48 * time.Hour)
@@ -42,7 +42,7 @@ func TestDeliveryCleanupWorkerCompactsOnlyOldProcessedRows(t *testing.T) {
 func TestDeliveryCleanupWorkerDeletesPreviouslyCompactedRowsToo(t *testing.T) {
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 	ctx := context.Background()
 	now := time.Now().UTC()
 	processedAt := now.Add(-72 * time.Hour)
@@ -70,7 +70,7 @@ func TestDeliveryCleanupWorkerDeletesPreviouslyCompactedRowsToo(t *testing.T) {
 func TestDeliveryCleanupWorkerRespectsBatchSizeWhenDeleting(t *testing.T) {
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 	ctx := context.Background()
 	now := time.Now().UTC()
 	processedAt := now.Add(-72 * time.Hour)
@@ -98,6 +98,9 @@ func TestDeliveryCleanupWorkerRespectsBatchSizeWhenDeleting(t *testing.T) {
 		Where("processed_at IS NOT NULL").
 		Count(&remaining).Error)
 	require.Equal(t, int64(1), remaining)
+	requireWebhookDeliveryDeleted(t, db, "old-1")
+	requireWebhookDeliveryDeleted(t, db, "old-2")
+	requireWebhookDeliveryPresent(t, db, "old-3")
 }
 
 func requireWebhookDeliveryDeleted(t *testing.T, db *gorm.DB, deliveryID string) {

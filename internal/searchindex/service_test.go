@@ -15,7 +15,7 @@ func TestRebuildRepositoryAndSearchMentions(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := seedSearchFixtures(t, db)
 	service := searchindex.NewService(db)
@@ -88,7 +88,7 @@ func TestSearchMentionsRejectsInvalidRequests(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := seedSearchFixtures(t, db)
 	service := searchindex.NewService(db)
@@ -107,7 +107,7 @@ func TestGetRepoStatusLifecycle(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := seedSearchFixtures(t, db)
 	service := searchindex.NewService(db)

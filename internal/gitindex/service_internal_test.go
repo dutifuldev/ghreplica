@@ -55,7 +55,7 @@ func TestInsertPullRequestChangeRowsUsesBatches(t *testing.T) {
 	require.NoError(t, err)
 	counts := newCountingLogger()
 	db = db.Session(&gorm.Session{Logger: counts})
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	snapshot := database.PullRequestChangeSnapshot{
 		RepositoryID:      1,

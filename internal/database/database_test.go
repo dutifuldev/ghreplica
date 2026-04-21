@@ -38,3 +38,37 @@ func TestIsNonTransactionalMigration(t *testing.T) {
 	require.True(t, isNonTransactionalMigration(nonTransactionalMigrationDirective+"\nSELECT 1;"))
 	require.False(t, isNonTransactionalMigration("SELECT 1;"))
 }
+
+func TestAutoMigrateIsDisabled(t *testing.T) {
+	db, err := Open("sqlite://file::memory:?cache=shared")
+	require.NoError(t, err)
+
+	require.ErrorIs(t, AutoMigrate(db), ErrAutoMigrateDisabled)
+}
+
+func TestApplyTestSchemaCreatesSQLiteTables(t *testing.T) {
+	db, err := Open("sqlite://file::memory:?cache=shared")
+	require.NoError(t, err)
+
+	require.NoError(t, ApplyTestSchema(db))
+	require.True(t, db.Migrator().HasTable((&WebhookDelivery{}).TableName()))
+	require.True(t, db.Migrator().HasTable((&RepoChangeSyncState{}).TableName()))
+	require.True(t, db.Migrator().HasTable((&SearchDocument{}).TableName()))
+}
+
+func TestSchemaModelsDeclareExplicitTableNames(t *testing.T) {
+	type tableNamer interface {
+		TableName() string
+	}
+
+	seen := make(map[string]struct{})
+	for _, model := range schemaModels() {
+		namer, ok := model.(tableNamer)
+		require.True(t, ok, "model %T must declare TableName()", model)
+		name := namer.TableName()
+		require.NotEmpty(t, name, "model %T must return a non-empty table name", model)
+		_, exists := seen[name]
+		require.False(t, exists, "duplicate table name %q declared in schema model registry", name)
+		seen[name] = struct{}{}
+	}
+}

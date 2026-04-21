@@ -26,7 +26,7 @@ func RunMigrate(cfg config.Config, args []string) error {
 	db := dbHandle.DB
 
 	if database.IsSQLiteURL(cfg.DatabaseURL) {
-		return database.AutoMigrate(db)
+		return errors.New("ghreplica migrate requires PostgreSQL; SQLite schemas must be bootstrapped explicitly in tests with database.ApplyTestSchema")
 	}
 	if err := database.RunMigrations(db, "migrations"); err != nil {
 		return err

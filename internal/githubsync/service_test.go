@@ -22,7 +22,7 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -123,7 +123,7 @@ func TestBootstrapRepositoryNormalizesWebhookAliasSyncMode(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 	require.NoError(t, db.Create(&database.TrackedRepository{
 		Owner:    "acme",
 		Name:     "widgets",
@@ -174,7 +174,7 @@ func TestUpsertRepositoryTracksRenameByGitHubID(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	first, err := service.UpsertRepository(ctx, repoFixture())
@@ -202,7 +202,7 @@ func TestUpsertRepositoryReclaimsFullNameFromDifferentGitHubID(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 
@@ -256,7 +256,7 @@ func TestUpsertsMaintainSearchDocuments(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 
@@ -284,7 +284,7 @@ func TestUpsertIssueStripsNullBytesFromProjectedTextAndRawJSON(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 
@@ -307,7 +307,7 @@ func TestUpsertIssuePreservesLiteralUnicodeEscapeMarkersInRawJSON(t *testing.T) 
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 
@@ -329,7 +329,7 @@ func TestTargetedSyncIssueAndPullRequest(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -383,7 +383,7 @@ func TestSyncIssuePreservesExistingTrackedCompletenessAndTimestamps(t *testing.T
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -442,7 +442,7 @@ func TestTargetedSyncWithRealFixturesPersistsDiscussionData(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	githubServer := httptest.NewServer(testfixtures.NewOpenClawGitHubHandler(t))
 	t.Cleanup(githubServer.Close)
