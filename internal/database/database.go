@@ -229,6 +229,7 @@ type WebhookDelivery struct {
 	PayloadJSON  datatypes.JSON `gorm:"type:jsonb"`
 	ReceivedAt   time.Time
 	ProcessedAt  *time.Time
+	CompactedAt  *time.Time
 }
 
 type RepositoryRefreshJob struct {

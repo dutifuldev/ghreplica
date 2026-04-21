@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -61,12 +62,13 @@ func (w *DeliveryCleanupWorker) RunOnce(ctx context.Context) (bool, error) {
 	}
 
 	cutoff := time.Now().UTC().Add(-w.retention)
+	compactedAt := time.Now().UTC()
 	subquery := w.db.WithContext(ctx).
 		Model(&database.WebhookDelivery{}).
 		Select("id").
 		Where("processed_at IS NOT NULL").
 		Where("processed_at < ?", cutoff).
-		Where("(payload_json IS NOT NULL OR headers_json IS NOT NULL)").
+		Where("compacted_at IS NULL").
 		Order("processed_at ASC").
 		Limit(w.batchSize)
 
@@ -74,8 +76,9 @@ func (w *DeliveryCleanupWorker) RunOnce(ctx context.Context) (bool, error) {
 		Model(&database.WebhookDelivery{}).
 		Where("id IN (?)", subquery).
 		Updates(map[string]any{
-			"payload_json": nil,
-			"headers_json": nil,
+			"payload_json": datatypes.JSON([]byte(`{}`)),
+			"headers_json": datatypes.JSON([]byte(`{}`)),
+			"compacted_at": compactedAt,
 		})
 	if result.Error != nil {
 		return false, result.Error

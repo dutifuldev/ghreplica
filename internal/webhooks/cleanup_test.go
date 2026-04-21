@@ -67,7 +67,8 @@ func TestDeliveryCleanupWorkerRespectsBatchSizeWhenCompacting(t *testing.T) {
 	var uncompacted int64
 	require.NoError(t, db.WithContext(ctx).
 		Model(&database.WebhookDelivery{}).
-		Where("payload_json IS NOT NULL OR headers_json IS NOT NULL").
+		Where("processed_at IS NOT NULL").
+		Where("compacted_at IS NULL").
 		Count(&uncompacted).Error)
 	require.Equal(t, int64(1), uncompacted)
 }
@@ -76,9 +77,10 @@ func requireWebhookDeliveryCompacted(t *testing.T, db *gorm.DB, deliveryID strin
 	t.Helper()
 	var delivery database.WebhookDelivery
 	require.NoError(t, db.Where("delivery_id = ?", deliveryID).First(&delivery).Error)
-	require.Len(t, delivery.PayloadJSON, 0)
-	require.Len(t, delivery.HeadersJSON, 0)
+	require.JSONEq(t, `{}`, string(delivery.PayloadJSON))
+	require.JSONEq(t, `{}`, string(delivery.HeadersJSON))
 	require.NotNil(t, delivery.ProcessedAt)
+	require.NotNil(t, delivery.CompactedAt)
 }
 
 func requireWebhookDeliveryPresent(t *testing.T, db *gorm.DB, deliveryID string) {
