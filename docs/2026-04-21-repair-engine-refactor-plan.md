@@ -19,6 +19,15 @@ The target shape is:
 - clean separation between repair and full sync
 - clearer status and metrics
 
+## Pinned Design Choice
+
+For canonical GitHub object storage, this plan assumes:
+
+- keep only the latest canonical snapshot per object
+- do not introduce full historical snapshot retention as part of this refactor
+
+That means the refactor is aimed at a cleaner current source of truth, not at building an object-history archive.
+
 ## Current Problems
 
 - repair detection and repair application are mixed together

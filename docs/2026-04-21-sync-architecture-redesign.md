@@ -84,7 +84,10 @@ It should be the only place where scheduling priority and starvation policy live
 
 This layer persists canonical GitHub objects.
 
-The long-term preferred model is append-only snapshots plus current pointers or current-state tables.
+The pinned-down storage choice for this design is:
+
+- keep only the latest canonical snapshot per object
+- do not store full historical snapshot chains by default
 
 For each GitHub-native object we care about, the store should preserve:
 
@@ -95,6 +98,13 @@ For each GitHub-native object we care about, the store should preserve:
 - content hash
 - raw JSON
 - optional ETag or equivalent fetch metadata
+
+The important rule is:
+
+- one latest canonical GitHub object per resource
+- derived current-state relational rows are built from that latest object
+
+This keeps the source of truth clean without letting storage grow with every historical object revision.
 
 ### 4. Projector
 
@@ -286,10 +296,11 @@ The redesign does not need to land in one cutover.
 A realistic migration order is:
 
 1. extract a shared `scan -> detect -> fetch -> apply` repair engine
-2. move scheduler policy behind an explicit selector
-3. split GitHub adapter concerns from planner concerns
-4. make projection writes visibly separate from canonical object persistence
-5. improve status and metrics around the new boundaries
+2. introduce latest-canonical-object storage beside current serving tables
+3. move scheduler policy behind an explicit selector
+4. split GitHub adapter concerns from planner concerns
+5. make projection writes visibly separate from canonical object persistence
+6. improve status and metrics around the new boundaries
 
 ## Non-Goals
 
