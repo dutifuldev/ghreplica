@@ -342,6 +342,49 @@ func TestRefreshOpenPullInventoryNowRejectsActiveRepoPhase(t *testing.T) {
 	require.Zero(t, listPullCount)
 }
 
+func TestRefreshOpenPullInventoryNowAllowsCompatibleRepoPhase(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	repository := database.Repository{
+		GitHubID:   103,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.Create(&repository).Error)
+
+	now := time.Now().UTC()
+	until := now.Add(time.Minute)
+	require.NoError(t, db.Create(&database.RepoChangeSyncState{
+		RepositoryID:                    repository.ID,
+		BackfillMode:                    "open_only",
+		InventoryGenerationCurrent:      1,
+		TargetedRefreshLeaseHeartbeatAt: &now,
+		TargetedRefreshLeaseUntil:       &until,
+	}).Error)
+
+	var listPullCount int
+	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/acme/widgets/pulls" {
+			listPullCount++
+			writeJSON(t, w, pullsFixture())
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	result, err := service.RefreshOpenPullInventoryNow(ctx, "acme", "widgets", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.OpenPRTotal)
+	require.Equal(t, 1, listPullCount)
+}
+
 func TestUpsertsMaintainSearchDocuments(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))

@@ -60,7 +60,7 @@ func (s *Service) RefreshOpenPullInventoryNow(ctx context.Context, owner, repo s
 			}
 		}
 
-		if phase := activeRepoPhaseFromState(now, state); phase != "" {
+		if phase := inventoryRefreshBlockingPhaseFromState(now, state); phase != "" {
 			return fmt.Errorf("cannot refresh inventory while %s is running for %s/%s", phase, owner, repo)
 		}
 
@@ -108,18 +108,12 @@ func (s *Service) RefreshOpenPullInventoryNow(ctx context.Context, owner, repo s
 	return result, nil
 }
 
-func activeRepoPhaseFromState(now time.Time, state database.RepoChangeSyncState) string {
+func inventoryRefreshBlockingPhaseFromState(now time.Time, state database.RepoChangeSyncState) string {
 	switch {
-	case leaseIsActive(now, state.RecentPRRepairLeaseHeartbeatAt, state.RecentPRRepairLeaseUntil):
-		return string(recentRepairPhase)
-	case leaseIsActive(now, state.FullHistoryRepairLeaseHeartbeatAt, state.FullHistoryRepairLeaseUntil):
-		return string(fullHistoryRepairPhase)
 	case leaseIsActive(now, state.FetchLeaseHeartbeatAt, state.FetchLeaseUntil):
 		return "inventory_scan"
 	case leaseIsActive(now, state.BackfillLeaseHeartbeatAt, state.BackfillLeaseUntil):
 		return "backfill"
-	case leaseIsActive(now, state.TargetedRefreshLeaseHeartbeatAt, state.TargetedRefreshLeaseUntil):
-		return "targeted_refresh"
 	default:
 		return ""
 	}
