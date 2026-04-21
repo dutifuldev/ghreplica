@@ -178,10 +178,14 @@ This path should use the dedicated webhook pool so webhook bursts do not starve 
 The system should support configurable retention for processed deliveries, with choices such as:
 
 - keep recent processed deliveries in the primary database
-- compact older processed deliveries in place after a configured retention period while preserving `delivery_id` tombstones
-- optionally archive older payloads elsewhere before compaction or deletion
+- delete older processed deliveries after a configured retention period
+- optionally archive older payloads elsewhere before deletion
 
-If processed deliveries are ever fully deleted, dedupe identity must first be preserved separately. The baseline implementation should not remove the row that protects webhook redelivery idempotency.
+The initial production baseline should be:
+
+- delete processed deliveries after `6h`
+- keep unprocessed or failed deliveries until they are handled
+- treat any later dedupe redesign as a separate follow-up
 
 This must remain configurable because different installations may want different tradeoffs between:
 

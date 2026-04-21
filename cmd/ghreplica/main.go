@@ -14,6 +14,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/githubsync"
 	"github.com/dutifuldev/ghreplica/internal/refresh"
 	"github.com/dutifuldev/ghreplica/internal/searchindex"
+	"github.com/dutifuldev/ghreplica/internal/webhooks"
 )
 
 func main() {
@@ -41,6 +42,8 @@ func run(args []string) error {
 		return runRefresh(cfg, args[1:])
 	case "repair":
 		return runRepair(cfg, args[1:])
+	case "cleanup":
+		return runCleanup(cfg, args[1:])
 	case "sync":
 		return runSync(cfg, args[1:])
 	case "search-index":
@@ -229,6 +232,51 @@ func runRepair(cfg config.Config, args []string) error {
 	return err
 }
 
+func runCleanup(cfg config.Config, args []string) error {
+	cleanupFlags := flag.NewFlagSet("cleanup", flag.ContinueOnError)
+	untilEmpty := cleanupFlags.Bool("until-empty", false, "repeat cleanup passes until no more eligible webhook deliveries remain")
+	if err := cleanupFlags.Parse(args); err != nil {
+		return err
+	}
+
+	rest := cleanupFlags.Args()
+	if len(rest) != 1 || rest[0] != "webhook-deliveries" {
+		return errors.New("usage: ghreplica cleanup webhook-deliveries [--until-empty]")
+	}
+	if err := cfg.ValidateDatabase(); err != nil {
+		return err
+	}
+	if cfg.WebhookDeliveryRetention <= 0 {
+		return errors.New("WEBHOOK_DELIVERY_RETENTION must be set to use webhook delivery cleanup")
+	}
+
+	dbHandle, err := app.OpenDatabaseHandle(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dbHandle.Close() }()
+
+	worker := webhooks.NewDeliveryCleanupWorker(
+		dbHandle.DB,
+		cfg.WebhookDeliveryRetention,
+		cfg.WebhookDeliveryCleanupInterval,
+		cfg.WebhookDeliveryCleanupBatchSize,
+	)
+
+	passes := 0
+	for {
+		processed, err := worker.RunOnce(context.Background())
+		if err != nil {
+			return err
+		}
+		passes++
+		if !processed || !*untilEmpty {
+			fmt.Fprintf(os.Stdout, "cleanup webhook-deliveries passes=%d processed=%t\n", passes, processed)
+			return nil
+		}
+	}
+}
+
 func runSearchIndex(cfg config.Config, args []string) error {
 	searchFlags := flag.NewFlagSet("search-index", flag.ContinueOnError)
 	if err := searchFlags.Parse(args); err != nil {
@@ -262,6 +310,7 @@ func usageError() error {
 	fmt.Fprintf(os.Stderr, "  ghreplica serve\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica migrate up\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica backfill repo <owner>/<repo> [--mode open_only|open_and_recent|full_history] [--priority N]\n")
+	fmt.Fprintf(os.Stderr, "  ghreplica cleanup webhook-deliveries [--until-empty]\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica repair recent repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica refresh repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica search-index repo <owner>/<repo>\n")
