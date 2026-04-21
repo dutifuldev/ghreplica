@@ -33,3 +33,8 @@ func TestPrewarmPoolOpensAndReturnsIdleConnections(t *testing.T) {
 	require.LessOrEqual(t, 2, stats.MaxOpenConnections)
 	require.GreaterOrEqual(t, stats.Idle, 1)
 }
+
+func TestIsNonTransactionalMigration(t *testing.T) {
+	require.True(t, isNonTransactionalMigration(nonTransactionalMigrationDirective+"\nSELECT 1;"))
+	require.False(t, isNonTransactionalMigration("SELECT 1;"))
+}
