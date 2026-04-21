@@ -66,8 +66,11 @@ func TestLoadIncludesWebhookJobAndDatabasePoolDefaults(t *testing.T) {
 	t.Setenv("DB_DIALER", "")
 	t.Setenv("DB_MAX_OPEN_CONNS", "")
 	t.Setenv("DB_MAX_IDLE_CONNS", "")
+	t.Setenv("DB_CONNECTION_BUDGET", "")
 	t.Setenv("DB_CONTROL_MAX_OPEN_CONNS", "")
 	t.Setenv("DB_CONTROL_MAX_IDLE_CONNS", "")
+	t.Setenv("DB_WEBHOOK_MAX_OPEN_CONNS", "")
+	t.Setenv("DB_WEBHOOK_MAX_IDLE_CONNS", "")
 	t.Setenv("DB_QUEUE_MAX_OPEN_CONNS", "")
 	t.Setenv("DB_QUEUE_MAX_IDLE_CONNS", "")
 	t.Setenv("DB_SYNC_MAX_OPEN_CONNS", "")
@@ -75,6 +78,9 @@ func TestLoadIncludesWebhookJobAndDatabasePoolDefaults(t *testing.T) {
 	t.Setenv("WEBHOOK_JOB_QUEUE_CONCURRENCY", "")
 	t.Setenv("WEBHOOK_JOB_TIMEOUT", "")
 	t.Setenv("WEBHOOK_JOB_MAX_ATTEMPTS", "")
+	t.Setenv("WEBHOOK_DELIVERY_RETENTION", "")
+	t.Setenv("WEBHOOK_DELIVERY_CLEANUP_INTERVAL", "")
+	t.Setenv("WEBHOOK_DELIVERY_CLEANUP_BATCH_SIZE", "")
 	t.Setenv("OPEN_PR_INVENTORY_MAX_AGE", "")
 	t.Setenv("BACKFILL_MAX_RUNTIME", "")
 	t.Setenv("BACKFILL_MAX_PRS_PER_PASS", "")
@@ -85,15 +91,21 @@ func TestLoadIncludesWebhookJobAndDatabasePoolDefaults(t *testing.T) {
 	require.Equal(t, "postgres", cfg.DatabaseDialer)
 	require.Equal(t, 10, cfg.DatabaseMaxOpenConns)
 	require.Equal(t, 5, cfg.DatabaseMaxIdleConns)
-	require.Equal(t, 8, cfg.ControlDBMaxOpenConns)
-	require.Equal(t, 4, cfg.ControlDBMaxIdleConns)
+	require.Zero(t, cfg.DatabaseConnectionBudget)
+	require.Equal(t, 4, cfg.ControlDBMaxOpenConns)
+	require.Equal(t, 2, cfg.ControlDBMaxIdleConns)
+	require.Equal(t, 4, cfg.WebhookDBMaxOpenConns)
+	require.Equal(t, 2, cfg.WebhookDBMaxIdleConns)
 	require.Equal(t, 4, cfg.QueueDBMaxOpenConns)
-	require.Equal(t, 4, cfg.QueueDBMaxIdleConns)
+	require.Equal(t, 2, cfg.QueueDBMaxIdleConns)
 	require.Equal(t, 8, cfg.SyncDBMaxOpenConns)
-	require.Equal(t, 4, cfg.SyncDBMaxIdleConns)
+	require.Equal(t, 2, cfg.SyncDBMaxIdleConns)
 	require.Equal(t, 1, cfg.WebhookJobQueueConcurrency)
 	require.Equal(t, 30*time.Second, cfg.WebhookJobTimeout)
 	require.Equal(t, 8, cfg.WebhookJobMaxAttempts)
+	require.Zero(t, cfg.WebhookDeliveryRetention)
+	require.Equal(t, 15*time.Minute, cfg.WebhookDeliveryCleanupInterval)
+	require.Equal(t, 500, cfg.WebhookDeliveryCleanupBatchSize)
 	require.Equal(t, 6*time.Hour, cfg.OpenPRInventoryMaxAge)
 	require.Equal(t, 30*time.Minute, cfg.BackfillMaxRuntime)
 	require.Equal(t, 1000, cfg.BackfillMaxPRsPerPass)
@@ -105,8 +117,11 @@ func TestLoadReadsWebhookJobAndDatabasePoolOverrides(t *testing.T) {
 	t.Setenv("DB_DIALER", "cloudsql")
 	t.Setenv("DB_MAX_OPEN_CONNS", "14")
 	t.Setenv("DB_MAX_IDLE_CONNS", "7")
+	t.Setenv("DB_CONNECTION_BUDGET", "20")
 	t.Setenv("DB_CONTROL_MAX_OPEN_CONNS", "9")
 	t.Setenv("DB_CONTROL_MAX_IDLE_CONNS", "4")
+	t.Setenv("DB_WEBHOOK_MAX_OPEN_CONNS", "3")
+	t.Setenv("DB_WEBHOOK_MAX_IDLE_CONNS", "2")
 	t.Setenv("DB_QUEUE_MAX_OPEN_CONNS", "6")
 	t.Setenv("DB_QUEUE_MAX_IDLE_CONNS", "3")
 	t.Setenv("DB_SYNC_MAX_OPEN_CONNS", "11")
@@ -114,6 +129,9 @@ func TestLoadReadsWebhookJobAndDatabasePoolOverrides(t *testing.T) {
 	t.Setenv("WEBHOOK_JOB_QUEUE_CONCURRENCY", "4")
 	t.Setenv("WEBHOOK_JOB_TIMEOUT", "45s")
 	t.Setenv("WEBHOOK_JOB_MAX_ATTEMPTS", "9")
+	t.Setenv("WEBHOOK_DELIVERY_RETENTION", "720h")
+	t.Setenv("WEBHOOK_DELIVERY_CLEANUP_INTERVAL", "5m")
+	t.Setenv("WEBHOOK_DELIVERY_CLEANUP_BATCH_SIZE", "250")
 	t.Setenv("OPEN_PR_INVENTORY_MAX_AGE", "8h")
 	t.Setenv("BACKFILL_MAX_RUNTIME", "45m")
 	t.Setenv("BACKFILL_MAX_PRS_PER_PASS", "2500")
@@ -124,8 +142,11 @@ func TestLoadReadsWebhookJobAndDatabasePoolOverrides(t *testing.T) {
 	require.Equal(t, "cloudsql", cfg.DatabaseDialer)
 	require.Equal(t, 14, cfg.DatabaseMaxOpenConns)
 	require.Equal(t, 7, cfg.DatabaseMaxIdleConns)
+	require.Equal(t, 20, cfg.DatabaseConnectionBudget)
 	require.Equal(t, 9, cfg.ControlDBMaxOpenConns)
 	require.Equal(t, 4, cfg.ControlDBMaxIdleConns)
+	require.Equal(t, 3, cfg.WebhookDBMaxOpenConns)
+	require.Equal(t, 2, cfg.WebhookDBMaxIdleConns)
 	require.Equal(t, 6, cfg.QueueDBMaxOpenConns)
 	require.Equal(t, 3, cfg.QueueDBMaxIdleConns)
 	require.Equal(t, 11, cfg.SyncDBMaxOpenConns)
@@ -133,6 +154,9 @@ func TestLoadReadsWebhookJobAndDatabasePoolOverrides(t *testing.T) {
 	require.Equal(t, 4, cfg.WebhookJobQueueConcurrency)
 	require.Equal(t, 45*time.Second, cfg.WebhookJobTimeout)
 	require.Equal(t, 9, cfg.WebhookJobMaxAttempts)
+	require.Equal(t, 720*time.Hour, cfg.WebhookDeliveryRetention)
+	require.Equal(t, 5*time.Minute, cfg.WebhookDeliveryCleanupInterval)
+	require.Equal(t, 250, cfg.WebhookDeliveryCleanupBatchSize)
 	require.Equal(t, 8*time.Hour, cfg.OpenPRInventoryMaxAge)
 	require.Equal(t, 45*time.Minute, cfg.BackfillMaxRuntime)
 	require.Equal(t, 2500, cfg.BackfillMaxPRsPerPass)
@@ -160,6 +184,22 @@ func TestValidateDatabaseRejectsUnknownDialer(t *testing.T) {
 	err := cfg.ValidateDatabase()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported DB_DIALER")
+}
+
+func TestValidateServeRuntimeFailsWhenPoolBudgetExceeded(t *testing.T) {
+	cfg := Config{
+		GitMirrorRoot:            t.TempDir(),
+		ASTGrepBin:               writeExecutable(t, "ast-grep"),
+		DatabaseConnectionBudget: 10,
+		ControlDBMaxOpenConns:    4,
+		WebhookDBMaxOpenConns:    4,
+		QueueDBMaxOpenConns:      4,
+		SyncDBMaxOpenConns:       8,
+	}
+
+	err := cfg.ValidateServeRuntime()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "database pool budget exceeded")
 }
 
 func writeExecutable(t *testing.T, name string) string {

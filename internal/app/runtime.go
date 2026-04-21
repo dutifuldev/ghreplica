@@ -21,22 +21,25 @@ import (
 )
 
 type ServeRuntime struct {
-	ControlDB         *gorm.DB
-	ControlSQLDB      *sql.DB
-	QueueDB           *gorm.DB
-	QueueSQLDB        *sql.DB
-	SyncDB            *gorm.DB
-	SyncSQLDB         *sql.DB
-	GitHubClient      *github.Client
-	SyncGitIndex      *gitindex.Service
-	ControlGitHubSync *githubsync.Service
-	SyncGitHubSync    *githubsync.Service
-	WebhookIngestor   *webhooks.Service
-	WebhookJobClient  *river.Client[*sql.Tx]
-	RefreshWorker     *refresh.Worker
-	ChangeSyncWorker  *githubsync.ChangeSyncWorker
-	Server            *httpapi.Server
-	connectorCleanup  func() error
+	ControlDB            *gorm.DB
+	ControlSQLDB         *sql.DB
+	WebhookDB            *gorm.DB
+	WebhookSQLDB         *sql.DB
+	QueueDB              *gorm.DB
+	QueueSQLDB           *sql.DB
+	SyncDB               *gorm.DB
+	SyncSQLDB            *sql.DB
+	GitHubClient         *github.Client
+	SyncGitIndex         *gitindex.Service
+	ControlGitHubSync    *githubsync.Service
+	SyncGitHubSync       *githubsync.Service
+	WebhookIngestor      *webhooks.Service
+	WebhookJobClient     *river.Client[*sql.Tx]
+	WebhookCleanupWorker *webhooks.DeliveryCleanupWorker
+	RefreshWorker        *refresh.Worker
+	ChangeSyncWorker     *githubsync.ChangeSyncWorker
+	Server               *httpapi.Server
+	connectorCleanup     func() error
 }
 
 type OpenedDatabase struct {
@@ -102,6 +105,13 @@ func OpenQueueDatabase(cfg config.Config, connector *database.Connector) (*datab
 	})
 }
 
+func OpenWebhookDatabase(cfg config.Config, connector *database.Connector) (*database.Handle, error) {
+	return connector.Open(database.PoolConfig{
+		MaxOpenConns: cfg.WebhookDBMaxOpenConns,
+		MaxIdleConns: cfg.WebhookDBMaxIdleConns,
+	})
+}
+
 func OpenSyncDatabase(cfg config.Config, connector *database.Connector) (*database.Handle, error) {
 	return connector.Open(database.PoolConfig{
 		MaxOpenConns: cfg.SyncDBMaxOpenConns,
@@ -109,7 +119,7 @@ func OpenSyncDatabase(cfg config.Config, connector *database.Connector) (*databa
 	})
 }
 
-func prewarmServeRuntimePools(cfg config.Config, controlSQLDB, queueSQLDB, syncSQLDB *sql.DB) error {
+func prewarmServeRuntimePools(cfg config.Config, controlSQLDB, webhookSQLDB, queueSQLDB, syncSQLDB *sql.DB) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
@@ -119,6 +129,7 @@ func prewarmServeRuntimePools(cfg config.Config, controlSQLDB, queueSQLDB, syncS
 		target int
 	}{
 		{name: "control", sqlDB: controlSQLDB, target: min(2, cfg.ControlDBMaxIdleConns)},
+		{name: "webhook", sqlDB: webhookSQLDB, target: min(1, cfg.WebhookDBMaxIdleConns)},
 		{name: "queue", sqlDB: queueSQLDB, target: min(2, cfg.QueueDBMaxIdleConns)},
 		{name: "sync", sqlDB: syncSQLDB, target: min(2, cfg.SyncDBMaxIdleConns)},
 	} {
@@ -163,14 +174,23 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 		_ = connector.Close()
 		return nil, err
 	}
-	syncHandle, err := OpenSyncDatabase(cfg, connector)
+	webhookHandle, err := OpenWebhookDatabase(cfg, connector)
 	if err != nil {
 		_ = queueHandle.SQLDB.Close()
 		_ = controlHandle.SQLDB.Close()
 		_ = connector.Close()
 		return nil, err
 	}
+	syncHandle, err := OpenSyncDatabase(cfg, connector)
+	if err != nil {
+		_ = webhookHandle.SQLDB.Close()
+		_ = queueHandle.SQLDB.Close()
+		_ = controlHandle.SQLDB.Close()
+		_ = connector.Close()
+		return nil, err
+	}
 	controlDB := controlHandle.GormDB
+	webhookDB := webhookHandle.GormDB
 	queueDB := queueHandle.GormDB
 	syncDB := syncHandle.GormDB
 
@@ -178,17 +198,19 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 	syncGitIndex := NewGitIndexService(syncDB, githubClient, cfg)
 	controlGitHubSync := githubsync.NewService(controlDB, githubClient)
 	syncGitHubSync := githubsync.NewService(syncDB, githubClient, syncGitIndex)
-	webhookIngestor := webhooks.NewService(controlDB, syncDB, webhooks.Dependencies{
+	webhookIngestor := webhooks.NewService(webhookDB, syncDB, webhooks.Dependencies{
 		Projector: syncGitHubSync,
 		Staler:    syncGitHubSync,
 		Recorder:  syncGitHubSync,
 	})
 
 	controlSQLDB := controlHandle.SQLDB
+	webhookSQLDB := webhookHandle.SQLDB
 	queueSQLDB := queueHandle.SQLDB
 	syncSQLDB := syncHandle.SQLDB
-	if err := prewarmServeRuntimePools(cfg, controlSQLDB, queueSQLDB, syncSQLDB); err != nil {
+	if err := prewarmServeRuntimePools(cfg, controlSQLDB, webhookSQLDB, queueSQLDB, syncSQLDB); err != nil {
 		_ = syncSQLDB.Close()
+		_ = webhookSQLDB.Close()
 		_ = queueSQLDB.Close()
 		_ = controlSQLDB.Close()
 		_ = connector.Close()
@@ -201,6 +223,7 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 	})
 	if err != nil {
 		_ = syncSQLDB.Close()
+		_ = webhookSQLDB.Close()
 		_ = queueSQLDB.Close()
 		_ = controlSQLDB.Close()
 		_ = connector.Close()
@@ -209,19 +232,22 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 	webhookIngestor.SetDispatcher(dispatcher)
 
 	return &ServeRuntime{
-		ControlDB:         controlDB,
-		ControlSQLDB:      controlSQLDB,
-		QueueDB:           queueDB,
-		QueueSQLDB:        queueSQLDB,
-		SyncDB:            syncDB,
-		SyncSQLDB:         syncSQLDB,
-		GitHubClient:      githubClient,
-		SyncGitIndex:      syncGitIndex,
-		ControlGitHubSync: controlGitHubSync,
-		SyncGitHubSync:    syncGitHubSync,
-		WebhookIngestor:   webhookIngestor,
-		WebhookJobClient:  webhookJobClient,
-		RefreshWorker:     refresh.NewWorker(syncDB, syncGitHubSync, 2*time.Second),
+		ControlDB:            controlDB,
+		ControlSQLDB:         controlSQLDB,
+		WebhookDB:            webhookDB,
+		WebhookSQLDB:         webhookSQLDB,
+		QueueDB:              queueDB,
+		QueueSQLDB:           queueSQLDB,
+		SyncDB:               syncDB,
+		SyncSQLDB:            syncSQLDB,
+		GitHubClient:         githubClient,
+		SyncGitIndex:         syncGitIndex,
+		ControlGitHubSync:    controlGitHubSync,
+		SyncGitHubSync:       syncGitHubSync,
+		WebhookIngestor:      webhookIngestor,
+		WebhookJobClient:     webhookJobClient,
+		WebhookCleanupWorker: webhooks.NewDeliveryCleanupWorker(syncDB, cfg.WebhookDeliveryRetention, cfg.WebhookDeliveryCleanupInterval, cfg.WebhookDeliveryCleanupBatchSize),
+		RefreshWorker:        refresh.NewWorker(syncDB, syncGitHubSync, 2*time.Second),
 		ChangeSyncWorker: githubsync.NewChangeSyncWorker(
 			syncDB,
 			syncGitHubSync,
@@ -249,6 +275,9 @@ func (r *ServeRuntime) Close() error {
 	var errs []error
 	if r.SyncSQLDB != nil {
 		errs = append(errs, r.SyncSQLDB.Close())
+	}
+	if r.WebhookSQLDB != nil {
+		errs = append(errs, r.WebhookSQLDB.Close())
 	}
 	if r.QueueSQLDB != nil {
 		errs = append(errs, r.QueueSQLDB.Close())
