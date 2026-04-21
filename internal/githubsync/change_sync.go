@@ -26,7 +26,7 @@ const (
 	defaultInventoryWriteBatchSize        = 100
 	defaultRecentPRRepairInterval         = 24 * time.Hour
 	defaultRecentPRRepairWindow           = 7 * 24 * time.Hour
-	defaultRecentPRRepairMaxPages         = 10
+	defaultRecentPRRepairMaxPages         = 2
 	defaultRecentPRRepairPerPage          = 100
 	defaultFullHistoryRepairInterval      = 10 * time.Minute
 	defaultFullHistoryRepairMaxPages      = 10
