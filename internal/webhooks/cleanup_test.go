@@ -34,12 +34,40 @@ func TestDeliveryCleanupWorkerCompactsOnlyOldProcessedRows(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, processed)
 
-	requireWebhookDeliveryCompacted(t, db, "old-processed")
+	requireWebhookDeliveryDeleted(t, db, "old-processed")
 	requireWebhookDeliveryPresent(t, db, "recent-processed")
 	requireWebhookDeliveryPresent(t, db, "old-unprocessed")
 }
 
-func TestDeliveryCleanupWorkerRespectsBatchSizeWhenCompacting(t *testing.T) {
+func TestDeliveryCleanupWorkerDeletesPreviouslyCompactedRowsToo(t *testing.T) {
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+	ctx := context.Background()
+	now := time.Now().UTC()
+	processedAt := now.Add(-72 * time.Hour)
+	compactedAt := now.Add(-48 * time.Hour)
+
+	delivery := database.WebhookDelivery{
+		DeliveryID:  "old-compacted",
+		Event:       "ping",
+		HeadersJSON: []byte(`{}`),
+		PayloadJSON: []byte(`{}`),
+		ReceivedAt:  processedAt,
+		ProcessedAt: &processedAt,
+		CompactedAt: &compactedAt,
+	}
+	require.NoError(t, db.WithContext(ctx).Create(&delivery).Error)
+
+	worker := webhooks.NewDeliveryCleanupWorker(db, 24*time.Hour, time.Minute, 100)
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	requireWebhookDeliveryDeleted(t, db, "old-compacted")
+}
+
+func TestDeliveryCleanupWorkerRespectsBatchSizeWhenDeleting(t *testing.T) {
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(db))
@@ -64,23 +92,19 @@ func TestDeliveryCleanupWorkerRespectsBatchSizeWhenCompacting(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, processed)
 
-	var uncompacted int64
+	var remaining int64
 	require.NoError(t, db.WithContext(ctx).
 		Model(&database.WebhookDelivery{}).
 		Where("processed_at IS NOT NULL").
-		Where("compacted_at IS NULL").
-		Count(&uncompacted).Error)
-	require.Equal(t, int64(1), uncompacted)
+		Count(&remaining).Error)
+	require.Equal(t, int64(1), remaining)
 }
 
-func requireWebhookDeliveryCompacted(t *testing.T, db *gorm.DB, deliveryID string) {
+func requireWebhookDeliveryDeleted(t *testing.T, db *gorm.DB, deliveryID string) {
 	t.Helper()
-	var delivery database.WebhookDelivery
-	require.NoError(t, db.Where("delivery_id = ?", deliveryID).First(&delivery).Error)
-	require.JSONEq(t, `{}`, string(delivery.PayloadJSON))
-	require.JSONEq(t, `{}`, string(delivery.HeadersJSON))
-	require.NotNil(t, delivery.ProcessedAt)
-	require.NotNil(t, delivery.CompactedAt)
+	var count int64
+	require.NoError(t, db.Model(&database.WebhookDelivery{}).Where("delivery_id = ?", deliveryID).Count(&count).Error)
+	require.Zero(t, count)
 }
 
 func requireWebhookDeliveryPresent(t *testing.T, db *gorm.DB, deliveryID string) {

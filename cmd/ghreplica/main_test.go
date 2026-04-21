@@ -47,3 +47,15 @@ func TestRunSearchIndexAcceptsDocumentedArguments(t *testing.T) {
 	require.Error(t, err)
 	require.EqualError(t, err, "DATABASE_URL is required")
 }
+
+func TestRunCleanupAcceptsDocumentedArgumentOrder(t *testing.T) {
+	err := runCleanup(config.Config{}, []string{"webhook-deliveries", "--until-empty"})
+	require.Error(t, err)
+	require.EqualError(t, err, "DATABASE_URL is required")
+}
+
+func TestRunCleanupAcceptsFlagsBeforeTarget(t *testing.T) {
+	err := runCleanup(config.Config{}, []string{"--until-empty", "webhook-deliveries"})
+	require.Error(t, err)
+	require.EqualError(t, err, "DATABASE_URL is required")
+}
