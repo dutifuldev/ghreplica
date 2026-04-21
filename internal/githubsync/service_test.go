@@ -280,6 +280,28 @@ func TestUpsertsMaintainSearchDocuments(t *testing.T) {
 	require.Equal(t, "pull_request_review_comment", docs[4].DocumentType)
 }
 
+func TestUpsertIssueStripsNullBytesFromProjectedTextColumns(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+
+	repo, err := service.UpsertRepository(ctx, repoFixture())
+	require.NoError(t, err)
+
+	issue := issuesFixture()[1]
+	issue.Title = "Fix\x00 parser"
+	issue.Body = "line 1\x00line 2"
+
+	stored, err := service.UpsertIssue(ctx, repo.ID, issue)
+	require.NoError(t, err)
+	require.Equal(t, "Fix parser", stored.Title)
+	require.Equal(t, "line 1line 2", stored.Body)
+	require.Contains(t, string(stored.RawJSON), "\\u0000")
+}
+
 func TestTargetedSyncIssueAndPullRequest(t *testing.T) {
 	ctx := context.Background()
 
