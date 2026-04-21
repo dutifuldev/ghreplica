@@ -1,6 +1,7 @@
 package githubsync
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -61,6 +62,43 @@ func sanitizeProjectedText(value string) string {
 		return value
 	}
 	return strings.ReplaceAll(value, "\x00", "")
+}
+
+func sanitizeRawJSON(raw []byte) datatypes.JSON {
+	if !bytes.Contains(raw, []byte("\\u0000")) {
+		return datatypes.JSON(raw)
+	}
+
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return datatypes.JSON(raw)
+	}
+
+	cleaned, err := json.Marshal(sanitizeJSONValue(payload))
+	if err != nil {
+		return datatypes.JSON(raw)
+	}
+	return datatypes.JSON(cleaned)
+}
+
+func sanitizeJSONValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return sanitizeProjectedText(typed)
+	case []any:
+		for i := range typed {
+			typed[i] = sanitizeJSONValue(typed[i])
+		}
+		return typed
+	case map[string]any:
+		sanitized := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			sanitized[sanitizeProjectedText(key)] = sanitizeJSONValue(nested)
+		}
+		return sanitized
+	default:
+		return value
+	}
 }
 
 func (s *Service) UpsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
@@ -559,7 +597,7 @@ func (s *Service) upsertRepository(ctx context.Context, repo gh.RepositoryRespon
 		APIURL:        sanitizeProjectedText(repo.URL),
 		Visibility:    sanitizeProjectedText(repo.Visibility),
 		Fork:          repo.Fork,
-		RawJSON:       datatypes.JSON(raw),
+		RawJSON:       sanitizeRawJSON(raw),
 		CreatedAt:     repo.CreatedAt,
 		UpdatedAt:     repo.UpdatedAt,
 	}
@@ -648,7 +686,7 @@ func (s *Service) upsertUser(ctx context.Context, user gh.UserResponse) (databas
 		AvatarURL: sanitizeProjectedText(user.AvatarURL),
 		HTMLURL:   sanitizeProjectedText(user.HTMLURL),
 		APIURL:    sanitizeProjectedText(user.URL),
-		RawJSON:   datatypes.JSON(raw),
+		RawJSON:   sanitizeRawJSON(raw),
 	}
 
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
@@ -696,7 +734,7 @@ func (s *Service) upsertIssue(ctx context.Context, repositoryID uint, issue gh.I
 		APIURL:            sanitizeProjectedText(issue.URL),
 		GitHubCreatedAt:   issue.CreatedAt,
 		GitHubUpdatedAt:   issue.UpdatedAt,
-		RawJSON:           datatypes.JSON(raw),
+		RawJSON:           sanitizeRawJSON(raw),
 	}
 	if issue.ClosedAt != nil {
 		closedAt := *issue.ClosedAt
@@ -781,7 +819,7 @@ func (s *Service) upsertPullRequest(ctx context.Context, repositoryID uint, pull
 		PatchURL:        sanitizeProjectedText(pull.PatchURL),
 		GitHubCreatedAt: pull.CreatedAt,
 		GitHubUpdatedAt: pull.UpdatedAt,
-		RawJSON:         datatypes.JSON(raw),
+		RawJSON:         sanitizeRawJSON(raw),
 	}
 	if pull.MergedAt != nil {
 		mergedAt := *pull.MergedAt
@@ -847,7 +885,7 @@ func (s *Service) upsertIssueComment(ctx context.Context, repositoryID uint, com
 		APIURL:          sanitizeProjectedText(comment.URL),
 		GitHubCreatedAt: comment.CreatedAt,
 		GitHubUpdatedAt: comment.UpdatedAt,
-		RawJSON:         datatypes.JSON(raw),
+		RawJSON:         sanitizeRawJSON(raw),
 	}
 
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
@@ -907,7 +945,7 @@ func (s *Service) upsertPullRequestReview(ctx context.Context, repositoryID uint
 		APIURL:          sanitizeProjectedText(review.URL),
 		GitHubCreatedAt: review.CreatedAt,
 		GitHubUpdatedAt: review.UpdatedAt,
-		RawJSON:         datatypes.JSON(raw),
+		RawJSON:         sanitizeRawJSON(raw),
 	}
 
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
@@ -983,7 +1021,7 @@ func (s *Service) upsertPullRequestReviewComment(ctx context.Context, repository
 		PullRequestURL:    sanitizeProjectedText(comment.PullRequestURL),
 		GitHubCreatedAt:   comment.CreatedAt,
 		GitHubUpdatedAt:   comment.UpdatedAt,
-		RawJSON:           datatypes.JSON(raw),
+		RawJSON:           sanitizeRawJSON(raw),
 	}
 
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
