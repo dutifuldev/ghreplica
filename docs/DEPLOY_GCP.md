@@ -166,16 +166,20 @@ That matches the current container user in the shipped image.
 From the repo root on the VM:
 
 ```bash
+docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml build ghreplica ghreplica-migrate
 docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml --profile ops run --rm ghreplica-migrate
-docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml up -d --build
+docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml up -d
 ```
 
 If Docker on the VM requires root, use:
 
 ```bash
+sudo docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml build ghreplica ghreplica-migrate
 sudo docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml --profile ops run --rm ghreplica-migrate
-sudo docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml up -d --build
+sudo docker compose --env-file deploy/gcp/ghreplica.env -f deploy/gcp/docker-compose.yml up -d
 ```
+
+Build before running migrations. If you run `ghreplica-migrate` first, Docker Compose can reuse a stale image that does not include the latest migration files, and the app can start against an older schema.
 
 ## 5. Verify
 

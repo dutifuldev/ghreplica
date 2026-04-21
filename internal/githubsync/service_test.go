@@ -280,7 +280,7 @@ func TestUpsertsMaintainSearchDocuments(t *testing.T) {
 	require.Equal(t, "pull_request_review_comment", docs[4].DocumentType)
 }
 
-func TestUpsertIssueStripsNullBytesFromProjectedTextColumns(t *testing.T) {
+func TestUpsertIssueStripsNullBytesFromProjectedTextAndRawJSON(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
@@ -299,7 +299,29 @@ func TestUpsertIssueStripsNullBytesFromProjectedTextColumns(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "Fix parser", stored.Title)
 	require.Equal(t, "line 1line 2", stored.Body)
-	require.Contains(t, string(stored.RawJSON), "\\u0000")
+	require.NotContains(t, string(stored.RawJSON), "\\u0000")
+	require.Contains(t, string(stored.RawJSON), "\"body\":\"line 1line 2\"")
+}
+
+func TestUpsertIssuePreservesLiteralUnicodeEscapeMarkersInRawJSON(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+
+	repo, err := service.UpsertRepository(ctx, repoFixture())
+	require.NoError(t, err)
+
+	issue := issuesFixture()[1]
+	issue.Body = `literal \u0000 marker`
+
+	stored, err := service.UpsertIssue(ctx, repo.ID, issue)
+	require.NoError(t, err)
+	require.Equal(t, `literal \u0000 marker`, stored.Body)
+	require.Contains(t, string(stored.RawJSON), `\\u0000`)
+	require.Contains(t, string(stored.RawJSON), `"body":"literal \\u0000 marker"`)
 }
 
 func TestTargetedSyncIssueAndPullRequest(t *testing.T) {
