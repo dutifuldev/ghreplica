@@ -1018,13 +1018,80 @@ func TestChangeSyncWorkerFullHistoryModeHandsOffToFullHistoryAfterIncompleteRece
 	require.NoError(t, err)
 	require.True(t, processed)
 	require.Equal(t, 2, server.ListPullCount())
-	require.Equal(t, 1, server.ListIssueCount())
+	require.Equal(t, 2, server.ListIssueCount())
 
 	var refreshed database.RepoChangeSyncState
 	require.NoError(t, db.WithContext(ctx).Where("id = ?", state.ID).First(&refreshed).Error)
 	require.Equal(t, 2, refreshed.RecentPRRepairCursorPage)
 	require.NotNil(t, refreshed.LastRecentPRRepairFinishedAt)
 	require.NotNil(t, refreshed.LastFullHistoryRepairFinishedAt)
+}
+
+func TestChangeSyncWorkerFullHistoryRepairClosesStaleIssueWhenPullRowIsAlreadyFresh(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "full_history", 5)
+	require.NoError(t, err)
+
+	repairAt := time.Now().UTC().Add(2 * time.Hour)
+	server.SetPullState(101, "closed", repairAt)
+	for _, number := range []int{101, 102, 103} {
+		seedServerPullState(t, ctx, service, state.RepositoryID, server, number)
+	}
+
+	staleAt := repairAt.Add(-time.Hour)
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.Issue{}).
+		Where("repository_id = ? AND number = ?", state.RepositoryID, 101).
+		Updates(map[string]any{
+			"state":             "open",
+			"github_updated_at": staleAt,
+			"closed_at":         nil,
+		}).Error)
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.RepoChangeSyncState{}).
+		Where("id = ?", state.ID).
+		Updates(map[string]any{
+			"last_successful_recent_pr_repair_at": time.Now().UTC(),
+			"last_recent_pr_repair_finished_at":   time.Now().UTC(),
+			"last_recent_pr_repair_requested_at":  nil,
+		}).Error)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+	workerFullHistoryMaxPages(worker, 1, 1)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	var issue database.Issue
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND number = ?", state.RepositoryID, 101).
+		First(&issue).Error)
+	require.Equal(t, "closed", issue.State)
+	require.NotNil(t, issue.ClosedAt)
+	require.Equal(t, 0, server.GetPullCount())
+	require.GreaterOrEqual(t, server.GetIssueCount(), 1)
 }
 
 func TestChangeSyncWorkerFullHistoryRepairRunsBeforeTargetedRefreshBurst(t *testing.T) {
@@ -1083,6 +1150,119 @@ func TestChangeSyncWorkerFullHistoryRepairRunsBeforeTargetedRefreshBurst(t *test
 		Where("repository_id = ? AND number = ?", state.RepositoryID, 101).
 		First(&pull).Error)
 	require.Equal(t, "closed", pull.State)
+}
+
+func TestRepairPhaseStatusHelpers(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "full_history", 5)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	recentStart := now.Add(-5 * time.Minute)
+	fullStart := now.Add(-3 * time.Minute)
+	recentSuccess := now.Add(-10 * time.Minute)
+	fullSuccess := now.Add(-2 * time.Minute)
+	recentFail := now.Add(-8 * time.Minute)
+	fullFail := now.Add(-time.Minute)
+
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.RepoChangeSyncState{}).
+		Where("repository_id = ?", state.RepositoryID).
+		Updates(map[string]any{
+			"recent_pr_repair_lease_heartbeat_at":    now,
+			"recent_pr_repair_lease_until":           now.Add(time.Minute),
+			"last_recent_pr_repair_started_at":       recentStart,
+			"last_full_history_repair_started_at":    fullStart,
+			"last_successful_recent_pr_repair_at":    recentSuccess,
+			"last_successful_full_history_repair_at": fullSuccess,
+			"last_recent_pr_repair_finished_at":      recentFail,
+			"last_recent_pr_repair_error":            "recent failed",
+			"last_full_history_repair_finished_at":   fullFail,
+			"last_full_history_repair_error":         "full failed",
+		}).Error)
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.Equal(t, "recent_pr_repair", status.CurrentPhase)
+	require.NotNil(t, status.CurrentPhaseStartedAt)
+	require.Equal(t, recentStart, *status.CurrentPhaseStartedAt)
+	require.Equal(t, "full_history_repair", status.LastSuccessfulRepairPhase)
+	require.Equal(t, "full_history_repair", status.LastFailedRepairPhase)
+	require.Equal(t, "full failed", status.LastRepairError)
+	require.Equal(t, "recent failed", status.LastRecentPRRepairError)
+	require.Equal(t, "full failed", status.LastFullHistoryRepairError)
+}
+
+func TestChangeSyncWorkerRepairMetricsRecorded(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.AutoMigrate(db))
+
+	fixture := testfixtures.CreateLocalPullRepo(t)
+	server := newBackfillGitHubServer(t, fixture)
+	defer server.Close()
+
+	client := github.NewClient(server.URL, github.AuthConfig{})
+	indexer := gitindex.NewService(db, client, filepath.Join(t.TempDir(), "mirrors"))
+	service := githubsync.NewService(db, client, indexer)
+
+	state, err := service.ConfigureRepoBackfill(ctx, "acme", "widgets", "open_only", 5)
+	require.NoError(t, err)
+
+	staleAt := time.Now().UTC().Add(-2 * time.Hour)
+	seedStalePull(t, ctx, db, fixture, state.RepositoryID, 101, staleAt)
+	repairAt := time.Now().UTC().Add(2 * time.Hour)
+	server.SetPullState(101, "closed", repairAt)
+
+	_, err = service.RequestRecentPRRepair(ctx, "acme", "widgets")
+	require.NoError(t, err)
+
+	worker := githubsync.NewChangeSyncWorker(
+		db,
+		service,
+		time.Millisecond,
+		time.Nanosecond,
+		time.Hour,
+		time.Second,
+		time.Minute,
+		1,
+	)
+
+	processed, err := worker.RunOnce(ctx)
+	require.NoError(t, err)
+	require.True(t, processed)
+
+	metrics := service.GetChangeSyncMetrics(ctx)
+	encoded, err := json.Marshal(metrics)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &payload))
+
+	changeSync := payload["repair"].(map[string]any)
+	recent := changeSync["recent_pr_repair"].(map[string]any)
+	totals := recent["totals"].(map[string]any)
+	require.EqualValues(t, 1, totals["passes"])
+	require.GreaterOrEqual(t, totals["pulls_scanned"].(float64), float64(1))
+	require.GreaterOrEqual(t, totals["pulls_stale"].(float64), float64(1))
+	require.GreaterOrEqual(t, totals["pulls_unchanged"].(float64), float64(0))
+	require.GreaterOrEqual(t, totals["pull_fetches"].(float64), float64(1))
+	require.GreaterOrEqual(t, totals["pulls_repaired"].(float64), float64(1))
+	require.GreaterOrEqual(t, totals["total_lease_wait_ms"].(float64), float64(0))
+	require.GreaterOrEqual(t, totals["timeouts"].(float64), float64(0))
 }
 
 type backfillGitHubServer struct {

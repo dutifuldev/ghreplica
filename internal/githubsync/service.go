@@ -20,10 +20,11 @@ import (
 )
 
 type Service struct {
-	db     *gorm.DB
-	github *gh.Client
-	git    *gitindex.Service
-	search *searchindex.Service
+	db            *gorm.DB
+	github        *gh.Client
+	git           *gitindex.Service
+	search        *searchindex.Service
+	repairMetrics *repairMetricsRegistry
 }
 
 func NewService(db *gorm.DB, githubClient *gh.Client, gitIndex ...*gitindex.Service) *Service {
@@ -31,13 +32,28 @@ func NewService(db *gorm.DB, githubClient *gh.Client, gitIndex ...*gitindex.Serv
 	if len(gitIndex) > 0 {
 		indexer = gitIndex[0]
 	}
-	return &Service{db: db, github: githubClient, git: indexer, search: searchindex.NewService(db)}
+	return &Service{
+		db:            db,
+		github:        githubClient,
+		git:           indexer,
+		search:        searchindex.NewService(db),
+		repairMetrics: newRepairMetricsRegistry(),
+	}
 }
 
 func (s *Service) withoutSearch() *Service {
 	clone := *s
 	clone.search = nil
 	return &clone
+}
+
+func (s *Service) GetChangeSyncMetrics(ctx context.Context) map[string]any {
+	if s.repairMetrics == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"repair": s.repairMetrics.snapshot(ctx),
+	}
 }
 
 func (s *Service) UpsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
