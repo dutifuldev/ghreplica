@@ -129,11 +129,18 @@ type RepoStatus struct {
 	LastRecentPRRepairStartedAt       *time.Time `json:"last_recent_pr_repair_started_at,omitempty"`
 	LastRecentPRRepairFinishedAt      *time.Time `json:"last_recent_pr_repair_finished_at,omitempty"`
 	LastSuccessfulRecentPRRepairAt    *time.Time `json:"last_successful_recent_pr_repair_at,omitempty"`
+	LastRecentPRRepairError           string     `json:"last_recent_pr_repair_error,omitempty"`
 	FullHistoryRepairRunning          bool       `json:"full_history_repair_running"`
 	FullHistoryCursorPage             int        `json:"full_history_cursor_page"`
 	LastFullHistoryRepairStartedAt    *time.Time `json:"last_full_history_repair_started_at,omitempty"`
 	LastFullHistoryRepairFinishedAt   *time.Time `json:"last_full_history_repair_finished_at,omitempty"`
 	LastSuccessfulFullHistoryRepairAt *time.Time `json:"last_successful_full_history_repair_at,omitempty"`
+	LastFullHistoryRepairError        string     `json:"last_full_history_repair_error,omitempty"`
+	CurrentPhase                      string     `json:"current_phase,omitempty"`
+	CurrentPhaseStartedAt             *time.Time `json:"current_phase_started_at,omitempty"`
+	LastSuccessfulRepairPhase         string     `json:"last_successful_repair_phase,omitempty"`
+	LastFailedRepairPhase             string     `json:"last_failed_repair_phase,omitempty"`
+	LastRepairError                   string     `json:"last_repair_error,omitempty"`
 	BackfillGeneration                int        `json:"backfill_generation"`
 	BackfillCursor                    *int       `json:"backfill_cursor,omitempty"`
 	BackfillCursorUpdatedAt           *time.Time `json:"backfill_cursor_updated_at,omitempty"`

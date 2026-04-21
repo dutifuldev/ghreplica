@@ -51,18 +51,20 @@ type RepoBackfillResult struct {
 	NextCursorTime *time.Time
 }
 
-type recentPRRepairResult struct {
-	PullsChecked   int
-	IssuesChecked  int
-	PullsRepaired  int
-	IssuesRepaired int
-	Completed      bool
-	NextPage       int
-}
-
 type backfillCandidate struct {
 	inventory database.RepoOpenPullInventory
 }
+
+type changeSyncRepoWorkKind string
+
+const (
+	changeSyncRepoWorkNone              changeSyncRepoWorkKind = ""
+	changeSyncRepoWorkRecentRepair      changeSyncRepoWorkKind = "recent_pr_repair"
+	changeSyncRepoWorkFullHistoryRepair changeSyncRepoWorkKind = "full_history_repair"
+	changeSyncRepoWorkInitialInventory  changeSyncRepoWorkKind = "initial_inventory_scan"
+	changeSyncRepoWorkBackfill          changeSyncRepoWorkKind = "backfill"
+	changeSyncRepoWorkAgedInventory     changeSyncRepoWorkKind = "aged_inventory_scan"
+)
 
 type ChangeSyncWorker struct {
 	db                        *gorm.DB
@@ -155,33 +157,22 @@ func (w *ChangeSyncWorker) RunOnce(ctx context.Context) (bool, error) {
 	} else if processed {
 		processedAny = true
 	}
-	if processed, err := w.processRecentPRRepair(ctx); err != nil {
-		return processedAny || processed, err
-	} else if processed {
-		return true, nil
+
+	workKind, err := w.nextRepoWork(ctx)
+	if err != nil {
+		return processedAny, err
 	}
-	if processed, err := w.processFullHistoryRepair(ctx); err != nil {
-		return processedAny || processed, err
-	} else if processed {
-		return true, nil
-	}
-	if processed, err := w.processInventoryScan(ctx, false); err != nil {
-		return processedAny || processed, err
-	} else if processed {
-		return true, nil
-	}
-	if processed, err := w.processBackfillRepo(ctx); err != nil {
-		return processedAny || processed, err
-	} else if processed {
-		return true, nil
+	if workKind != changeSyncRepoWorkNone {
+		processed, err := w.runRepoWork(ctx, workKind)
+		if err != nil {
+			return processedAny || processed, err
+		}
+		if processed {
+			return true, nil
+		}
 	}
 	if processedAny {
 		return true, nil
-	}
-	if processed, err := w.processInventoryScan(ctx, true); err != nil {
-		return processed, err
-	} else if processed {
-		processedAny = true
 	}
 	return processedAny, nil
 }
@@ -210,15 +201,17 @@ func (s *Service) ConfigureRepoBackfill(ctx context.Context, owner, repo, mode s
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "repository_id"}},
 		DoUpdates: clause.Assignments(map[string]any{
-			"dirty":                        true,
-			"dirty_since":                  now,
-			"last_requested_fetch_at":      now,
-			"backfill_mode":                mode,
-			"backfill_priority":            priority,
-			"recent_pr_repair_cursor_page": gorm.Expr("CASE WHEN repo_change_sync_states.recent_pr_repair_cursor_page <= 0 THEN 1 ELSE repo_change_sync_states.recent_pr_repair_cursor_page END"),
-			"full_history_cursor_page":     gorm.Expr("CASE WHEN repo_change_sync_states.full_history_cursor_page <= 0 THEN 1 ELSE repo_change_sync_states.full_history_cursor_page END"),
-			"updated_at":                   now,
-			"last_error":                   "",
+			"dirty":                          true,
+			"dirty_since":                    now,
+			"last_requested_fetch_at":        now,
+			"backfill_mode":                  mode,
+			"backfill_priority":              priority,
+			"recent_pr_repair_cursor_page":   gorm.Expr("CASE WHEN repo_change_sync_states.recent_pr_repair_cursor_page <= 0 THEN 1 ELSE repo_change_sync_states.recent_pr_repair_cursor_page END"),
+			"full_history_cursor_page":       gorm.Expr("CASE WHEN repo_change_sync_states.full_history_cursor_page <= 0 THEN 1 ELSE repo_change_sync_states.full_history_cursor_page END"),
+			"last_recent_pr_repair_error":    "",
+			"last_full_history_repair_error": "",
+			"updated_at":                     now,
+			"last_error":                     "",
 		}),
 	}).Create(&state).Error; err != nil {
 		return database.RepoChangeSyncState{}, err
@@ -248,6 +241,7 @@ func (s *Service) RequestRecentPRRepair(ctx context.Context, owner, repo string)
 		DoUpdates: clause.Assignments(map[string]any{
 			"last_recent_pr_repair_requested_at": now,
 			"recent_pr_repair_cursor_page":       1,
+			"last_recent_pr_repair_error":        "",
 			"updated_at":                         now,
 			"last_error":                         "",
 		}),
@@ -361,6 +355,8 @@ func (s *Service) GetRepoChangeStatus(ctx context.Context, owner, repo string) (
 	}
 
 	now := time.Now().UTC()
+	currentPhase, currentPhaseStartedAt := currentRepoPhase(now, row)
+	lastFailedRepairPhase, lastRepairError := latestFailedRepairPhase(row)
 	return gitindex.RepoStatus{
 		RepositoryID:                      row.RepositoryID,
 		FullName:                          row.FullName,
@@ -386,11 +382,18 @@ func (s *Service) GetRepoChangeStatus(ctx context.Context, owner, repo string) (
 		LastRecentPRRepairStartedAt:       row.LastRecentPRRepairStartedAt,
 		LastRecentPRRepairFinishedAt:      row.LastRecentPRRepairFinishedAt,
 		LastSuccessfulRecentPRRepairAt:    row.LastSuccessfulRecentPRRepairAt,
+		LastRecentPRRepairError:           row.LastRecentPRRepairError,
 		FullHistoryRepairRunning:          leaseIsActive(now, row.FullHistoryRepairLeaseHeartbeatAt, row.FullHistoryRepairLeaseUntil),
 		FullHistoryCursorPage:             row.FullHistoryCursorPage,
 		LastFullHistoryRepairStartedAt:    row.LastFullHistoryRepairStartedAt,
 		LastFullHistoryRepairFinishedAt:   row.LastFullHistoryRepairFinishedAt,
 		LastSuccessfulFullHistoryRepairAt: row.LastSuccessfulFullHistoryRepairAt,
+		LastFullHistoryRepairError:        row.LastFullHistoryRepairError,
+		CurrentPhase:                      currentPhase,
+		CurrentPhaseStartedAt:             currentPhaseStartedAt,
+		LastSuccessfulRepairPhase:         latestSuccessfulRepairPhase(row),
+		LastFailedRepairPhase:             lastFailedRepairPhase,
+		LastRepairError:                   lastRepairError,
 		BackfillGeneration:                row.BackfillGeneration,
 		BackfillCursor:                    row.OpenPRCursorNumber,
 		BackfillCursorUpdatedAt:           row.OpenPRCursorUpdatedAt,
@@ -572,94 +575,6 @@ func (s *Service) BackfillOpenPullRequests(ctx context.Context, owner, repo stri
 	return result, nil
 }
 
-func (s *Service) RepairRecentPullRequests(ctx context.Context, owner, repo string, since time.Time, startPage, maxPages, perPage int) (recentPRRepairResult, error) {
-	repository, err := findRepositoryByName(ctx, s.db, owner, repo)
-	if err != nil {
-		return recentPRRepairResult{}, err
-	}
-	if startPage <= 0 {
-		startPage = 1
-	}
-	if maxPages <= 0 {
-		maxPages = defaultRecentPRRepairMaxPages
-	}
-	if perPage <= 0 {
-		perPage = defaultRecentPRRepairPerPage
-	}
-
-	cutoff := since.UTC()
-	result := recentPRRepairResult{NextPage: startPage}
-	for page := startPage; page < startPage+maxPages; page++ {
-		pulls, err := s.github.ListPullRequestsPage(ctx, owner, repo, "all", "updated", "desc", page, perPage)
-		if err != nil {
-			return result, err
-		}
-		pullDone, err := s.repairRecentPullRequestPage(ctx, owner, repo, repository.ID, pulls, cutoff, &result)
-		if err != nil {
-			return result, err
-		}
-
-		issues, err := s.github.ListIssuesPage(ctx, owner, repo, "all", "updated", "desc", page, perPage)
-		if err != nil {
-			return result, err
-		}
-		issueDone, err := s.repairRecentIssuePage(ctx, owner, repo, repository.ID, issues, cutoff, &result)
-		if err != nil {
-			return result, err
-		}
-
-		if pullDone && issueDone {
-			result.Completed = true
-			result.NextPage = 1
-			return result, nil
-		}
-		result.NextPage = page + 1
-	}
-	return result, nil
-}
-
-func (s *Service) RepairPullRequestHistoryPage(ctx context.Context, owner, repo string, page, perPage int) (int, bool, error) {
-	repository, err := findRepositoryByName(ctx, s.db, owner, repo)
-	if err != nil {
-		return 0, false, err
-	}
-	if page <= 0 {
-		page = 1
-	}
-	if perPage <= 0 {
-		perPage = defaultFullHistoryRepairPerPage
-	}
-	pulls, err := s.github.ListPullRequestsPage(ctx, owner, repo, "all", "updated", "desc", page, perPage)
-	if err != nil {
-		return 0, false, err
-	}
-	if len(pulls) == 0 {
-		return 0, true, nil
-	}
-	repaired := 0
-	numbers := make([]int, 0, len(pulls))
-	for _, pull := range pulls {
-		numbers = append(numbers, pull.Number)
-	}
-	storedPulls, err := s.loadStoredPullRequestsByNumber(ctx, repository.ID, numbers)
-	if err != nil {
-		return 0, false, err
-	}
-	storedIssues, err := s.loadStoredIssuesByNumber(ctx, repository.ID, numbers)
-	if err != nil {
-		return 0, false, err
-	}
-	for _, pull := range pulls {
-		if err := s.repairPullRequestIfStale(ctx, owner, repo, repository.ID, pull, storedPulls, storedIssues); err != nil {
-			return repaired, false, err
-		}
-		if storedPull, ok := storedPulls[pull.Number]; !ok || storedPull.GitHubUpdatedAt.Before(pull.UpdatedAt.UTC()) {
-			repaired++
-		}
-	}
-	return repaired, false, nil
-}
-
 func (s *Service) syncPullRequestCore(ctx context.Context, owner, repo string, canonicalRepo database.Repository, number int) (gh.PullRequestResponse, error) {
 	issue, err := s.github.GetIssue(ctx, owner, repo, number)
 	if err != nil {
@@ -697,112 +612,6 @@ func (s *Service) repairPullRequestObject(ctx context.Context, owner, repo strin
 	return repair.upsertPullRequest(ctx, repositoryID, pull)
 }
 
-func (s *Service) repairRecentPullRequestPage(ctx context.Context, owner, repo string, repositoryID uint, pulls []gh.PullRequestResponse, cutoff time.Time, result *recentPRRepairResult) (bool, error) {
-	if len(pulls) == 0 {
-		return true, nil
-	}
-
-	current := make([]gh.PullRequestResponse, 0, len(pulls))
-	numbers := make([]int, 0, len(pulls))
-	pageDone := false
-	for _, pull := range pulls {
-		if pull.UpdatedAt.UTC().Before(cutoff) {
-			pageDone = true
-			break
-		}
-		current = append(current, pull)
-		numbers = append(numbers, pull.Number)
-	}
-	if len(current) == 0 {
-		return true, nil
-	}
-
-	storedPulls, err := s.loadStoredPullRequestsByNumber(ctx, repositoryID, numbers)
-	if err != nil {
-		return false, err
-	}
-	storedIssues, err := s.loadStoredIssuesByNumber(ctx, repositoryID, numbers)
-	if err != nil {
-		return false, err
-	}
-
-	for _, pull := range current {
-		result.PullsChecked++
-		storedPull, ok := storedPulls[pull.Number]
-		if ok && !storedPull.GitHubUpdatedAt.Before(pull.UpdatedAt.UTC()) {
-			continue
-		}
-		if _, issueExists := storedIssues[pull.Number]; !issueExists {
-			if err := s.repairIssueObject(ctx, owner, repo, repositoryID, pull.Number); err != nil {
-				return false, err
-			}
-			result.IssuesRepaired++
-		}
-		if err := s.repairPullRequestObject(ctx, owner, repo, repositoryID, pull.Number); err != nil {
-			return false, err
-		}
-		result.PullsRepaired++
-	}
-
-	return pageDone, nil
-}
-
-func (s *Service) repairRecentIssuePage(ctx context.Context, owner, repo string, repositoryID uint, issues []gh.IssueResponse, cutoff time.Time, result *recentPRRepairResult) (bool, error) {
-	if len(issues) == 0 {
-		return true, nil
-	}
-
-	pageDone := false
-	current := make([]gh.IssueResponse, 0, len(issues))
-	numbers := make([]int, 0, len(issues))
-	for _, issue := range issues {
-		if issue.UpdatedAt.UTC().Before(cutoff) {
-			pageDone = true
-			break
-		}
-		if issue.PullRequest == nil {
-			continue
-		}
-		current = append(current, issue)
-		numbers = append(numbers, issue.Number)
-	}
-	if len(current) == 0 {
-		return pageDone, nil
-	}
-
-	storedIssues, err := s.loadStoredIssuesByNumber(ctx, repositoryID, numbers)
-	if err != nil {
-		return false, err
-	}
-
-	for _, issue := range current {
-		result.IssuesChecked++
-		storedIssue, ok := storedIssues[issue.Number]
-		if ok && !storedIssue.GitHubUpdatedAt.Before(issue.UpdatedAt.UTC()) {
-			continue
-		}
-		if err := s.repairIssueObject(ctx, owner, repo, repositoryID, issue.Number); err != nil {
-			return false, err
-		}
-		result.IssuesRepaired++
-	}
-
-	return pageDone, nil
-}
-
-func (s *Service) repairPullRequestIfStale(ctx context.Context, owner, repo string, repositoryID uint, pull gh.PullRequestResponse, storedPulls map[int]database.PullRequest, storedIssues map[int]database.Issue) error {
-	storedPull, ok := storedPulls[pull.Number]
-	if ok && !storedPull.GitHubUpdatedAt.Before(pull.UpdatedAt.UTC()) {
-		return nil
-	}
-	if _, issueExists := storedIssues[pull.Number]; !issueExists {
-		if err := s.repairIssueObject(ctx, owner, repo, repositoryID, pull.Number); err != nil {
-			return err
-		}
-	}
-	return s.repairPullRequestObject(ctx, owner, repo, repositoryID, pull.Number)
-}
-
 func (s *Service) syncPullRequestChangeOnly(ctx context.Context, owner, repo string, canonicalRepo database.Repository, number int) (gh.PullRequestResponse, error) {
 	pull, err := s.syncPullRequestCore(ctx, owner, repo, canonicalRepo, number)
 	if err != nil {
@@ -836,7 +645,53 @@ func (w *ChangeSyncWorker) processTargetedRefreshBurst(ctx context.Context) (boo
 	return processedAny, nil
 }
 
-func (w *ChangeSyncWorker) processRecentPRRepair(ctx context.Context) (bool, error) {
+func (w *ChangeSyncWorker) nextRepoWork(ctx context.Context) (changeSyncRepoWorkKind, error) {
+	if _, ok, err := w.pickRecentPRRepairState(ctx); err != nil {
+		return changeSyncRepoWorkNone, err
+	} else if ok {
+		return changeSyncRepoWorkRecentRepair, nil
+	}
+	if _, ok, err := w.pickFullHistoryRepairState(ctx, 0); err != nil {
+		return changeSyncRepoWorkNone, err
+	} else if ok {
+		return changeSyncRepoWorkFullHistoryRepair, nil
+	}
+	if _, ok, err := w.pickInventoryScanState(ctx, false); err != nil {
+		return changeSyncRepoWorkNone, err
+	} else if ok {
+		return changeSyncRepoWorkInitialInventory, nil
+	}
+	if _, ok, err := w.pickBackfillState(ctx); err != nil {
+		return changeSyncRepoWorkNone, err
+	} else if ok {
+		return changeSyncRepoWorkBackfill, nil
+	}
+	if _, ok, err := w.pickInventoryScanState(ctx, true); err != nil {
+		return changeSyncRepoWorkNone, err
+	} else if ok {
+		return changeSyncRepoWorkAgedInventory, nil
+	}
+	return changeSyncRepoWorkNone, nil
+}
+
+func (w *ChangeSyncWorker) runRepoWork(ctx context.Context, kind changeSyncRepoWorkKind) (bool, error) {
+	switch kind {
+	case changeSyncRepoWorkRecentRepair:
+		return w.processRecentPRRepair(ctx)
+	case changeSyncRepoWorkFullHistoryRepair:
+		return w.processFullHistoryRepair(ctx)
+	case changeSyncRepoWorkInitialInventory:
+		return w.processInventoryScan(ctx, false)
+	case changeSyncRepoWorkBackfill:
+		return w.processBackfillRepo(ctx)
+	case changeSyncRepoWorkAgedInventory:
+		return w.processInventoryScan(ctx, true)
+	default:
+		return false, nil
+	}
+}
+
+func (w *ChangeSyncWorker) pickRecentPRRepairState(ctx context.Context) (database.RepoChangeSyncState, bool, error) {
 	now := time.Now().UTC()
 	recentAvailableSQL, recentAvailableArgs := w.leases.reclaimableSQL(recentPRRepairLeaseKind, now)
 	backfillAvailableSQL, backfillAvailableArgs := w.leases.reclaimableSQL(backfillLeaseKind, now)
@@ -857,11 +712,24 @@ func (w *ChangeSyncWorker) processRecentPRRepair(ctx context.Context) (bool, err
 		First(&state).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return false, nil
+			return database.RepoChangeSyncState{}, false, nil
 		}
+		return database.RepoChangeSyncState{}, false, err
+	}
+	return state, true, nil
+}
+
+func (w *ChangeSyncWorker) processRecentPRRepair(ctx context.Context) (bool, error) {
+	state, ok, err := w.pickRecentPRRepairState(ctx)
+	if err != nil {
 		return false, err
 	}
+	if !ok {
+		return false, nil
+	}
 
+	now := time.Now().UTC()
+	leaseAcquireStartedAt := time.Now()
 	acquired, leasedUntil, err := w.leases.acquire(ctx, state.ID, recentPRRepairLeaseKind, now)
 	if err != nil {
 		return false, err
@@ -889,7 +757,7 @@ func (w *ChangeSyncWorker) processRecentPRRepair(ctx context.Context) (bool, err
 	state.RecentPRRepairLeaseStartedAt = &now
 	state.RecentPRRepairLeaseHeartbeatAt = &now
 	state.RecentPRRepairLeaseUntil = leasedUntil
-	result, err := w.runRecentPRRepairPass(ctx, state)
+	result, err := w.runRecentPRRepairPass(ctx, state, time.Since(leaseAcquireStartedAt))
 	if err != nil {
 		return true, err
 	}
@@ -907,7 +775,7 @@ func (w *ChangeSyncWorker) processFullHistoryRepair(ctx context.Context) (bool, 
 	return w.processFullHistoryRepairForRepository(ctx, 0)
 }
 
-func (w *ChangeSyncWorker) processFullHistoryRepairForRepository(ctx context.Context, repositoryID uint) (bool, error) {
+func (w *ChangeSyncWorker) pickFullHistoryRepairState(ctx context.Context, repositoryID uint) (database.RepoChangeSyncState, bool, error) {
 	now := time.Now().UTC()
 	fullHistoryAvailableSQL, fullHistoryAvailableArgs := w.leases.reclaimableSQL(fullHistoryRepairLeaseKind, now)
 	recentAvailableSQL, recentAvailableArgs := w.leases.reclaimableSQL(recentPRRepairLeaseKind, now)
@@ -930,11 +798,24 @@ func (w *ChangeSyncWorker) processFullHistoryRepairForRepository(ctx context.Con
 		First(&state).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return false, nil
+			return database.RepoChangeSyncState{}, false, nil
 		}
+		return database.RepoChangeSyncState{}, false, err
+	}
+	return state, true, nil
+}
+
+func (w *ChangeSyncWorker) processFullHistoryRepairForRepository(ctx context.Context, repositoryID uint) (bool, error) {
+	state, ok, err := w.pickFullHistoryRepairState(ctx, repositoryID)
+	if err != nil {
 		return false, err
 	}
+	if !ok {
+		return false, nil
+	}
 
+	now := time.Now().UTC()
+	leaseAcquireStartedAt := time.Now()
 	acquired, leasedUntil, err := w.leases.acquire(ctx, state.ID, fullHistoryRepairLeaseKind, now)
 	if err != nil {
 		return false, err
@@ -955,10 +836,10 @@ func (w *ChangeSyncWorker) processFullHistoryRepairForRepository(ctx context.Con
 	state.FullHistoryRepairLeaseStartedAt = &now
 	state.FullHistoryRepairLeaseHeartbeatAt = &now
 	state.FullHistoryRepairLeaseUntil = leasedUntil
-	return true, w.runFullHistoryRepairPass(ctx, state)
+	return true, w.runFullHistoryRepairPass(ctx, state, time.Since(leaseAcquireStartedAt))
 }
 
-func (w *ChangeSyncWorker) processInventoryScan(ctx context.Context, ageOnly bool) (bool, error) {
+func (w *ChangeSyncWorker) pickInventoryScanState(ctx context.Context, ageOnly bool) (database.RepoChangeSyncState, bool, error) {
 	now := time.Now().UTC()
 	fetchAvailableSQL, fetchAvailableArgs := w.leases.reclaimableSQL(fetchLeaseKind, now)
 	backfillAvailableSQL, backfillAvailableArgs := w.leases.reclaimableSQL(backfillLeaseKind, now)
@@ -976,15 +857,28 @@ func (w *ChangeSyncWorker) processInventoryScan(ctx context.Context, ageOnly boo
 			Where("(inventory_generation_current = 0 OR inventory_last_committed_at IS NULL)").
 			Order("CASE WHEN inventory_generation_current = 0 THEN 0 ELSE 1 END ASC, backfill_priority DESC, inventory_last_committed_at ASC NULLS FIRST, repository_id ASC")
 	}
+
 	var state database.RepoChangeSyncState
 	err := query.First(&state).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return false, nil
+			return database.RepoChangeSyncState{}, false, nil
 		}
+		return database.RepoChangeSyncState{}, false, err
+	}
+	return state, true, nil
+}
+
+func (w *ChangeSyncWorker) processInventoryScan(ctx context.Context, ageOnly bool) (bool, error) {
+	state, ok, err := w.pickInventoryScanState(ctx, ageOnly)
+	if err != nil {
 		return false, err
 	}
+	if !ok {
+		return false, nil
+	}
 
+	now := time.Now().UTC()
 	acquired, leasedUntil, err := w.leases.acquire(ctx, state.ID, fetchLeaseKind, now)
 	if err != nil {
 		return false, err
@@ -1014,7 +908,7 @@ func (w *ChangeSyncWorker) processInventoryScan(ctx context.Context, ageOnly boo
 	return true, w.runFetchPass(ctx, state)
 }
 
-func (w *ChangeSyncWorker) processBackfillRepo(ctx context.Context) (bool, error) {
+func (w *ChangeSyncWorker) pickBackfillState(ctx context.Context) (database.RepoChangeSyncState, bool, error) {
 	now := time.Now().UTC()
 	backfillAvailableSQL, backfillAvailableArgs := w.leases.reclaimableSQL(backfillLeaseKind, now)
 	fetchAvailableSQL, fetchAvailableArgs := w.leases.reclaimableSQL(fetchLeaseKind, now)
@@ -1029,11 +923,23 @@ func (w *ChangeSyncWorker) processBackfillRepo(ctx context.Context) (bool, error
 		First(&state).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return false, nil
+			return database.RepoChangeSyncState{}, false, nil
 		}
+		return database.RepoChangeSyncState{}, false, err
+	}
+	return state, true, nil
+}
+
+func (w *ChangeSyncWorker) processBackfillRepo(ctx context.Context) (bool, error) {
+	state, ok, err := w.pickBackfillState(ctx)
+	if err != nil {
 		return false, err
 	}
+	if !ok {
+		return false, nil
+	}
 
+	now := time.Now().UTC()
 	acquired, leasedUntil, err := w.leases.acquire(ctx, state.ID, backfillLeaseKind, now)
 	if err != nil {
 		return false, err
@@ -1110,10 +1016,15 @@ func (w *ChangeSyncWorker) runBackfillPass(ctx context.Context, state database.R
 	return w.completeBackfillPass(ctx, state, updates)
 }
 
-func (w *ChangeSyncWorker) runRecentPRRepairPass(ctx context.Context, state database.RepoChangeSyncState) (recentPRRepairResult, error) {
-	var result recentPRRepairResult
+func (w *ChangeSyncWorker) runRecentPRRepairPass(ctx context.Context, state database.RepoChangeSyncState, leaseWait time.Duration) (repairPassMetrics, error) {
+	var (
+		result     repairPassMetrics
+		repository database.Repository
+	)
+	startedAt := time.Now().UTC()
 	runErr := w.runWithLeaseHeartbeat(ctx, state.ID, recentPRRepairLeaseKind, func(passCtx context.Context) error {
-		repository, err := repositoryByID(passCtx, w.db, state.RepositoryID)
+		var err error
+		repository, err = repositoryByID(passCtx, w.db, state.RepositoryID)
 		if err != nil {
 			return err
 		}
@@ -1133,16 +1044,26 @@ func (w *ChangeSyncWorker) runRecentPRRepairPass(ctx context.Context, state data
 		return err
 	})
 	if runErr != nil {
-		return recentPRRepairResult{}, w.finishRecentPRRepairWithError(ctx, state, runErr)
+		if w.service.repairMetrics != nil {
+			w.service.repairMetrics.recordFailure(recentRepairPhase, state.RepositoryID, repository.FullName, leaseWait, time.Since(startedAt), runErr)
+		}
+		return repairPassMetrics{}, w.finishRecentPRRepairWithError(ctx, state, runErr)
+	}
+	if w.service.repairMetrics != nil {
+		w.service.repairMetrics.recordSuccess(recentRepairPhase, state.RepositoryID, repository.FullName, result, leaseWait, time.Since(startedAt))
 	}
 	return result, w.completeRecentPRRepairPass(ctx, state, result)
 }
 
-func (w *ChangeSyncWorker) runFullHistoryRepairPass(ctx context.Context, state database.RepoChangeSyncState) error {
-	var repaired int
-	var completed bool
+func (w *ChangeSyncWorker) runFullHistoryRepairPass(ctx context.Context, state database.RepoChangeSyncState, leaseWait time.Duration) error {
+	var (
+		repository database.Repository
+		result     repairPassMetrics
+	)
+	startedAt := time.Now().UTC()
 	runErr := w.runWithLeaseHeartbeat(ctx, state.ID, fullHistoryRepairLeaseKind, func(passCtx context.Context) error {
-		repository, err := repositoryByID(passCtx, w.db, state.RepositoryID)
+		var err error
+		repository, err = repositoryByID(passCtx, w.db, state.RepositoryID)
 		if err != nil {
 			return err
 		}
@@ -1155,24 +1076,32 @@ func (w *ChangeSyncWorker) runFullHistoryRepairPass(ctx context.Context, state d
 			page = 1
 		}
 		for i := 0; i < w.fullHistoryRepairMaxPages; i++ {
-			count, done, err := w.service.RepairPullRequestHistoryPage(passCtx, owner, name, page, w.fullHistoryRepairPerPage)
-			repaired += count
+			pageResult, err := w.service.RepairPullRequestHistoryPage(passCtx, owner, name, page, w.fullHistoryRepairPerPage)
 			if err != nil {
 				return err
 			}
-			if done {
-				completed = true
+			accumulateRepairPassMetrics(&result, pageResult)
+			if pageResult.Completed {
+				result.Completed = true
+				result.NextPage = 1
 				break
 			}
 			page++
+			result.NextPage = page
 		}
 		state.FullHistoryCursorPage = page
 		return nil
 	})
 	if runErr != nil {
+		if w.service.repairMetrics != nil {
+			w.service.repairMetrics.recordFailure(fullHistoryRepairPhase, state.RepositoryID, repository.FullName, leaseWait, time.Since(startedAt), runErr)
+		}
 		return w.finishFullHistoryRepairWithError(ctx, state, runErr)
 	}
-	return w.completeFullHistoryRepairPass(ctx, state, repaired, completed)
+	if w.service.repairMetrics != nil {
+		w.service.repairMetrics.recordSuccess(fullHistoryRepairPhase, state.RepositoryID, repository.FullName, result, leaseWait, time.Since(startedAt))
+	}
+	return w.completeFullHistoryRepairPass(ctx, state, result)
 }
 
 func (w *ChangeSyncWorker) completeFetchPass(ctx context.Context, state database.RepoChangeSyncState, result RepoBackfillResult) error {
@@ -1201,10 +1130,11 @@ func (w *ChangeSyncWorker) completeBackfillPass(ctx context.Context, state datab
 	return nil
 }
 
-func (w *ChangeSyncWorker) completeRecentPRRepairPass(ctx context.Context, state database.RepoChangeSyncState, result recentPRRepairResult) error {
+func (w *ChangeSyncWorker) completeRecentPRRepairPass(ctx context.Context, state database.RepoChangeSyncState, result repairPassMetrics) error {
 	now := time.Now().UTC()
 	updates := map[string]any{
 		"last_error":                        "",
+		"last_recent_pr_repair_error":       "",
 		"last_recent_pr_repair_finished_at": now,
 	}
 	if result.Completed {
@@ -1227,24 +1157,32 @@ func (w *ChangeSyncWorker) completeRecentPRRepairPass(ctx context.Context, state
 		"state_id", state.ID,
 		"repository_id", state.RepositoryID,
 		"owner_id", w.leases.owner(),
-		"pulls_checked", result.PullsChecked,
-		"issues_checked", result.IssuesChecked,
+		"pulls_scanned", result.PullsScanned,
+		"issues_scanned", result.IssuesScanned,
+		"pulls_stale", result.PullsStale,
+		"issues_stale", result.IssuesStale,
+		"pulls_unchanged", result.PullsUnchanged,
+		"issues_unchanged", result.IssuesUnchanged,
+		"pull_fetches", result.PullFetches,
+		"issue_fetches", result.IssueFetches,
 		"pulls_repaired", result.PullsRepaired,
 		"issues_repaired", result.IssuesRepaired,
+		"apply_writes", result.ApplyWrites,
 		"completed", result.Completed,
 		"next_page", updates["recent_pr_repair_cursor_page"],
 	)
 	return nil
 }
 
-func (w *ChangeSyncWorker) completeFullHistoryRepairPass(ctx context.Context, state database.RepoChangeSyncState, repaired int, completed bool) error {
+func (w *ChangeSyncWorker) completeFullHistoryRepairPass(ctx context.Context, state database.RepoChangeSyncState, result repairPassMetrics) error {
 	now := time.Now().UTC()
 	nextPage := state.FullHistoryCursorPage
-	if completed || nextPage <= 0 {
+	if result.Completed || nextPage <= 0 {
 		nextPage = 1
 	}
 	updates := map[string]any{
 		"last_error":                             "",
+		"last_full_history_repair_error":         "",
 		"last_full_history_repair_finished_at":   now,
 		"last_successful_full_history_repair_at": now,
 		"full_history_cursor_page":               nextPage,
@@ -1252,7 +1190,25 @@ func (w *ChangeSyncWorker) completeFullHistoryRepairPass(ctx context.Context, st
 	if err := w.leases.release(ctx, state.ID, fullHistoryRepairLeaseKind, updates); err != nil {
 		return err
 	}
-	slog.Info("full history repair pass completed", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "repaired", repaired, "completed", completed, "next_page", nextPage)
+	slog.Info(
+		"full history repair pass completed",
+		"state_id", state.ID,
+		"repository_id", state.RepositoryID,
+		"owner_id", w.leases.owner(),
+		"pulls_scanned", result.PullsScanned,
+		"issues_scanned", result.IssuesScanned,
+		"pulls_stale", result.PullsStale,
+		"issues_stale", result.IssuesStale,
+		"pulls_unchanged", result.PullsUnchanged,
+		"issues_unchanged", result.IssuesUnchanged,
+		"pull_fetches", result.PullFetches,
+		"issue_fetches", result.IssueFetches,
+		"pulls_repaired", result.PullsRepaired,
+		"issues_repaired", result.IssuesRepaired,
+		"apply_writes", result.ApplyWrites,
+		"completed", result.Completed,
+		"next_page", nextPage,
+	)
 	return nil
 }
 
@@ -1287,6 +1243,7 @@ func (w *ChangeSyncWorker) finishRecentPRRepairWithError(ctx context.Context, st
 	now := time.Now().UTC()
 	updates := map[string]any{
 		"last_error":                        runErr.Error(),
+		"last_recent_pr_repair_error":       runErr.Error(),
 		"last_recent_pr_repair_finished_at": now,
 	}
 	if err := w.leases.release(ctx, state.ID, recentPRRepairLeaseKind, updates); err != nil {
@@ -1300,6 +1257,7 @@ func (w *ChangeSyncWorker) finishFullHistoryRepairWithError(ctx context.Context,
 	now := time.Now().UTC()
 	updates := map[string]any{
 		"last_error":                           runErr.Error(),
+		"last_full_history_repair_error":       runErr.Error(),
 		"last_full_history_repair_finished_at": now,
 	}
 	if err := w.leases.release(ctx, state.ID, fullHistoryRepairLeaseKind, updates); err != nil {
@@ -1473,10 +1431,12 @@ type repoChangeStatusRow struct {
 	LastRecentPRRepairStartedAt       *time.Time `gorm:"column:last_recent_pr_repair_started_at"`
 	LastRecentPRRepairFinishedAt      *time.Time `gorm:"column:last_recent_pr_repair_finished_at"`
 	LastSuccessfulRecentPRRepairAt    *time.Time `gorm:"column:last_successful_recent_pr_repair_at"`
+	LastRecentPRRepairError           string     `gorm:"column:last_recent_pr_repair_error"`
 	RecentPRRepairCursorPage          int        `gorm:"column:recent_pr_repair_cursor_page"`
 	LastFullHistoryRepairStartedAt    *time.Time `gorm:"column:last_full_history_repair_started_at"`
 	LastFullHistoryRepairFinishedAt   *time.Time `gorm:"column:last_full_history_repair_finished_at"`
 	LastSuccessfulFullHistoryRepairAt *time.Time `gorm:"column:last_successful_full_history_repair_at"`
+	LastFullHistoryRepairError        string     `gorm:"column:last_full_history_repair_error"`
 	InventoryGenerationCurrent        int        `gorm:"column:inventory_generation_current"`
 	InventoryGenerationBuilding       *int       `gorm:"column:inventory_generation_building"`
 	InventoryLastCommittedAt          *time.Time `gorm:"column:inventory_last_committed_at"`
@@ -1522,10 +1482,12 @@ func (s *Service) repoChangeStatusRow(ctx context.Context, owner, repo string) (
 			repo_change_sync_states.last_recent_pr_repair_started_at AS last_recent_pr_repair_started_at,
 			repo_change_sync_states.last_recent_pr_repair_finished_at AS last_recent_pr_repair_finished_at,
 			repo_change_sync_states.last_successful_recent_pr_repair_at AS last_successful_recent_pr_repair_at,
+			COALESCE(repo_change_sync_states.last_recent_pr_repair_error, '') AS last_recent_pr_repair_error,
 			COALESCE(repo_change_sync_states.recent_pr_repair_cursor_page, 1) AS recent_pr_repair_cursor_page,
 			repo_change_sync_states.last_full_history_repair_started_at AS last_full_history_repair_started_at,
 			repo_change_sync_states.last_full_history_repair_finished_at AS last_full_history_repair_finished_at,
 			repo_change_sync_states.last_successful_full_history_repair_at AS last_successful_full_history_repair_at,
+			COALESCE(repo_change_sync_states.last_full_history_repair_error, '') AS last_full_history_repair_error,
 			COALESCE(repo_change_sync_states.inventory_generation_current, 0) AS inventory_generation_current,
 			repo_change_sync_states.inventory_generation_building AS inventory_generation_building,
 			repo_change_sync_states.inventory_last_committed_at AS inventory_last_committed_at,
@@ -1578,6 +1540,72 @@ func recentPRRepairPendingState(state database.RepoChangeSyncState) bool {
 		return true
 	}
 	return !state.LastRecentPRRepairRequestedAt.Before(state.LastRecentPRRepairFinishedAt.UTC())
+}
+
+func currentRepoPhase(now time.Time, row repoChangeStatusRow) (string, *time.Time) {
+	switch {
+	case leaseIsActive(now, row.RecentPRRepairLeaseHeartbeatAt, row.RecentPRRepairLeaseUntil):
+		return string(recentRepairPhase), row.LastRecentPRRepairStartedAt
+	case leaseIsActive(now, row.FullHistoryRepairLeaseHeartbeatAt, row.FullHistoryRepairLeaseUntil):
+		return string(fullHistoryRepairPhase), row.LastFullHistoryRepairStartedAt
+	case leaseIsActive(now, row.FetchLeaseHeartbeatAt, row.FetchLeaseUntil):
+		return "inventory_scan", row.LastFetchStartedAt
+	case leaseIsActive(now, row.BackfillLeaseHeartbeatAt, row.BackfillLeaseUntil):
+		return "backfill", row.LastBackfillStartedAt
+	case leaseIsActive(now, row.TargetedRefreshLeaseHeartbeatAt, row.TargetedRefreshLeaseUntil):
+		return "targeted_refresh", nil
+	default:
+		return "", nil
+	}
+}
+
+func latestSuccessfulRepairPhase(row repoChangeStatusRow) string {
+	var (
+		phase string
+		at    *time.Time
+	)
+	for _, candidate := range []struct {
+		name string
+		at   *time.Time
+	}{
+		{name: string(recentRepairPhase), at: row.LastSuccessfulRecentPRRepairAt},
+		{name: string(fullHistoryRepairPhase), at: row.LastSuccessfulFullHistoryRepairAt},
+	} {
+		if candidate.at == nil {
+			continue
+		}
+		if at == nil || candidate.at.After(at.UTC()) {
+			at = candidate.at
+			phase = candidate.name
+		}
+	}
+	return phase
+}
+
+func latestFailedRepairPhase(row repoChangeStatusRow) (string, string) {
+	var (
+		phase string
+		err   string
+		at    *time.Time
+	)
+	for _, candidate := range []struct {
+		name string
+		err  string
+		at   *time.Time
+	}{
+		{name: string(recentRepairPhase), err: row.LastRecentPRRepairError, at: row.LastRecentPRRepairFinishedAt},
+		{name: string(fullHistoryRepairPhase), err: row.LastFullHistoryRepairError, at: row.LastFullHistoryRepairFinishedAt},
+	} {
+		if candidate.err == "" || candidate.at == nil {
+			continue
+		}
+		if at == nil || candidate.at.After(at.UTC()) {
+			at = candidate.at
+			phase = candidate.name
+			err = candidate.err
+		}
+	}
+	return phase, err
 }
 
 func (s *Service) repoChangeStateByRepositoryID(ctx context.Context, repositoryID uint) (database.RepoChangeSyncState, error) {

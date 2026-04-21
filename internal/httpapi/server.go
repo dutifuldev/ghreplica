@@ -47,6 +47,10 @@ type changeStatusProvider interface {
 	GetPullRequestChangeStatus(ctx context.Context, owner, repo string, number int) (gitindex.PullRequestStatus, error)
 }
 
+type changeMetricsProvider interface {
+	GetChangeSyncMetrics(ctx context.Context) map[string]any
+}
+
 type structuralSearchProvider interface {
 	SearchStructural(ctx context.Context, owner, repo string, request gitindex.StructuralSearchRequest) (gitindex.StructuralSearchResponse, error)
 }
@@ -453,6 +457,12 @@ func (s *Server) handleMetrics(c echo.Context) error {
 		"refresh_jobs_failed":      failed,
 		"refresh_jobs_succeeded":   succeeded,
 		"refresh_jobs_superseded":  superseded,
+		"change_sync": func() map[string]any {
+			if provider, ok := s.changeStatus.(changeMetricsProvider); ok {
+				return provider.GetChangeSyncMetrics(ctx)
+			}
+			return map[string]any{}
+		}(),
 	})
 }
 
