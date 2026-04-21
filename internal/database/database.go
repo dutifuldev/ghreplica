@@ -18,6 +18,8 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+const nonTransactionalMigrationDirective = "-- ghreplica:nontransactional"
+
 type TrackedRepository struct {
 	ID                       uint `gorm:"primaryKey"`
 	Owner                    string
@@ -445,13 +447,24 @@ func RunMigrations(db *gorm.DB, dir string) error {
 		if err != nil {
 			return err
 		}
+		bodyText := string(body)
+
+		if isNonTransactionalMigration(bodyText) {
+			if _, err := sqlDB.ExecContext(ctx, bodyText); err != nil {
+				return fmt.Errorf("apply migration %s: %w", version, err)
+			}
+			if _, err := sqlDB.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
+				return err
+			}
+			continue
+		}
 
 		tx, err := sqlDB.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
 
-		if _, err := tx.ExecContext(ctx, string(body)); err != nil {
+		if _, err := tx.ExecContext(ctx, bodyText); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("apply migration %s: %w", version, err)
 		}
@@ -476,6 +489,10 @@ func migrationApplied(ctx context.Context, db *sql.DB, version string) (bool, er
 	}
 
 	return count > 0, nil
+}
+
+func isNonTransactionalMigration(body string) bool {
+	return strings.Contains(body, nonTransactionalMigrationDirective)
 }
 
 func BuildLinkHeader(basePath string, rawQuery map[string]string, page, perPage, total int) string {
