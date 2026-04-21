@@ -233,13 +233,21 @@ func runRepair(cfg config.Config, args []string) error {
 }
 
 func runCleanup(cfg config.Config, args []string) error {
+	var targetArgs, flagArgs []string
+	if len(args) >= 1 && args[0] == "webhook-deliveries" {
+		targetArgs = args[:1]
+		flagArgs = args[1:]
+	} else {
+		flagArgs = args
+	}
+
 	cleanupFlags := flag.NewFlagSet("cleanup", flag.ContinueOnError)
 	untilEmpty := cleanupFlags.Bool("until-empty", false, "repeat cleanup passes until no more eligible webhook deliveries remain")
-	if err := cleanupFlags.Parse(args); err != nil {
+	if err := cleanupFlags.Parse(flagArgs); err != nil {
 		return err
 	}
 
-	rest := cleanupFlags.Args()
+	rest := append(targetArgs, cleanupFlags.Args()...)
 	if len(rest) != 1 || rest[0] != "webhook-deliveries" {
 		return errors.New("usage: ghreplica cleanup webhook-deliveries [--until-empty]")
 	}
