@@ -108,6 +108,23 @@ func OpenWebhookDatabaseHandle(cfg config.Config) (*OpenedDatabase, error) {
 	}, nil
 }
 
+func OpenSyncDatabaseHandle(cfg config.Config) (*OpenedDatabase, error) {
+	connector, err := newDatabaseConnector(cfg)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := OpenSyncDatabase(cfg, connector)
+	if err != nil {
+		_ = connector.Close()
+		return nil, err
+	}
+	return &OpenedDatabase{
+		DB:      handle.GormDB,
+		SQLDB:   handle.SQLDB,
+		cleanup: connector.Close,
+	}, nil
+}
+
 func OpenControlDatabase(cfg config.Config, connector *database.Connector) (*database.Handle, error) {
 	return connector.Open(database.PoolConfig{
 		MaxOpenConns: cfg.ControlDBMaxOpenConns,

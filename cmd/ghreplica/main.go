@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/app"
 	"github.com/dutifuldev/ghreplica/internal/config"
@@ -133,8 +134,11 @@ func runRefresh(cfg config.Config, args []string) error {
 	}
 
 	rest := refreshFlags.Args()
+	if len(rest) == 3 && rest[0] == "inventory" && rest[1] == "repo" {
+		return runRefreshInventory(cfg, rest[2])
+	}
 	if len(rest) != 2 || rest[0] != "repo" {
-		return errors.New("usage: ghreplica refresh repo <owner>/<repo>")
+		return errors.New("usage: ghreplica refresh {repo <owner>/<repo> | inventory repo <owner>/<repo>}")
 	}
 
 	owner, repo, err := config.ParseFullName(rest[1])
@@ -158,6 +162,47 @@ func runRefresh(cfg config.Config, args []string) error {
 		Source:     "manual",
 		DeliveryID: "",
 	})
+}
+
+func runRefreshInventory(cfg config.Config, fullName string) error {
+	owner, repo, err := config.ParseFullName(fullName)
+	if err != nil {
+		return err
+	}
+	if err := cfg.ValidateDatabase(); err != nil {
+		return err
+	}
+
+	dbHandle, err := app.OpenSyncDatabaseHandle(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dbHandle.Close() }()
+
+	client := app.NewGitHubClient(cfg)
+	service := githubsync.NewService(dbHandle.DB, client, app.NewGitIndexService(dbHandle.DB, client, cfg))
+	result, err := service.RefreshOpenPullInventoryNow(context.Background(), owner, repo, cfg.RepoLeaseTTL)
+	if err != nil {
+		return err
+	}
+
+	status, err := service.GetRepoChangeStatus(context.Background(), owner, repo)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(
+		os.Stdout,
+		"refresh inventory repo=%s total=%d current=%d stale=%d missing=%d generation=%d committed_at=%s\n",
+		fullName,
+		result.OpenPRTotal,
+		result.OpenPRCurrent,
+		result.OpenPRStale,
+		result.OpenPRMissing,
+		status.InventoryGenerationCurrent,
+		formatTimePtr(status.InventoryLastCommittedAt),
+	)
+	return nil
 }
 
 func runBackfill(cfg config.Config, args []string) error {
@@ -321,6 +366,7 @@ func usageError() error {
 	fmt.Fprintf(os.Stderr, "  ghreplica cleanup webhook-deliveries [--until-empty]\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica repair recent repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica refresh repo <owner>/<repo>\n")
+	fmt.Fprintf(os.Stderr, "  ghreplica refresh inventory repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica search-index repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica sync repo <owner>/<repo>\n")
 	fmt.Fprintf(os.Stderr, "  ghreplica sync issue <owner>/<repo> <number>\n")
@@ -334,4 +380,11 @@ func parseNumberArg(raw string) (int, error) {
 		return 0, fmt.Errorf("invalid number: %q", raw)
 	}
 	return number, nil
+}
+
+func formatTimePtr(at *time.Time) string {
+	if at == nil {
+		return ""
+	}
+	return at.UTC().Format(time.RFC3339)
 }

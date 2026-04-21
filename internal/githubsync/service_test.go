@@ -252,6 +252,96 @@ func TestUpsertRepositoryReclaimsFullNameFromDifferentGitHubID(t *testing.T) {
 	require.Equal(t, repoFixture().FullName, currentStored.FullName)
 }
 
+func TestRefreshOpenPullInventoryNow(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	repository := database.Repository{
+		GitHubID:   101,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.Create(&repository).Error)
+	require.NoError(t, db.Create(&database.RepoChangeSyncState{
+		RepositoryID: repository.ID,
+		Dirty:        true,
+		BackfillMode: "open_only",
+	}).Error)
+
+	var listPullCount int
+	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/acme/widgets/pulls" {
+			listPullCount++
+			writeJSON(t, w, pullsFixture())
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	result, err := service.RefreshOpenPullInventoryNow(ctx, "acme", "widgets", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, len(pullsFixture()), result.OpenPRTotal)
+	require.Equal(t, len(pullsFixture()), result.OpenPRMissing)
+	require.Equal(t, 1, listPullCount)
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.Equal(t, 1, status.InventoryGenerationCurrent)
+	require.NotNil(t, status.InventoryLastCommittedAt)
+	require.False(t, status.InventoryScanRunning)
+	require.Equal(t, len(pullsFixture()), status.OpenPRTotal)
+	require.Equal(t, len(pullsFixture()), status.OpenPRMissing)
+	require.Empty(t, status.LastError)
+}
+
+func TestRefreshOpenPullInventoryNowRejectsActiveRepoPhase(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	repository := database.Repository{
+		GitHubID:   102,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.Create(&repository).Error)
+
+	now := time.Now().UTC()
+	until := now.Add(time.Minute)
+	require.NoError(t, db.Create(&database.RepoChangeSyncState{
+		RepositoryID:             repository.ID,
+		BackfillMode:             "open_only",
+		LastBackfillStartedAt:    &now,
+		BackfillLeaseHeartbeatAt: &now,
+		BackfillLeaseUntil:       &until,
+	}).Error)
+
+	var listPullCount int
+	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/acme/widgets/pulls" {
+			listPullCount++
+			writeJSON(t, w, pullsFixture())
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	_, err = service.RefreshOpenPullInventoryNow(ctx, "acme", "widgets", time.Minute)
+	require.EqualError(t, err, "cannot refresh inventory while backfill is running for acme/widgets")
+	require.Zero(t, listPullCount)
+}
+
 func TestUpsertsMaintainSearchDocuments(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
