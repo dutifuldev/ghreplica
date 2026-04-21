@@ -30,7 +30,7 @@ func TestGitHubCompatibilitySubset(t *testing.T) {
 
 	db, err := database.Open("sqlite://file::memory:?cache=shared")
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	client := github.NewClient("https://api.github.com", github.AuthConfig{Token: token})
 	require.NoError(t, githubsync.NewService(db, client).BootstrapRepository(context.Background(), owner, repo))

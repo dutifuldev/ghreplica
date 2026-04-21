@@ -23,7 +23,7 @@ func TestWorkerRetriesTemporaryErrorsThenSucceeds(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	now := time.Now().UTC()
 	require.NoError(t, db.WithContext(ctx).Create(&database.RepositoryRefreshJob{
@@ -77,7 +77,7 @@ func TestWorkerSupersedesWebhookRefreshJobsAndRecoversExpiredLeases(t *testing.T
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	now := time.Now().UTC()
 	expired := now.Add(-10 * time.Minute)
@@ -130,7 +130,7 @@ func TestResolveTrackedRepositoryPrefersRepositoryIDAcrossRename(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := &database.Repository{
 		GitHubID:   101,
@@ -206,7 +206,7 @@ func TestEnqueueRepositoryRefreshDeduplicatesJobsAcrossRepositoryIDBackfill(t *t
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	tracked := &database.TrackedRepository{
 		Owner:    "acme",
@@ -250,7 +250,7 @@ func TestEnqueueRepositoryRefreshPrefersCurrentRepositoryForReusedFullName(t *te
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	oldRepo := &database.Repository{
 		GitHubID:   101,
@@ -299,7 +299,7 @@ func TestWorkerUsesCurrentRepositoryLocatorForRenamedJob(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := &database.Repository{
 		GitHubID:   101,
@@ -358,7 +358,7 @@ func TestWorkerPrefersRequestedLocatorWhenFullNameIsReused(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	oldRepo := &database.Repository{
 		GitHubID:   101,

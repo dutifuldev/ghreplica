@@ -22,7 +22,7 @@ func TestIndexPullRequestBuildsSnapshotAndCommitIndexes(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://file::memory:?cache=shared")
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	repo, pull := seedRepositoryAndPullRequest(t, db, fixture, 101)
@@ -82,7 +82,7 @@ func TestIndexPullRequestReusesExistingCommitDetail(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "reuse-commit-detail.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	repo, pull := seedRepositoryAndPullRequest(t, db, fixture, 101)
@@ -114,7 +114,7 @@ func TestIndexPullRequestSkipsOversizedMergeCommitDetail(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://file::memory:?cache=shared")
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := createMergeHeavyPullRepo(t)
 	repo, pull := seedRepositoryAndPullRequest(t, db, fixture, 201)
@@ -161,7 +161,7 @@ func TestIndexPullRequestMarksPathOnlyMergeCommitFilesAsPathOnly(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://file::memory:?cache=shared")
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := createMergePathOnlyPullRepo(t)
 	repo, pull := seedRepositoryAndPullRequest(t, db, fixture, 202)

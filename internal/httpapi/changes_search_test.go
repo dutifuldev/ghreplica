@@ -27,7 +27,7 @@ func TestChangeAndSearchEndpointsUseIndexedGitData(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	repo, pulls := seedRepositoryAndPullRequests(t, db, fixture)
@@ -213,7 +213,7 @@ func TestChangeStatusEndpoints(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	repo, pulls := seedRepositoryAndPullRequests(t, db, fixture)
@@ -297,7 +297,7 @@ func TestListCommitFilesReturnsEmptyWhenDetailWasSkipped(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := database.Repository{
 		GitHubID:      101,
@@ -342,7 +342,7 @@ func TestSearchMentionsEndpoint(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := seedMentionSearchData(t, db)
 	require.NoError(t, searchindex.NewService(db).RebuildRepositoryByID(ctx, repo.ID))
@@ -394,7 +394,7 @@ func TestSearchASTGrepEndpoint(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	repo, pulls := seedRepositoryAndPullRequests(t, db, fixture)
@@ -452,7 +452,7 @@ func TestSearchStatusEndpoint(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := seedMentionSearchData(t, db)
 	server := httpapi.NewServer(db, httpapi.Options{})

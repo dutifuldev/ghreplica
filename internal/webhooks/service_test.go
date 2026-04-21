@@ -55,7 +55,7 @@ func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testin
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
@@ -124,7 +124,7 @@ func TestWebhookIngestionIgnoresUnsupportedEventsForRefreshScheduling(t *testing
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
@@ -158,7 +158,7 @@ func TestWebhookIngestionReusesTrackedRepositoryAcrossRenameByRepositoryID(t *te
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := &database.Repository{
 		GitHubID:   101,
@@ -205,7 +205,7 @@ func TestWebhookIngestionProjectsIssueCommentPayload(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
@@ -246,7 +246,7 @@ func TestWebhookIngestionProjectsReviewAndReviewCommentPayloadsFromRealFixtures(
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
@@ -296,7 +296,7 @@ func TestWebhookIngestionUpsertsIssueCommentAcrossDeliveries(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
@@ -336,7 +336,7 @@ func TestWebhookIngestionDeletesIssueAndReviewComments(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
@@ -402,7 +402,7 @@ func TestWebhookIngestionProjectsClosedIssuePayloadFromRealFixture(t *testing.T)
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
@@ -432,7 +432,7 @@ func TestWebhookIngestionProjectsPullRequestActionMatrixFromRealFixtures(t *test
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
@@ -480,7 +480,7 @@ func TestWebhookIngestionSynchronizeQueuesTargetedRefreshWithoutDirtyingInventor
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
@@ -517,7 +517,7 @@ func TestWebhookIngestionMarksBaseBranchPushesAsInventoryRefreshWork(t *testing.
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
@@ -552,7 +552,7 @@ func TestWebhookIngestionReplaysReviewAndReviewCommentEditsWithoutDuplicates(t *
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)

@@ -28,7 +28,7 @@ func TestChangeSyncWorkerBackfillsOpenPullRequestsGradually(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -122,7 +122,7 @@ func TestChangeSyncWorkerBackfillsWhileRepoRemainsDirty(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -188,7 +188,7 @@ func TestChangeSyncWorkerProcessesTargetedRefreshWithoutRescanningInventory(t *t
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -242,7 +242,7 @@ func TestChangeSyncWorkerDefersInventoryRefreshWhenSnapshotIsStillUsable(t *test
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -294,7 +294,7 @@ func TestChangeSyncWorkerRefreshesInventoryWhenSnapshotIsOldEnough(t *testing.T)
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -355,7 +355,7 @@ func TestChangeSyncWorkerTargetedRefreshRestoresMissingInventoryRow(t *testing.T
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -418,7 +418,7 @@ func TestMarkBaseRefStaleUpdatesCurrentInventoryGeneration(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -472,7 +472,7 @@ func TestChangeSyncWorkerPreservesNewInventoryRefreshRequestedDuringScan(t *test
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -528,7 +528,7 @@ func TestChangeSyncWorkerRunOnceReclaimsStaleFetchLease(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -581,7 +581,7 @@ func TestChangeSyncWorkerRunOnceDoesNotStealFreshFetchLease(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -626,7 +626,7 @@ func TestChangeSyncWorkerStartRecoversStaleLeasesOnStartup(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := database.Repository{
 		GitHubID:      101,
@@ -692,7 +692,7 @@ func TestChangeSyncWorkerRecentPRRepairClosesStalePullRequest(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -751,7 +751,7 @@ func TestChangeSyncWorkerRecentPRRepairClosesStaleIssueWhenPullRowIsAlreadyFresh
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -812,7 +812,7 @@ func TestChangeSyncWorkerRecentPRRepairSkipsUnchangedRows(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -856,7 +856,7 @@ func TestChangeSyncWorkerRecentPRRepairRunsBeforeTargetedRefreshBurst(t *testing
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -904,7 +904,7 @@ func TestChangeSyncWorkerRecentPRRepairAdvancesCursorAcrossPages(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -979,7 +979,7 @@ func TestChangeSyncWorkerFullHistoryModeHandsOffToFullHistoryAfterIncompleteRece
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -1031,7 +1031,7 @@ func TestChangeSyncWorkerFullHistoryRepairClosesStaleIssueWhenPullRowIsAlreadyFr
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -1098,7 +1098,7 @@ func TestChangeSyncWorkerFullHistoryRepairRunsBeforeTargetedRefreshBurst(t *test
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -1156,7 +1156,7 @@ func TestRepairPhaseStatusHelpers(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)
@@ -1209,7 +1209,7 @@ func TestChangeSyncWorkerRepairMetricsRecorded(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open("sqlite://" + filepath.Join(t.TempDir(), "change-sync.db"))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	server := newBackfillGitHubServer(t, fixture)

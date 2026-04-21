@@ -43,7 +43,7 @@ func TestReadinessReturnsCheapDatabaseHealth(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	oldFailedAt := time.Now().UTC().Add(-2 * time.Hour)
 	require.NoError(t, db.WithContext(ctx).Create(&database.RepositoryRefreshJob{
@@ -86,7 +86,7 @@ func TestMirrorStatusEndpoint(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	owner := &database.User{
 		GitHubID:  11,
@@ -218,7 +218,7 @@ func TestMirrorRepositoryEndpoints(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	owner := &database.User{
 		GitHubID: 11,
@@ -343,7 +343,7 @@ func TestMirrorRepositoryListPagination(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	for _, fullName := range []string{"acme/a", "acme/b", "acme/c"} {
 		parts := strings.SplitN(fullName, "/", 2)
@@ -380,7 +380,7 @@ func TestMirrorStatusEndpointResolvesTrackedRepositoryAcrossRename(t *testing.T)
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	repo := &database.Repository{
 		GitHubID:      101,
@@ -425,7 +425,7 @@ func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	githubServer := httptest.NewServer(testfixtures.NewOpenClawGitHubHandler(t))
 	t.Cleanup(githubServer.Close)
@@ -559,7 +559,7 @@ func TestGitHubExtensionBatchReadObjects(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	githubServer := httptest.NewServer(testfixtures.NewOpenClawGitHubHandler(t))
 	t.Cleanup(githubServer.Close)
@@ -636,7 +636,7 @@ func TestGitHubExtensionBatchReadObjectsRejectsInvalidInput(t *testing.T) {
 
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(db))
+	require.NoError(t, database.ApplyTestSchema(db))
 
 	githubServer := httptest.NewServer(testfixtures.NewOpenClawGitHubHandler(t))
 	t.Cleanup(githubServer.Close)
