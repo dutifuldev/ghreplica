@@ -91,6 +91,23 @@ func OpenDatabaseHandle(cfg config.Config) (*OpenedDatabase, error) {
 	}, nil
 }
 
+func OpenWebhookDatabaseHandle(cfg config.Config) (*OpenedDatabase, error) {
+	connector, err := newDatabaseConnector(cfg)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := OpenWebhookDatabase(cfg, connector)
+	if err != nil {
+		_ = connector.Close()
+		return nil, err
+	}
+	return &OpenedDatabase{
+		DB:      handle.GormDB,
+		SQLDB:   handle.SQLDB,
+		cleanup: connector.Close,
+	}, nil
+}
+
 func OpenControlDatabase(cfg config.Config, connector *database.Connector) (*database.Handle, error) {
 	return connector.Open(database.PoolConfig{
 		MaxOpenConns: cfg.ControlDBMaxOpenConns,
@@ -246,7 +263,7 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 		SyncGitHubSync:       syncGitHubSync,
 		WebhookIngestor:      webhookIngestor,
 		WebhookJobClient:     webhookJobClient,
-		WebhookCleanupWorker: webhooks.NewDeliveryCleanupWorker(syncDB, cfg.WebhookDeliveryRetention, cfg.WebhookDeliveryCleanupInterval, cfg.WebhookDeliveryCleanupBatchSize),
+		WebhookCleanupWorker: webhooks.NewDeliveryCleanupWorker(webhookDB, cfg.WebhookDeliveryRetention, cfg.WebhookDeliveryCleanupInterval, cfg.WebhookDeliveryCleanupBatchSize),
 		RefreshWorker:        refresh.NewWorker(syncDB, syncGitHubSync, 2*time.Second),
 		ChangeSyncWorker: githubsync.NewChangeSyncWorker(
 			syncDB,

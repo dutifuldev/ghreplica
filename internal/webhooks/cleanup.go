@@ -61,16 +61,22 @@ func (w *DeliveryCleanupWorker) RunOnce(ctx context.Context) (bool, error) {
 	}
 
 	cutoff := time.Now().UTC().Add(-w.retention)
-	subquery := w.db.WithContext(ctx).
+	var ids []uint
+	if err := w.db.WithContext(ctx).
 		Model(&database.WebhookDelivery{}).
-		Select("id").
 		Where("processed_at IS NOT NULL").
 		Where("processed_at < ?", cutoff).
 		Order("processed_at ASC").
-		Limit(w.batchSize)
+		Limit(w.batchSize).
+		Pluck("id", &ids).Error; err != nil {
+		return false, err
+	}
+	if len(ids) == 0 {
+		return false, nil
+	}
 
 	result := w.db.WithContext(ctx).
-		Where("id IN (?)", subquery).
+		Where("id IN ?", ids).
 		Delete(&database.WebhookDelivery{})
 	if result.Error != nil {
 		return false, result.Error

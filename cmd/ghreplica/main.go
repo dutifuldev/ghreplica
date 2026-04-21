@@ -258,7 +258,7 @@ func runCleanup(cfg config.Config, args []string) error {
 		return errors.New("WEBHOOK_DELIVERY_RETENTION must be set to use webhook delivery cleanup")
 	}
 
-	dbHandle, err := app.OpenDatabaseHandle(cfg)
+	dbHandle, err := app.OpenWebhookDatabaseHandle(cfg)
 	if err != nil {
 		return err
 	}
