@@ -66,12 +66,17 @@ func (w *DeliveryCleanupWorker) RunOnce(ctx context.Context) (bool, error) {
 		Select("id").
 		Where("processed_at IS NOT NULL").
 		Where("processed_at < ?", cutoff).
+		Where("(payload_json IS NOT NULL OR headers_json IS NOT NULL)").
 		Order("processed_at ASC").
 		Limit(w.batchSize)
 
 	result := w.db.WithContext(ctx).
+		Model(&database.WebhookDelivery{}).
 		Where("id IN (?)", subquery).
-		Delete(&database.WebhookDelivery{})
+		Updates(map[string]any{
+			"payload_json": nil,
+			"headers_json": nil,
+		})
 	if result.Error != nil {
 		return false, result.Error
 	}

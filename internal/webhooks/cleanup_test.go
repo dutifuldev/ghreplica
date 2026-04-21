@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestDeliveryCleanupWorkerDeletesOnlyOldProcessedRows(t *testing.T) {
+func TestDeliveryCleanupWorkerCompactsOnlyOldProcessedRows(t *testing.T) {
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(db))
@@ -21,9 +21,9 @@ func TestDeliveryCleanupWorkerDeletesOnlyOldProcessedRows(t *testing.T) {
 	recentProcessedAt := now.Add(-2 * time.Hour)
 
 	deliveries := []database.WebhookDelivery{
-		{DeliveryID: "old-processed", Event: "ping", HeadersJSON: []byte(`{}`), PayloadJSON: []byte(`{}`), ReceivedAt: oldProcessedAt, ProcessedAt: &oldProcessedAt},
-		{DeliveryID: "recent-processed", Event: "ping", HeadersJSON: []byte(`{}`), PayloadJSON: []byte(`{}`), ReceivedAt: recentProcessedAt, ProcessedAt: &recentProcessedAt},
-		{DeliveryID: "old-unprocessed", Event: "ping", HeadersJSON: []byte(`{}`), PayloadJSON: []byte(`{}`), ReceivedAt: oldProcessedAt},
+		{DeliveryID: "old-processed", Event: "ping", HeadersJSON: []byte(`{"header":"old"}`), PayloadJSON: []byte(`{"payload":"old"}`), ReceivedAt: oldProcessedAt, ProcessedAt: &oldProcessedAt},
+		{DeliveryID: "recent-processed", Event: "ping", HeadersJSON: []byte(`{"header":"recent"}`), PayloadJSON: []byte(`{"payload":"recent"}`), ReceivedAt: recentProcessedAt, ProcessedAt: &recentProcessedAt},
+		{DeliveryID: "old-unprocessed", Event: "ping", HeadersJSON: []byte(`{"header":"pending"}`), PayloadJSON: []byte(`{"payload":"pending"}`), ReceivedAt: oldProcessedAt},
 	}
 	for _, delivery := range deliveries {
 		require.NoError(t, db.WithContext(ctx).Create(&delivery).Error)
@@ -34,12 +34,12 @@ func TestDeliveryCleanupWorkerDeletesOnlyOldProcessedRows(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, processed)
 
-	requireWebhookDeliveryMissing(t, db, "old-processed")
+	requireWebhookDeliveryCompacted(t, db, "old-processed")
 	requireWebhookDeliveryPresent(t, db, "recent-processed")
 	requireWebhookDeliveryPresent(t, db, "old-unprocessed")
 }
 
-func TestDeliveryCleanupWorkerRespectsBatchSize(t *testing.T) {
+func TestDeliveryCleanupWorkerRespectsBatchSizeWhenCompacting(t *testing.T) {
 	db, err := database.Open(testDatabaseURL(t))
 	require.NoError(t, err)
 	require.NoError(t, database.AutoMigrate(db))
@@ -51,8 +51,8 @@ func TestDeliveryCleanupWorkerRespectsBatchSize(t *testing.T) {
 		delivery := database.WebhookDelivery{
 			DeliveryID:  deliveryID,
 			Event:       "ping",
-			HeadersJSON: []byte(`{}`),
-			PayloadJSON: []byte(`{}`),
+			HeadersJSON: []byte(`{"header":"old"}`),
+			PayloadJSON: []byte(`{"payload":"old"}`),
 			ReceivedAt:  processedAt,
 			ProcessedAt: &processedAt,
 		}
@@ -64,16 +64,21 @@ func TestDeliveryCleanupWorkerRespectsBatchSize(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, processed)
 
-	var remaining int64
-	require.NoError(t, db.WithContext(ctx).Model(&database.WebhookDelivery{}).Count(&remaining).Error)
-	require.Equal(t, int64(1), remaining)
+	var uncompacted int64
+	require.NoError(t, db.WithContext(ctx).
+		Model(&database.WebhookDelivery{}).
+		Where("payload_json IS NOT NULL OR headers_json IS NOT NULL").
+		Count(&uncompacted).Error)
+	require.Equal(t, int64(1), uncompacted)
 }
 
-func requireWebhookDeliveryMissing(t *testing.T, db *gorm.DB, deliveryID string) {
+func requireWebhookDeliveryCompacted(t *testing.T, db *gorm.DB, deliveryID string) {
 	t.Helper()
 	var delivery database.WebhookDelivery
-	err := db.Where("delivery_id = ?", deliveryID).First(&delivery).Error
-	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	require.NoError(t, db.Where("delivery_id = ?", deliveryID).First(&delivery).Error)
+	require.Len(t, delivery.PayloadJSON, 0)
+	require.Len(t, delivery.HeadersJSON, 0)
+	require.NotNil(t, delivery.ProcessedAt)
 }
 
 func requireWebhookDeliveryPresent(t *testing.T, db *gorm.DB, deliveryID string) {
