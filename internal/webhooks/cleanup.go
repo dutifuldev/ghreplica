@@ -66,7 +66,7 @@ func (w *DeliveryCleanupWorker) RunOnce(ctx context.Context) (bool, error) {
 		Model(&database.WebhookDelivery{}).
 		Where("processed_at IS NOT NULL").
 		Where("processed_at < ?", cutoff).
-		Order("processed_at ASC").
+		Order("processed_at ASC, id ASC").
 		Limit(w.batchSize).
 		Pluck("id", &ids).Error; err != nil {
 		return false, err

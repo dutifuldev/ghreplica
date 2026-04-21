@@ -98,6 +98,9 @@ func TestDeliveryCleanupWorkerRespectsBatchSizeWhenDeleting(t *testing.T) {
 		Where("processed_at IS NOT NULL").
 		Count(&remaining).Error)
 	require.Equal(t, int64(1), remaining)
+	requireWebhookDeliveryDeleted(t, db, "old-1")
+	requireWebhookDeliveryDeleted(t, db, "old-2")
+	requireWebhookDeliveryPresent(t, db, "old-3")
 }
 
 func requireWebhookDeliveryDeleted(t *testing.T, db *gorm.DB, deliveryID string) {
