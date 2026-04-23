@@ -1,5 +1,5 @@
 ---
-title: Immediate PR Webhook Ingest Plan
+title: Immediate Canonical Webhook Projection Plan
 date: 2026-04-23
 status: proposed
 supersedes: []
@@ -23,192 +23,258 @@ For a GitHub-compatible mirror, a new PR should exist in the mirror quickly afte
 
 # Decision
 
-Treat the `pull_request` webhook as the source of truth for PR existence.
+Use one consistent rule for lightweight GitHub webhook payloads:
 
-The intended behavior is:
+- if the payload already contains a canonical GitHub object, write that object immediately in the webhook accept path
+- keep slow enrichment and repair work in the background
 
-- when GitHub sends a `pull_request` webhook, the mirror should create or update the canonical repository, issue, and pull request rows immediately from the webhook payload
-- slower follow-up work should happen later in the background
-- background backlog should never prevent a new PR from appearing in the mirror
+The pinned end state for this document is:
+
+- `issues` immediately projects `repositories` and `issues`
+- `issue_comment` immediately projects `repositories`, `issues`, and `issue_comments`
+- `pull_request` immediately projects `repositories`, `issues`, and `pull_requests`
+- `pull_request_review` immediately projects `repositories`, `pull_requests`, and `pull_request_reviews`
+- `pull_request_review_comment` immediately projects `repositories`, `pull_requests`, and `pull_request_review_comments`
 
 This is the clean long-term shape because it separates:
 
-- existence of the GitHub object
-- slower repair and indexing work
+- existence of GitHub-shaped rows
+- slower indexing, repair, and completeness work
+
+`pull_request` was the first visible failure, but it should not stay a special case forever.
 
 # Scope
 
-This plan is for the open-PR freshness problem.
+This plan is for a consistent immediate canonical projection model across the lightweight webhook families that are already proven by retained production data.
 
 It includes:
 
-- immediate canonical PR ingest from `pull_request` webhooks
-- background indexing and repair after the canonical row exists
-- queue behavior for fresh PRs versus old failing backlog
-- status behavior when open-PR inventory is stale
+- immediate canonical projection for `issues`
+- immediate canonical projection for `issue_comment`
+- immediate canonical projection for `pull_request`
+- immediate canonical projection for `pull_request_review`
+- immediate canonical projection for `pull_request_review_comment`
+- a shared immediate projector used by both webhook accept and async processing
+- honest stale-status reporting for open-PR inventory
 
 It does not include:
 
-- a full sync architecture redesign
-- a new external operator API
-- changing the GitHub-compatible read surface
+- immediate `push` projection
+- a new remote operator API
+- backfill redesign
+- git, diff, hunk, or search indexing in the synchronous webhook path
+- immediate `repository` event projection, which is explicitly `TBD` because the current retained production sample does not include any `repository` webhook rows to pin that contract from real data
 
 # Root Cause
 
-The current system still lets slow background work decide whether a fresh PR becomes visible quickly enough.
+The original production failure was that a fresh PR could stay missing because the system still depended too much on slower background work.
 
-In practice:
+The broader design problem is inconsistency:
 
-- old targeted refresh rows are selected first
-- some of them keep timing out
-- fresh PRs can sit behind those older failures
-- the inventory status can also stay stale and report `open_pr_missing = 0` even when fresh PRs are clearly absent
+- `pull_request` now has an immediate fast path
+- other lightweight webhook families still wait for the async worker even though their payloads already carry enough canonical data
 
-So there are really two problems:
-
-- the ingest path for fresh PRs is too dependent on slower background work
-- the status path can be stale and misleading at the same time
+That leaves the mirror with mixed behavior for similar GitHub objects.
 
 # Pinned Contracts From Existing Real Webhook Data
 
-The following contracts are grounded in the current production `webhook_deliveries` rows for `openclaw/openclaw`, not just code shape.
+The following contracts are grounded in the retained production `webhook_deliveries` rows for `openclaw/openclaw`, not just code shape.
 
-The recent retained sample from production on `2026-04-23` showed these actions in the most recent `5000` webhook rows:
+The recent retained sample from production on `2026-04-23` showed this action mix in the most recent `5000` rows for `repository_id = 21`:
 
-- `pull_request`: `opened`, `synchronize`, `labeled`, `unlabeled`, `review_requested`, `edited`
-- `pull_request_review`: `submitted`
-- `pull_request_review_comment`: `created`
+- `issue_comment`: `created 457`, `deleted 10`, `edited 79`
+- `issues`: `closed 130`, `edited 8`, `labeled 102`, `locked 142`, `opened 19`, `unlabeled 13`
+- `pull_request`: `assigned 14`, `closed 89`, `converted_to_draft 2`, `edited 44`, `labeled 189`, `opened 40`, `ready_for_review 4`, `review_requested 2`, `synchronize 216`, `unlabeled 17`
+- `pull_request_review`: `submitted 95`
+- `pull_request_review_comment`: `created 116`
+- `push`: `98`
+- there were no retained `repository` webhook rows in the current sample window
 
-Within those real stored rows:
+The object-shape checks below are taken from direct reads of those retained production rows.
 
-- every sampled `pull_request`, `pull_request_review`, and `pull_request_review_comment` payload included both `repository` and `pull_request`
-- every sampled `pull_request` payload included `title`, `state`, `head`, `base`, and `user`
-- the recent sampled `edited` payloads carried `changes.body`, not a base-ref change
+## 1. `issues` Is Canonical Enough For Immediate `repository + issue` Projection
 
-This means the following contracts are safe to pin down.
+From the retained sample:
 
-## 1. A Valid Stored `pull_request` Webhook Payload Is Canonical Enough To Write The PR Row
+- `417/417` inspected `issues` rows had `repository`
+- `417/417` inspected `issues` rows had `issue`
+- `0/417` inspected `issues` rows had `issue.pull_request`
 
-Recent real `pull_request` webhook rows for actions like `opened`, `synchronize`, `labeled`, `unlabeled`, `review_requested`, and `edited` all carried the full canonical `pull_request` object shape that the mirror needs.
+So the contract is:
 
-So the contract should be:
+- a valid `issues` webhook payload is enough to immediately write the canonical repository row and canonical issue row
+- `issues` is not a PR-existence event unless `issue.pull_request` is present, and the current retained sample did not show that
 
-- if `ghreplica` receives a valid `pull_request` webhook payload, it should write the canonical repository, issue, and pull request rows immediately from that payload
+## 2. `issue_comment` Is Canonical Enough For Immediate `repository + issue + issue_comment` Projection
 
-## 2. PR Existence Must Come From Stored Canonical Rows, Not Later Repair
+From the retained sample:
 
-The live payloads already contain the canonical PR object shape, and the GitHub-compatible PR read API serves from stored `pull_requests.raw_json`.
+- `552/552` inspected `issue_comment` rows had `repository`
+- `552/552` inspected `issue_comment` rows had `issue`
+- `552/552` inspected `issue_comment` rows had `comment`
+- `302/552` inspected `issue_comment` rows had `issue.pull_request`
 
-So the contract should be:
+So the contract is:
 
-- once the canonical pull request row is written successfully, `GET /pulls/:number` must work even if slower follow-up work has not finished yet
+- a valid `issue_comment` payload is enough to immediately write the canonical repository row, issue row, and issue-comment row
+- some issue comments are attached to PR-backed issues, but `issue_comment` is still not the primary PR-existence event
 
-## 3. Inventory Refresh Is A Smaller Contract Than Canonical PR Ingest
+## 3. `pull_request` Is Canonical Enough For Immediate `repository + issue + pull_request` Projection
 
-The real payload stream supports a narrower inventory contract than the ingest contract.
+From the retained sample:
 
-Recent production payloads prove that many `pull_request` actions carry enough data to refresh the PR row even though they do not imply an open-PR membership change.
+- `623/623` inspected `pull_request` rows had `repository`
+- `623/623` inspected `pull_request` rows had `pull_request`
 
-So the contract should be:
+So the contract is:
 
-- canonical PR row updates happen for every valid `pull_request` webhook payload
-- open-PR inventory refresh only happens for actions that change open membership or base-branch shape
+- a valid `pull_request` payload is enough to immediately write the canonical repository row, canonical issue row for that PR number, and canonical pull-request row
+- once that transaction commits, PR reads must work even if slower indexing has not finished
 
-Today that means:
+## 4. `pull_request_review` Is Canonical Enough For Immediate `repository + pull_request + review` Projection
 
-- `opened`
-- `closed`
-- `reopened`
-- `edited` only when the payload actually shows a base-ref change
+From the retained sample:
 
-## 4. `synchronize` Is Targeted PR Follow-Up Work, Not Full Inventory Work
+- `94/94` inspected `pull_request_review` rows had `repository`
+- `94/94` inspected `pull_request_review` rows had `pull_request`
+- `94/94` inspected `pull_request_review` rows had `review`
 
-Recent real `synchronize` webhook rows carried a full `pull_request` object, but their sampled `changes` data did not imply an open-PR membership change.
+So the contract is:
 
-So the contract should be:
+- a valid `pull_request_review` payload is enough to immediately write the canonical repository row, refresh the canonical pull-request row, and write the review row
+- this event is not an open-PR inventory event by itself
 
-- `synchronize` updates the canonical PR row immediately
-- `synchronize` queues targeted follow-up work
-- `synchronize` does not by itself force a full open-PR inventory refresh
+## 5. `pull_request_review_comment` Is Canonical Enough For Immediate `repository + pull_request + review_comment` Projection
 
-## 5. Review And Review-Comment Events Are Not Inventory Events, But They Do Carry Canonical PR Data
+From the retained sample:
 
-Recent real `pull_request_review submitted` and `pull_request_review_comment created` payloads both carried `repository` and `pull_request`.
+- `115/115` inspected `pull_request_review_comment` rows had `repository`
+- `115/115` inspected `pull_request_review_comment` rows had `pull_request`
+- `115/115` inspected `pull_request_review_comment` rows had `comment`
 
-So the contract should be:
+So the contract is:
 
-- `pull_request_review` and `pull_request_review_comment` do not control open-PR inventory
-- but they can still refresh canonical PR state because the payloads include the PR object
-- they should not be treated as existence-critical for a new PR, because the primary existence path should still be the `pull_request` webhook
+- a valid `pull_request_review_comment` payload is enough to immediately write the canonical repository row, refresh the canonical pull-request row, and write the review-comment row
+- this event is not an open-PR inventory event by itself
 
-## 6. `edited` Needs Payload-Based Gating, Not Action-Based Guessing
+## 6. `push` Stays Async
 
-The recent real `edited` samples for `openclaw/openclaw` all changed the body, not the base ref.
+From the retained sample:
 
-So the contract should be:
+- the latest retained `push` row had `repository`
+- the current retained `push` sample did not give the same kind of full canonical object coverage as the issue and PR families above
 
-- `edited` should only dirty inventory when the payload itself shows a base-ref change
-- ordinary body or metadata edits should still refresh the canonical PR row, but they should not trigger a full inventory refresh
+So the contract is:
 
-## 7. Status Honesty Is A Required Product Behavior, Not A Payload Contract
+- `push` remains an async event for this change
+- do not force it into the immediate canonical projector
 
-The production failure where fresh PRs were missing while `open_pr_missing` still reported `0` is real, but it is not something the webhook payload alone can define.
+## 7. `repository` Is `TBD`
 
-So this should be treated as a required product behavior:
+There were no retained `repository` webhook rows in the current production sample window.
+
+So the contract is:
+
+- do not guess a `repository` immediate-write contract from memory or code shape
+- treat `repository` as `TBD` for this document
+- leave `repository` out of the immediate set until a real retained sample is inspected
+
+## 8. `edited` Must Be Gated By Real Payload Content
+
+From the retained sample:
+
+- `issue_comment edited`: `81/81` had `changes.body`
+- `issues edited`: `8/8` had `changes.body`
+- `pull_request edited`: `44` total
+  - `37` had `changes.body`
+  - `7` had `changes.title`
+  - `0` had `changes.base`
+
+So the contract is:
+
+- `edited` should refresh canonical rows for the affected object
+- `pull_request edited` should only dirty open-PR inventory when the payload actually shows a base-ref change
+- in the current retained sample, `edited` was not a base-change signal
+
+## 9. Status Honesty Is A Required Product Rule
+
+The production failure where fresh PRs were missing while `open_pr_missing` still reported `0` is real, but it is not a webhook-payload contract.
+
+So this should be treated as a required product rule:
 
 - if inventory is stale or known-dirty, completeness counts must be marked stale or unknown
-- stale inventory must not present `0 missing` as if that were current truth
+- stale inventory must not present `0 missing` as current truth
 
 # Pinned Implementation Defaults
 
-The following implementation choices are now pinned down as the default production shape for the first rollout.
+The following implementation choices are now pinned down as the default production shape for the end state.
 
-## 1. Immediate Write Scope
+## 1. Use One Shared Immediate Projector
 
-The synchronous `pull_request` webhook path should write these rows in one transaction:
+There should be one shared immediate projector that knows how to project the pinned lightweight webhook families.
 
-- `repositories`
-- `issues`
-- `pull_requests`
+That shared projector should be used in two places:
 
-That transaction is the existence boundary for the PR.
+- the webhook accept path, inside the delivery insert transaction
+- the async webhook processor, so there is still only one projection implementation
 
-If it commits successfully:
+The accept path and the async path must not drift apart.
 
-- `GET /pulls/:number` must work
-- list reads must be able to include the PR
+## 2. Immediate Write Scope By Event Family
 
-If later indexing fails, the PR still exists.
+The synchronous webhook path should write these canonical rows in one transaction:
 
-## 2. First-Cut Event Scope
+- `issues` -> `repositories`, `issues`
+- `issue_comment` -> `repositories`, `issues`, `issue_comments`
+- `pull_request` -> `repositories`, `issues`, `pull_requests`
+- `pull_request_review` -> `repositories`, `pull_requests`, `pull_request_reviews`
+- `pull_request_review_comment` -> `repositories`, `pull_requests`, `pull_request_review_comments`
 
-Phase 1 should keep the existence path simple:
+That transaction is the existence boundary for those GitHub-shaped rows.
 
-- only `pull_request` webhooks are responsible for immediate PR existence
+If it commits successfully, the corresponding GitHub-shaped read should work even if slow follow-up work has not finished yet.
 
-For phase 1:
+## 3. Async Work Stays Async
 
-- `pull_request_review` and `pull_request_review_comment` are allowed to keep their current update behavior
-- but the system must not depend on them for a new PR to appear
+The synchronous webhook path must not grow into a full indexing pipeline.
 
-This keeps the first implementation aligned with the clearest GitHub event contract.
+These stay async:
 
-## 3. Out-Of-Order Webhook Freshness Rule
+- `push`
+- git mirror fetch and repair
+- diff and hunk extraction
+- search indexing
+- targeted refresh execution
+- backfill
+- inventory scans
 
-Canonical PR upserts must be freshness-gated.
+The immediate path is for existence and cheap canonical updates, not for heavy enrichment.
 
-The rule is:
+## 4. Freshness And Overwrite Rules
 
-- if there is no stored PR row yet, write the incoming webhook payload
-- if there is a stored PR row, compare `pull_request.updated_at`
-- only overwrite the stored canonical row when the incoming `updated_at` is strictly newer than the stored `updated_at`
-- if the timestamps are equal, keep the existing stored row
+Immediate projection should reuse the current canonical upsert rules instead of inventing new table-specific logic in the acceptor.
 
-This avoids an older webhook arriving late and rolling the PR backward.
+The important rule is:
 
-The same rule should apply to the canonical issue projection derived from the PR payload.
+- older webhook payloads must not roll canonical state backward
 
-## 4. Targeted Refresh Queue Ordering
+For issue and PR rows, that means preserving the existing `updated_at` freshness gates already used by the projector.
+
+For the other immediate families, keep using the current keyed upsert behavior in the projector rather than inventing a second write policy in the accept path.
+
+## 5. Cheap Sync-State Side Effects Stay In The Immediate Transaction
+
+The synchronous webhook path may also record cheap follow-up state that is required for correct scheduling.
+
+For example:
+
+- `pull_request` may note the repo webhook time
+- `pull_request` may enqueue targeted PR follow-up
+- `pull_request` may mark open-PR inventory dirty when the real payload semantics require it
+
+Do not add heavy side effects there.
+
+## 6. Targeted Refresh Queue Ordering
 
 The targeted refresh queue should prefer freshness over historical fairness.
 
@@ -221,7 +287,7 @@ Selection order should be:
 
 This makes new or never-attempted PR work outrank old failing backlog.
 
-## 5. Retry And Park Policy
+## 7. Retry And Park Policy
 
 Retries should use bounded exponential backoff.
 
@@ -242,7 +308,7 @@ Parked rows should:
 
 This avoids infinite retry churn on bad old rows.
 
-## 6. Status Shape For Stale Inventory
+## 8. Status Shape For Stale Inventory
 
 When inventory is stale or dirty, completeness counts must not pretend to be current.
 
@@ -254,17 +320,18 @@ The default status shape should be:
 
 That makes stale status machine-readable and prevents a false `0`.
 
-## 7. Success Metric
+## 9. Success Metric
 
-The rollout should be judged against a concrete operator-facing SLO.
+The end state should be judged against concrete operator-facing behavior.
 
-Default success metric:
+Default success metrics:
 
 - for a new `pull_request opened` webhook, the PR should be readable from `GET /pulls/:number` within `30s` of webhook receipt
+- for the other pinned immediate families, the canonical row should be present as soon as the webhook accept transaction commits, without waiting for later indexing work
 
-That is the main product contract this change is trying to restore.
+The PR visibility SLO remains the main externally visible proof.
 
-## 8. Minimum Observability
+## 10. Minimum Observability
 
 Phase 1 should ship with enough signal to prove or disprove the design.
 
@@ -282,66 +349,68 @@ This is enough to debug regressions without adding a large observability project
 
 The mirror should behave like this:
 
-1. GitHub sends `pull_request` webhook data.
-2. `ghreplica` writes the canonical repository, issue, and pull request rows immediately.
-3. The PR becomes readable through the GitHub-compatible read API right away.
-4. Background work fills in the slower parts later.
+1. GitHub sends a supported lightweight webhook.
+2. `ghreplica` inserts the delivery row.
+3. `ghreplica` immediately projects the canonical GitHub-shaped rows from that payload in the same transaction.
+4. the canonical object becomes readable right away from stored rows.
+5. background work fills in slower derived state later.
 
-Those slower parts include:
+Those slower background steps still include:
 
 - git indexing
 - diff and hunk extraction
 - search indexing
 - repair of stale or missing related rows
 
-If the slower background work fails, the PR should still exist.
+If that slower background work fails, the canonical GitHub object should still exist.
 
 # Implementation Plan
 
-## 1. Make Immediate PR Existence A Hard Rule
+## 1. Extract One Shared Immediate Projector
 
-The `pull_request` webhook path should guarantee that the mirror stores the canonical PR object from the webhook payload itself.
+Move the immediate projection logic into one shared entrypoint that can handle the pinned event families:
 
-That means:
+- `issues`
+- `issue_comment`
+- `pull_request`
+- `pull_request_review`
+- `pull_request_review_comment`
 
-- repository row upsert
-- issue row upsert
-- pull request row upsert
+The acceptor should call that shared projector inside the delivery insert transaction.
 
-This write must be the thing that makes the PR visible through:
+The async processor should call the same projector, not a duplicate implementation.
 
-- `GET /v1/github/repos/:owner/:repo/pulls/:number`
-- `GET /v1/github/repos/:owner/:repo/pulls`
+## 2. Keep The Immediate Transaction Small And Deterministic
 
-The visible existence of the PR must not depend on later indexing work.
+The synchronous webhook transaction should do only:
 
-Pinned default:
+- insert `webhook_deliveries`
+- project the canonical rows for the supported event family
+- record cheap follow-up scheduler state where required
+- commit
 
-- do the `repositories`, `issues`, and `pull_requests` writes in one transaction
-- gate canonical overwrite by strictly newer `pull_request.updated_at`
+Do not move git, diff, hunk, or search work into this transaction.
 
-## 2. Split Fast Canonical Writes From Slow Work
+## 3. Preserve The Existing PR Fast-Path Guarantees
 
-After the canonical PR row exists, enqueue slower follow-up work separately.
+The broader immediate model must preserve the guarantees already introduced for `pull_request`:
 
-That follow-up work should include:
+- canonical PR existence must not wait for indexing
+- newer PR state must not be overwritten by older webhook payloads
+- cheap targeted-refresh scheduling still happens immediately
 
-- pull request change indexing
-- git mirror sync needed for indexing
-- targeted refresh or repair if related objects are incomplete
+## 4. Extend The Same Model To Issues, Comments, And Reviews
 
-If that slower work fails, keep the canonical PR row and record the follow-up failure separately.
+Add the same immediate behavior to:
 
-The important rule is:
+- `issues`
+- `issue_comment`
+- `pull_request_review`
+- `pull_request_review_comment`
 
-- failure to index is not the same thing as failure to ingest the PR
+Each family should write only the rows that the real retained payloads proved are present.
 
-Pinned default:
-
-- phase 1 depends only on `pull_request` for immediate PR existence
-- review-side events may continue to refresh detail or canonical rows, but they are not part of the existence guarantee
-
-## 3. Prioritize Fresh PRs Over Old Failed Backlog
+## 5. Prioritize Fresh PRs Over Old Failed Backlog
 
 The targeted refresh queue should not let old failing rows block fresh PRs.
 
@@ -367,7 +436,7 @@ Pinned default:
 - then select retryable rows whose `next_attempt_at <= now()`, newest first
 - after `5` failed attempts, park the row instead of retrying automatically
 
-## 4. Keep Status Honest
+## 6. Keep Status Honest
 
 If the open-PR inventory snapshot is stale, the status endpoint should not present `open_pr_missing = 0` as if that were current truth.
 
@@ -387,7 +456,7 @@ Pinned default:
 - add `open_pr_missing_stale`
 - when stale, return `open_pr_missing = null`
 
-## 5. Keep Repair And Inventory Separate From Existence
+## 7. Keep Repair And Inventory Separate From Existence
 
 Inventory refresh and full-history repair should remain useful, but they should not be the main path that makes a fresh PR appear.
 
@@ -407,37 +476,22 @@ This change is complete when all of the following are true:
 
 - a new PR becomes readable from `GET /pulls/:number` within `30s` of webhook receipt
 - the PR remains readable even if later indexing fails
+- `issues`, `issue_comment`, `pull_request_review`, and `pull_request_review_comment` no longer depend on the async worker to make their canonical rows exist
 - old failing targeted refresh rows no longer block newer PR visibility
 - stale inventory no longer reports `open_pr_missing = 0` as current truth
+- there is one shared immediate projector instead of a growing list of event-specific special cases in the acceptor
 
 # Rollout
 
-## Phase 1. Guarantee Immediate Canonical PR Writes
+Ship this as one coherent change set:
 
-Change the webhook path so a fresh `pull_request` event is enough to create the canonical PR row immediately.
+- one shared immediate projector
+- one synchronous accept-path integration
+- one preserved async processor path that reuses the same projector
+- one stale-status behavior
+- one targeted-refresh queue policy
 
-Success means:
-
-- a fresh PR becomes readable quickly after webhook delivery
-- a failed index no longer makes the PR look missing
-
-## Phase 2. Reorder The Targeted Refresh Queue
-
-Change targeted refresh selection so new work outranks stale failing backlog.
-
-Success means:
-
-- fresh PRs do not wait behind much older repeatedly failing rows
-- old failures stop dominating the queue
-
-## Phase 3. Make Status Honest
-
-Update the repo status endpoint so stale inventory cannot falsely imply completeness.
-
-Success means:
-
-- operators can tell when missing counts are current
-- `0 missing` stops appearing during stale inventory windows unless it is actually current
+Do not split this into a long-lived PR-only fast path and a separate “someday” model for the other lightweight families.
 
 # Validation
 
@@ -445,6 +499,10 @@ The implementation should be considered successful when:
 
 - a fresh `pull_request` webhook makes the PR readable quickly without requiring manual sync
 - a failed indexing pass does not remove or hide the canonical PR row
+- a fresh `issues` webhook makes the issue row readable without waiting for async processing
+- a fresh `issue_comment` webhook makes the comment row readable without waiting for async processing
+- a fresh `pull_request_review` webhook makes the review row readable without waiting for async processing
+- a fresh `pull_request_review_comment` webhook makes the review-comment row readable without waiting for async processing
 - fresh PRs are processed ahead of old repeatedly failing targeted refresh rows
 - stale inventory status is clearly marked as stale or unknown instead of pretending it is current
 
@@ -460,5 +518,5 @@ Those are follow-up improvements.
 
 The core fix is simpler:
 
-- make the PR exist immediately
+- make GitHub-shaped canonical rows exist immediately from lightweight webhook payloads
 - do the slow work later
