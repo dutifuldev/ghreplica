@@ -152,10 +152,10 @@ func (s *Service) preparePullRequestIndex(ctx context.Context, owner, repo strin
 }
 
 type pullRequestIndexResult struct {
-	files       []database.PullRequestChangeFile
-	hunks       []database.PullRequestChangeHunk
-	snapshot    database.PullRequestChangeSnapshot
-	commitRows  []commitBundle
+	files      []database.PullRequestChangeFile
+	hunks      []database.PullRequestChangeHunk
+	snapshot   database.PullRequestChangeSnapshot
+	commitRows []commitBundle
 }
 
 func (s *Service) buildPullRequestIndexResult(ctx context.Context, mirrorPath string, repositoryID uint, pull database.PullRequest, mergeBase string) (pullRequestIndexResult, error) {

@@ -58,28 +58,28 @@ func TestDeletePathsWithSearchAndWorkerDefaults(t *testing.T) {
 	service := NewService(db, nil)
 
 	require.NoError(t, db.Create(&database.SearchDocument{
-		RepositoryID:      1,
-		DocumentType:      "issue",
-		DocumentGitHubID:  101,
-		Number:            7,
-		SearchText:        "issue",
-		ObjectUpdatedAt:   time.Now().UTC(),
+		RepositoryID:     1,
+		DocumentType:     "issue",
+		DocumentGitHubID: 101,
+		Number:           7,
+		SearchText:       "issue",
+		ObjectUpdatedAt:  time.Now().UTC(),
 	}).Error)
 	require.NoError(t, db.Create(&database.SearchDocument{
-		RepositoryID:      1,
-		DocumentType:      "issue_comment",
-		DocumentGitHubID:  201,
-		Number:            7,
-		SearchText:        "comment",
-		ObjectUpdatedAt:   time.Now().UTC(),
+		RepositoryID:     1,
+		DocumentType:     "issue_comment",
+		DocumentGitHubID: 201,
+		Number:           7,
+		SearchText:       "comment",
+		ObjectUpdatedAt:  time.Now().UTC(),
 	}).Error)
 	require.NoError(t, db.Create(&database.SearchDocument{
-		RepositoryID:      1,
-		DocumentType:      "pull_request_review_comment",
-		DocumentGitHubID:  301,
-		Number:            7,
-		SearchText:        "review",
-		ObjectUpdatedAt:   time.Now().UTC(),
+		RepositoryID:     1,
+		DocumentType:     "pull_request_review_comment",
+		DocumentGitHubID: 301,
+		Number:           7,
+		SearchText:       "review",
+		ObjectUpdatedAt:  time.Now().UTC(),
 	}).Error)
 
 	require.NoError(t, service.deleteIssue(ctx, 1, issueResponseForNumber(7, 101)))
