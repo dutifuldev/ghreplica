@@ -39,11 +39,19 @@ type DeliveryDispatcher interface {
 	EnqueueWebhookDeliveryTx(ctx context.Context, tx *sql.Tx, deliveryID string) error
 }
 
+type ImmediatePullRequestProjector interface {
+	WebhookProjector
+	RepoChangeWebhookRecorder
+}
+
+type ImmediatePullRequestProjectorFactory func(tx *gorm.DB) ImmediatePullRequestProjector
+
 type Dependencies struct {
-	Projector WebhookProjector
-	Staler    BaseRefStaler
-	Recorder  RepoChangeWebhookRecorder
-	Search    *searchindex.Service
+	Projector                            WebhookProjector
+	Staler                               BaseRefStaler
+	Recorder                             RepoChangeWebhookRecorder
+	Search                               *searchindex.Service
+	ImmediatePullRequestProjectorFactory ImmediatePullRequestProjectorFactory
 }
 
 type Service struct {
@@ -71,7 +79,7 @@ func NewService(acceptorDB, processorDB *gorm.DB, deps Dependencies) *Service {
 		search = searchindex.NewService(processorDB)
 	}
 	return &Service{
-		acceptor:  NewAcceptor(acceptorDB),
+		acceptor:  NewAcceptor(acceptorDB, deps.ImmediatePullRequestProjectorFactory),
 		processor: NewProcessor(processorDB, deps.Projector, deps.Staler, deps.Recorder, search),
 	}
 }

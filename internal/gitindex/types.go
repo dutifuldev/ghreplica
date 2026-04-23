@@ -147,7 +147,8 @@ type RepoStatus struct {
 	OpenPRTotal                       int        `json:"open_pr_total"`
 	OpenPRCurrent                     int        `json:"open_pr_current"`
 	OpenPRStale                       int        `json:"open_pr_stale"`
-	OpenPRMissing                     int        `json:"open_pr_missing"`
+	OpenPRMissing                     *int       `json:"open_pr_missing"`
+	OpenPRMissingStale                bool       `json:"open_pr_missing_stale"`
 	LastError                         string     `json:"last_error,omitempty"`
 }
 

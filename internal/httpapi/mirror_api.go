@@ -316,10 +316,11 @@ func newMirrorRepositoryStatusResponse(status gitindex.RepoStatus) mirrorReposit
 			LastError: strings.TrimSpace(status.LastError),
 		},
 		PullRequestChanges: mirrorPullRequestChangesResponse{
-			Total:   status.OpenPRTotal,
-			Current: status.OpenPRCurrent,
-			Stale:   status.OpenPRStale,
-			Missing: status.OpenPRMissing,
+			Total:        status.OpenPRTotal,
+			Current:      status.OpenPRCurrent,
+			Stale:        status.OpenPRStale,
+			Missing:      status.OpenPRMissing,
+			MissingStale: status.OpenPRMissingStale,
 		},
 		Activity: mirrorActivityResponse{
 			InventoryScanRunning:      status.InventoryScanRunning,
@@ -352,7 +353,10 @@ func mirrorSyncState(status gitindex.RepoStatus) string {
 	if status.InventoryScanRunning || status.BackfillRunning || status.TargetedRefreshRunning {
 		return "running"
 	}
-	if status.TargetedRefreshPending || status.InventoryNeedsRefresh || status.OpenPRMissing > 0 || status.OpenPRStale > 0 {
+	if status.TargetedRefreshPending || status.InventoryNeedsRefresh || status.OpenPRMissingStale || status.OpenPRStale > 0 {
+		return "pending"
+	}
+	if status.OpenPRMissing != nil && *status.OpenPRMissing > 0 {
 		return "pending"
 	}
 	return "idle"

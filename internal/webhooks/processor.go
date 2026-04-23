@@ -266,10 +266,16 @@ func (p *Processor) projectEvent(ctx context.Context, event, action string, payl
 		}
 		if p.recorder != nil {
 			seenAt := time.Now().UTC()
-			_ = p.recorder.NoteRepositoryWebhook(ctx, repo.ID, seenAt)
-			_ = p.recorder.EnqueuePullRequestRefresh(ctx, repo.ID, payloadEnvelope.PullRequest.Number, seenAt)
+			if err := p.recorder.NoteRepositoryWebhook(ctx, repo.ID, seenAt); err != nil {
+				return 0, err
+			}
+			if err := p.recorder.EnqueuePullRequestRefresh(ctx, repo.ID, payloadEnvelope.PullRequest.Number, seenAt); err != nil {
+				return 0, err
+			}
 			if pullRequestWebhookNeedsInventoryRefresh(action, payload) {
-				_ = p.recorder.MarkInventoryNeedsRefresh(ctx, repo.ID, seenAt)
+				if err := p.recorder.MarkInventoryNeedsRefresh(ctx, repo.ID, seenAt); err != nil {
+					return 0, err
+				}
 			}
 		}
 		return repo.ID, nil

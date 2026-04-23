@@ -230,12 +230,19 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 
 	githubClient := NewGitHubClient(cfg)
 	syncGitIndex := NewGitIndexService(syncDB, githubClient, cfg)
-	controlGitHubSync := githubsync.NewService(controlDB, githubClient)
-	syncGitHubSync := githubsync.NewService(syncDB, githubClient, syncGitIndex)
+	controlGitHubSync := githubsync.NewService(controlDB, githubClient).
+		WithOpenPRInventoryMaxAge(cfg.OpenPRInventoryMaxAge)
+	syncGitHubSync := githubsync.NewService(syncDB, githubClient, syncGitIndex).
+		WithOpenPRInventoryMaxAge(cfg.OpenPRInventoryMaxAge)
 	webhookIngestor := webhooks.NewService(webhookDB, syncDB, webhooks.Dependencies{
 		Projector: syncGitHubSync,
 		Staler:    syncGitHubSync,
 		Recorder:  syncGitHubSync,
+		ImmediatePullRequestProjectorFactory: func(tx *gorm.DB) webhooks.ImmediatePullRequestProjector {
+			return githubsync.NewService(tx, githubClient).
+				WithOpenPRInventoryMaxAge(cfg.OpenPRInventoryMaxAge).
+				WithoutSearch()
+		},
 	})
 
 	controlSQLDB := controlHandle.SQLDB

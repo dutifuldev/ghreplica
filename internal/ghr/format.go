@@ -171,7 +171,7 @@ func printMirrorRepositoryStatus(out io.Writer, status MirrorRepositoryStatusRes
 	fmt.Fprintf(tw, "Open PR total:\t%d\n", status.PullRequestChanges.Total)
 	fmt.Fprintf(tw, "Open PR current:\t%d\n", status.PullRequestChanges.Current)
 	fmt.Fprintf(tw, "Open PR stale:\t%d\n", status.PullRequestChanges.Stale)
-	fmt.Fprintf(tw, "Open PR missing:\t%d\n", status.PullRequestChanges.Missing)
+	fmt.Fprintf(tw, "Open PR missing:\t%s\n", missingCountString(status.PullRequestChanges.Missing, status.PullRequestChanges.MissingStale))
 	fmt.Fprintf(tw, "Inventory scan running:\t%t\n", status.Activity.InventoryScanRunning)
 	fmt.Fprintf(tw, "Backfill running:\t%t\n", status.Activity.BackfillRunning)
 	fmt.Fprintf(tw, "Targeted refresh pending:\t%t\n", status.Activity.TargetedRefreshPending)

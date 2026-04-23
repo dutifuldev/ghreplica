@@ -296,7 +296,9 @@ func TestRefreshOpenPullInventoryNow(t *testing.T) {
 	require.NotNil(t, status.InventoryLastCommittedAt)
 	require.False(t, status.InventoryScanRunning)
 	require.Equal(t, len(pullsFixture()), status.OpenPRTotal)
-	require.Equal(t, len(pullsFixture()), status.OpenPRMissing)
+	require.NotNil(t, status.OpenPRMissing)
+	require.Equal(t, len(pullsFixture()), *status.OpenPRMissing)
+	require.False(t, status.OpenPRMissingStale)
 	require.Empty(t, status.LastError)
 }
 
@@ -455,6 +457,76 @@ func TestUpsertIssuePreservesLiteralUnicodeEscapeMarkersInRawJSON(t *testing.T) 
 	require.Equal(t, `literal \u0000 marker`, stored.Body)
 	require.Contains(t, string(stored.RawJSON), `\\u0000`)
 	require.Contains(t, string(stored.RawJSON), `"body":"literal \\u0000 marker"`)
+}
+
+func TestUpsertIssueDoesNotOverwriteNewerCanonicalState(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+
+	repo, err := service.UpsertRepository(ctx, repoFixture())
+	require.NoError(t, err)
+
+	newer := issuesFixture()[0]
+	newer.Title = "Newest title"
+	newer.Body = "Newest body"
+	newer.UpdatedAt = newer.UpdatedAt.Add(5 * time.Minute)
+
+	older := issuesFixture()[0]
+	older.Title = "Older title"
+	older.Body = "Older body"
+	older.UpdatedAt = newer.UpdatedAt.Add(-time.Minute)
+
+	stored, err := service.UpsertIssue(ctx, repo.ID, newer)
+	require.NoError(t, err)
+	require.Equal(t, "Newest title", stored.Title)
+
+	stored, err = service.UpsertIssue(ctx, repo.ID, older)
+	require.NoError(t, err)
+	require.Equal(t, "Newest title", stored.Title)
+	require.Equal(t, "Newest body", stored.Body)
+	require.Contains(t, string(stored.RawJSON), "Newest title")
+}
+
+func TestUpsertPullRequestDoesNotOverwriteNewerCanonicalState(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+
+	repo, err := service.UpsertRepository(ctx, repoFixture())
+	require.NoError(t, err)
+
+	newer := pullsFixture()[0]
+	newer.Title = "Newest PR title"
+	newer.Head.Ref = "feature/newest"
+	newer.UpdatedAt = newer.UpdatedAt.Add(10 * time.Minute)
+
+	older := pullsFixture()[0]
+	older.Title = "Older PR title"
+	older.Head.Ref = "feature/older"
+	older.UpdatedAt = newer.UpdatedAt.Add(-time.Minute)
+
+	require.NoError(t, service.UpsertPullRequest(ctx, repo.ID, newer))
+	require.NoError(t, service.UpsertPullRequest(ctx, repo.ID, older))
+
+	var stored database.PullRequest
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND number = ?", repo.ID, newer.Number).
+		First(&stored).Error)
+	require.Equal(t, "feature/newest", stored.HeadRef)
+	require.Contains(t, string(stored.RawJSON), "Newest PR title")
+
+	var issue database.Issue
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND number = ?", repo.ID, newer.Number).
+		First(&issue).Error)
+	require.Equal(t, "Newest PR title", issue.Title)
 }
 
 func TestTargetedSyncIssueAndPullRequest(t *testing.T) {

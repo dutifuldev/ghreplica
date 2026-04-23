@@ -84,7 +84,8 @@ func runSync(cfg config.Config, args []string) error {
 	db := dbHandle.DB
 
 	client := app.NewGitHubClient(cfg)
-	service := githubsync.NewService(db, client, app.NewGitIndexService(db, client, cfg))
+	service := githubsync.NewService(db, client, app.NewGitIndexService(db, client, cfg)).
+		WithOpenPRInventoryMaxAge(cfg.OpenPRInventoryMaxAge)
 
 	switch rest[0] {
 	case "repo":
@@ -180,7 +181,8 @@ func runRefreshInventory(cfg config.Config, fullName string) error {
 	defer func() { _ = dbHandle.Close() }()
 
 	client := app.NewGitHubClient(cfg)
-	service := githubsync.NewService(dbHandle.DB, client, app.NewGitIndexService(dbHandle.DB, client, cfg))
+	service := githubsync.NewService(dbHandle.DB, client, app.NewGitIndexService(dbHandle.DB, client, cfg)).
+		WithOpenPRInventoryMaxAge(cfg.OpenPRInventoryMaxAge)
 	result, err := service.RefreshOpenPullInventoryNow(context.Background(), owner, repo, cfg.RepoLeaseTTL)
 	if err != nil {
 		return err
@@ -241,7 +243,8 @@ func runBackfill(cfg config.Config, args []string) error {
 	defer func() { _ = dbHandle.Close() }()
 
 	client := app.NewGitHubClient(cfg)
-	service := githubsync.NewService(dbHandle.DB, client, app.NewGitIndexService(dbHandle.DB, client, cfg))
+	service := githubsync.NewService(dbHandle.DB, client, app.NewGitIndexService(dbHandle.DB, client, cfg)).
+		WithOpenPRInventoryMaxAge(cfg.OpenPRInventoryMaxAge)
 	_, err = service.ConfigureRepoBackfill(context.Background(), owner, repo, *mode, *priority)
 	return err
 }
@@ -272,7 +275,8 @@ func runRepair(cfg config.Config, args []string) error {
 	defer func() { _ = dbHandle.Close() }()
 
 	client := app.NewGitHubClient(cfg)
-	service := githubsync.NewService(dbHandle.DB, client, app.NewGitIndexService(dbHandle.DB, client, cfg))
+	service := githubsync.NewService(dbHandle.DB, client, app.NewGitIndexService(dbHandle.DB, client, cfg)).
+		WithOpenPRInventoryMaxAge(cfg.OpenPRInventoryMaxAge)
 	_, err = service.RequestRecentPRRepair(context.Background(), owner, repo)
 	return err
 }

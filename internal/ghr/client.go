@@ -86,10 +86,11 @@ type MirrorSyncResponse struct {
 }
 
 type MirrorPullRequestChangesResponse struct {
-	Total   int `json:"total"`
-	Current int `json:"current"`
-	Stale   int `json:"stale"`
-	Missing int `json:"missing"`
+	Total        int  `json:"total"`
+	Current      int  `json:"current"`
+	Stale        int  `json:"stale"`
+	Missing      *int `json:"missing"`
+	MissingStale bool `json:"missing_stale"`
 }
 
 type MirrorActivityResponse struct {

@@ -27,7 +27,7 @@ func printRepoChangeStatus(out io.Writer, status RepoChangeStatusResponse) {
 	fmt.Fprintf(tw, "Open PRs total:\t%d\n", status.OpenPRTotal)
 	fmt.Fprintf(tw, "Open PRs current:\t%d\n", status.OpenPRCurrent)
 	fmt.Fprintf(tw, "Open PRs stale:\t%d\n", status.OpenPRStale)
-	fmt.Fprintf(tw, "Open PRs missing:\t%d\n", status.OpenPRMissing)
+	fmt.Fprintf(tw, "Open PRs missing:\t%s\n", missingCountString(status.OpenPRMissing, status.OpenPRMissingStale))
 	fmt.Fprintf(tw, "Backfill cursor:\t%s\n", intPtrString(status.BackfillCursor))
 	fmt.Fprintf(tw, "Backfill cursor updated:\t%s\n", humanTimePtr(status.BackfillCursorUpdatedAt))
 	fmt.Fprintf(tw, "Last webhook:\t%s\n", humanTimePtr(status.LastWebhookAt))
@@ -39,6 +39,16 @@ func printRepoChangeStatus(out io.Writer, status RepoChangeStatusResponse) {
 	fmt.Fprintf(tw, "Last backfill finished:\t%s\n", humanTimePtr(status.LastBackfillFinishedAt))
 	fmt.Fprintf(tw, "Last error:\t%s\n", coalesce(status.LastError, "-"))
 	_ = tw.Flush()
+}
+
+func missingCountString(value *int, stale bool) string {
+	if stale {
+		return "unknown (inventory stale)"
+	}
+	if value == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d", *value)
 }
 
 func printPullRequestChangeStatus(out io.Writer, repo string, status PullRequestChangeStatusResponse) {

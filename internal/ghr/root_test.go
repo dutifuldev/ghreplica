@@ -508,7 +508,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 			Total:   3,
 			Current: 1,
 			Stale:   1,
-			Missing: 1,
+			Missing: fixtureIntPtr(1),
 		},
 		Activity: MirrorActivityResponse{
 			BackfillRunning:           true,
@@ -582,7 +582,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 			OpenPRTotal:                3,
 			OpenPRCurrent:              1,
 			OpenPRStale:                1,
-			OpenPRMissing:              1,
+			OpenPRMissing:              fixtureIntPtr(1),
 		})
 	})
 	mux.HandleFunc("/v1/changes/repos/acme/widgets/pulls/2/status", func(w http.ResponseWriter, r *http.Request) {
@@ -657,6 +657,10 @@ func newTestServer(t *testing.T) *httptest.Server {
 	})
 
 	return httptest.NewServer(mux)
+}
+
+func fixtureIntPtr(v int) *int {
+	return &v
 }
 
 func newOpenClawTestServer(t *testing.T) *httptest.Server {
