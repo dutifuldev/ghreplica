@@ -27,6 +27,13 @@ func (d *recordingDispatcher) EnqueueWebhookDeliveryTx(_ context.Context, _ *sql
 	return nil
 }
 
+type webhookHarness struct {
+	db         *gorm.DB
+	projector  *githubsync.Service
+	ingestor   *webhooks.Service
+	dispatcher *recordingDispatcher
+}
+
 func newWebhookService(t *testing.T, db *gorm.DB, projector webhooks.WebhookProjector) (*webhooks.Service, *recordingDispatcher) {
 	t.Helper()
 
@@ -45,6 +52,31 @@ func newWebhookService(t *testing.T, db *gorm.DB, projector webhooks.WebhookProj
 	return service, dispatcher
 }
 
+func newWebhookHarness(t *testing.T) *webhookHarness {
+	t.Helper()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+	ingestor, dispatcher := newWebhookService(t, db, projector)
+	return &webhookHarness{
+		db:         db,
+		projector:  projector,
+		ingestor:   ingestor,
+		dispatcher: dispatcher,
+	}
+}
+
+func mustPayloadJSON(t *testing.T, payload map[string]any) []byte {
+	t.Helper()
+
+	encoded, err := json.Marshal(payload)
+	require.NoError(t, err)
+	return encoded
+}
+
 func handleAndProcessWebhook(t *testing.T, ctx context.Context, ingestor *webhooks.Service, dispatcher *recordingDispatcher, deliveryID, event string, headers http.Header, payload []byte) {
 	t.Helper()
 
@@ -56,20 +88,14 @@ func handleAndProcessWebhook(t *testing.T, ctx context.Context, ingestor *webhoo
 func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testing.T) {
 	ctx := context.Background()
 
-	db, err := database.Open(testDatabaseURL(t))
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
-
-	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor, dispatcher := newWebhookService(t, db, projector)
-	payload, err := json.Marshal(map[string]any{
+	harness := newWebhookHarness(t)
+	payload := mustPayloadJSON(t, map[string]any{
 		"action":       "opened",
 		"repository":   repoFixture(),
 		"pull_request": pullsFixture()[0],
 	})
-	require.NoError(t, err)
 
-	err = ingestor.HandleWebhook(
+	err := harness.ingestor.HandleWebhook(
 		ctx,
 		"delivery-1",
 		"pull_request",
@@ -77,38 +103,38 @@ func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testin
 		payload,
 	)
 	require.NoError(t, err)
-	require.Equal(t, []string{"delivery-1"}, dispatcher.deliveryIDs)
+	require.Equal(t, []string{"delivery-1"}, harness.dispatcher.deliveryIDs)
 
 	var delivery database.WebhookDelivery
-	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-1").First(&delivery).Error)
+	require.NoError(t, harness.db.WithContext(ctx).Where("delivery_id = ?", "delivery-1").First(&delivery).Error)
 	require.Equal(t, "pull_request", delivery.Event)
 	require.Nil(t, delivery.ProcessedAt)
 	require.NotNil(t, delivery.RepositoryID)
 
 	var repoCount int64
-	require.NoError(t, db.WithContext(ctx).Model(&database.Repository{}).Count(&repoCount).Error)
+	require.NoError(t, harness.db.WithContext(ctx).Model(&database.Repository{}).Count(&repoCount).Error)
 	require.EqualValues(t, 1, repoCount)
 
 	var repo database.Repository
-	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&repo).Error)
+	require.NoError(t, harness.db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&repo).Error)
 	require.Equal(t, repo.ID, *delivery.RepositoryID)
 
 	var issue database.Issue
-	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 2).First(&issue).Error)
+	require.NoError(t, harness.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 2).First(&issue).Error)
 	require.True(t, issue.IsPullRequest)
 
 	var pull database.PullRequest
-	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 2).First(&pull).Error)
+	require.NoError(t, harness.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 2).First(&pull).Error)
 	require.Equal(t, "fix/parser", pull.HeadRef)
 
-	require.NoError(t, ingestor.ProcessWebhookDelivery(ctx, "delivery-1"))
+	require.NoError(t, harness.ingestor.ProcessWebhookDelivery(ctx, "delivery-1"))
 
-	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-1").First(&delivery).Error)
+	require.NoError(t, harness.db.WithContext(ctx).Where("delivery_id = ?", "delivery-1").First(&delivery).Error)
 	require.NotNil(t, delivery.ProcessedAt)
 	require.NotNil(t, delivery.RepositoryID)
 
 	var tracked database.TrackedRepository
-	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&tracked).Error)
+	require.NoError(t, harness.db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&tracked).Error)
 	require.NotNil(t, tracked.RepositoryID)
 	require.Equal(t, repo.ID, *tracked.RepositoryID)
 	require.Equal(t, "webhook_only", tracked.SyncMode)
@@ -119,161 +145,149 @@ func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testin
 	require.Equal(t, "empty", tracked.ReviewsCompleteness)
 
 	var jobs int64
-	require.NoError(t, db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Count(&jobs).Error)
+	require.NoError(t, harness.db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Count(&jobs).Error)
 	require.Zero(t, jobs)
 }
 
-func TestWebhookIngestionProjectsIssuePayloadBeforeAsyncProcessing(t *testing.T) {
+func TestWebhookIngestionProjectsImmediateCanonicalRowsBeforeAsyncProcessing(t *testing.T) {
 	ctx := context.Background()
 
-	db, err := database.Open(testDatabaseURL(t))
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
+	for _, tc := range []struct {
+		name       string
+		deliveryID string
+		event      string
+		payload    func(*testing.T) []byte
+		assert     func(*testing.T, *webhookHarness, database.WebhookDelivery)
+	}{
+		{
+			name:       "issues opened",
+			deliveryID: "delivery-issue-immediate",
+			event:      "issues",
+			payload: func(t *testing.T) []byte {
+				return mustPayloadJSON(t, map[string]any{
+					"action":     "opened",
+					"repository": testfixtures.OpenClawRepository(t),
+					"issue":      testfixtures.OpenClawIssue66797(t),
+				})
+			},
+			assert: func(t *testing.T, harness *webhookHarness, delivery database.WebhookDelivery) {
+				require.Equal(t, "issues", delivery.Event)
+				require.Nil(t, delivery.ProcessedAt)
+				require.NotNil(t, delivery.RepositoryID)
 
-	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor, dispatcher := newWebhookService(t, db, projector)
-	payload, err := json.Marshal(map[string]any{
-		"action":     "opened",
-		"repository": testfixtures.OpenClawRepository(t),
-		"issue":      testfixtures.OpenClawIssue66797(t),
-	})
-	require.NoError(t, err)
+				var repo database.Repository
+				require.NoError(t, harness.db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&repo).Error)
 
-	require.NoError(t, ingestor.HandleWebhook(
-		ctx,
-		"delivery-issue-immediate",
-		"issues",
-		http.Header{"X-GitHub-Event": []string{"issues"}},
-		payload,
-	))
-	require.Equal(t, []string{"delivery-issue-immediate"}, dispatcher.deliveryIDs)
+				var issue database.Issue
+				require.NoError(t, harness.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 66797).First(&issue).Error)
+				require.Equal(t, "open", issue.State)
+				require.False(t, issue.IsPullRequest)
+			},
+		},
+		{
+			name:       "issue comment created",
+			deliveryID: "delivery-issue-comment-immediate",
+			event:      "issue_comment",
+			payload: func(t *testing.T) []byte {
+				commentPayload := testfixtures.OpenClawIssue66797Comments(t)[0]
+				return mustPayloadJSON(t, map[string]any{
+					"action":     "created",
+					"repository": testfixtures.OpenClawRepository(t),
+					"issue":      testfixtures.OpenClawIssue66797(t),
+					"comment":    commentPayload,
+				})
+			},
+			assert: func(t *testing.T, harness *webhookHarness, delivery database.WebhookDelivery) {
+				require.Nil(t, delivery.ProcessedAt)
+				require.NotNil(t, delivery.RepositoryID)
 
-	var delivery database.WebhookDelivery
-	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-issue-immediate").First(&delivery).Error)
-	require.Equal(t, "issues", delivery.Event)
-	require.Nil(t, delivery.ProcessedAt)
-	require.NotNil(t, delivery.RepositoryID)
+				var repo database.Repository
+				require.NoError(t, harness.db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&repo).Error)
 
-	var repo database.Repository
-	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&repo).Error)
+				var issue database.Issue
+				require.NoError(t, harness.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 66797).First(&issue).Error)
 
-	var issue database.Issue
-	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 66797).First(&issue).Error)
-	require.Equal(t, "open", issue.State)
-	require.False(t, issue.IsPullRequest)
-}
+				commentPayload := testfixtures.OpenClawIssue66797Comments(t)[0]
+				var comment database.IssueComment
+				require.NoError(t, harness.db.WithContext(ctx).Where("repository_id = ? AND github_id = ?", repo.ID, commentPayload.ID).First(&comment).Error)
+				require.Equal(t, issue.ID, comment.IssueID)
+			},
+		},
+		{
+			name:       "review and review comment created",
+			deliveryID: "delivery-review-immediate",
+			event:      "pull_request_review",
+			payload: func(t *testing.T) []byte {
+				repo := testfixtures.OpenClawRepository(t)
+				pull := testfixtures.OpenClawPull66863(t)
+				review := testfixtures.OpenClawPull66863Reviews(t)[0]
+				return mustPayloadJSON(t, map[string]any{
+					"action":       "submitted",
+					"repository":   repo,
+					"pull_request": pull,
+					"review":       review,
+				})
+			},
+			assert: func(t *testing.T, harness *webhookHarness, delivery database.WebhookDelivery) {
+				require.Nil(t, delivery.ProcessedAt)
 
-func TestWebhookIngestionProjectsIssueCommentPayloadBeforeAsyncProcessing(t *testing.T) {
-	ctx := context.Background()
+				repo := testfixtures.OpenClawRepository(t)
+				pull := testfixtures.OpenClawPull66863(t)
+				review := testfixtures.OpenClawPull66863Reviews(t)[0]
+				reviewComment := testfixtures.OpenClawPull66863ReviewComments(t)[0]
+				reviewCommentPayload := mustPayloadJSON(t, map[string]any{
+					"action":       "created",
+					"repository":   repo,
+					"pull_request": pull,
+					"comment":      reviewComment,
+				})
+				require.NoError(t, harness.ingestor.HandleWebhook(
+					ctx,
+					"delivery-review-comment-immediate",
+					"pull_request_review_comment",
+					http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}},
+					reviewCommentPayload,
+				))
+				require.Equal(t, []string{"delivery-review-immediate", "delivery-review-comment-immediate"}, harness.dispatcher.deliveryIDs)
 
-	db, err := database.Open(testDatabaseURL(t))
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
+				var storedRepo database.Repository
+				require.NoError(t, harness.db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&storedRepo).Error)
 
-	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor, dispatcher := newWebhookService(t, db, projector)
-	commentPayload := testfixtures.OpenClawIssue66797Comments(t)[0]
-	payload, err := json.Marshal(map[string]any{
-		"action":     "created",
-		"repository": testfixtures.OpenClawRepository(t),
-		"issue":      testfixtures.OpenClawIssue66797(t),
-		"comment":    commentPayload,
-	})
-	require.NoError(t, err)
+				var pullRow database.PullRequest
+				require.NoError(t, harness.db.WithContext(ctx).Where("repository_id = ? AND number = ?", storedRepo.ID, pull.Number).First(&pullRow).Error)
 
-	require.NoError(t, ingestor.HandleWebhook(
-		ctx,
-		"delivery-issue-comment-immediate",
-		"issue_comment",
-		http.Header{"X-GitHub-Event": []string{"issue_comment"}},
-		payload,
-	))
-	require.Equal(t, []string{"delivery-issue-comment-immediate"}, dispatcher.deliveryIDs)
+				var reviewRow database.PullRequestReview
+				require.NoError(t, harness.db.WithContext(ctx).Where("repository_id = ? AND github_id = ?", storedRepo.ID, review.ID).First(&reviewRow).Error)
+				require.Equal(t, pullRow.IssueID, reviewRow.PullRequestID)
 
-	var delivery database.WebhookDelivery
-	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-issue-comment-immediate").First(&delivery).Error)
-	require.Nil(t, delivery.ProcessedAt)
-	require.NotNil(t, delivery.RepositoryID)
+				var reviewCommentRow database.PullRequestReviewComment
+				require.NoError(t, harness.db.WithContext(ctx).Where("repository_id = ? AND github_id = ?", storedRepo.ID, reviewComment.ID).First(&reviewCommentRow).Error)
+				require.Equal(t, pullRow.IssueID, reviewCommentRow.PullRequestID)
 
-	var repo database.Repository
-	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&repo).Error)
+				var reviewCommentDelivery database.WebhookDelivery
+				require.NoError(t, harness.db.WithContext(ctx).Where("delivery_id = ?", "delivery-review-comment-immediate").First(&reviewCommentDelivery).Error)
+				require.Nil(t, reviewCommentDelivery.ProcessedAt)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			harness := newWebhookHarness(t)
+			payload := tc.payload(t)
 
-	var issue database.Issue
-	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 66797).First(&issue).Error)
+			require.NoError(t, harness.ingestor.HandleWebhook(
+				ctx,
+				tc.deliveryID,
+				tc.event,
+				http.Header{"X-GitHub-Event": []string{tc.event}},
+				payload,
+			))
+			require.Equal(t, []string{tc.deliveryID}, harness.dispatcher.deliveryIDs[:1])
 
-	var comment database.IssueComment
-	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND github_id = ?", repo.ID, commentPayload.ID).First(&comment).Error)
-	require.Equal(t, issue.ID, comment.IssueID)
-}
-
-func TestWebhookIngestionProjectsReviewPayloadsBeforeAsyncProcessing(t *testing.T) {
-	ctx := context.Background()
-
-	db, err := database.Open(testDatabaseURL(t))
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
-
-	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
-	ingestor, dispatcher := newWebhookService(t, db, projector)
-
-	repo := testfixtures.OpenClawRepository(t)
-	pull := testfixtures.OpenClawPull66863(t)
-	review := testfixtures.OpenClawPull66863Reviews(t)[0]
-	reviewPayload, err := json.Marshal(map[string]any{
-		"action":       "submitted",
-		"repository":   repo,
-		"pull_request": pull,
-		"review":       review,
-	})
-	require.NoError(t, err)
-
-	require.NoError(t, ingestor.HandleWebhook(
-		ctx,
-		"delivery-review-immediate",
-		"pull_request_review",
-		http.Header{"X-GitHub-Event": []string{"pull_request_review"}},
-		reviewPayload,
-	))
-
-	reviewComment := testfixtures.OpenClawPull66863ReviewComments(t)[0]
-	reviewCommentPayload, err := json.Marshal(map[string]any{
-		"action":       "created",
-		"repository":   repo,
-		"pull_request": pull,
-		"comment":      reviewComment,
-	})
-	require.NoError(t, err)
-
-	require.NoError(t, ingestor.HandleWebhook(
-		ctx,
-		"delivery-review-comment-immediate",
-		"pull_request_review_comment",
-		http.Header{"X-GitHub-Event": []string{"pull_request_review_comment"}},
-		reviewCommentPayload,
-	))
-	require.Equal(t, []string{"delivery-review-immediate", "delivery-review-comment-immediate"}, dispatcher.deliveryIDs)
-
-	var storedRepo database.Repository
-	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "openclaw/openclaw").First(&storedRepo).Error)
-
-	var pullRow database.PullRequest
-	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND number = ?", storedRepo.ID, pull.Number).First(&pullRow).Error)
-
-	var reviewRow database.PullRequestReview
-	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND github_id = ?", storedRepo.ID, review.ID).First(&reviewRow).Error)
-	require.Equal(t, pullRow.IssueID, reviewRow.PullRequestID)
-
-	var reviewCommentRow database.PullRequestReviewComment
-	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND github_id = ?", storedRepo.ID, reviewComment.ID).First(&reviewCommentRow).Error)
-	require.Equal(t, pullRow.IssueID, reviewCommentRow.PullRequestID)
-
-	var reviewDelivery database.WebhookDelivery
-	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-review-immediate").First(&reviewDelivery).Error)
-	require.Nil(t, reviewDelivery.ProcessedAt)
-
-	var reviewCommentDelivery database.WebhookDelivery
-	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-review-comment-immediate").First(&reviewCommentDelivery).Error)
-	require.Nil(t, reviewCommentDelivery.ProcessedAt)
+			var delivery database.WebhookDelivery
+			require.NoError(t, harness.db.WithContext(ctx).Where("delivery_id = ?", tc.deliveryID).First(&delivery).Error)
+			tc.assert(t, harness, delivery)
+		})
+	}
 }
 
 func TestWebhookIngestionIgnoresUnsupportedEventsForRefreshScheduling(t *testing.T) {
