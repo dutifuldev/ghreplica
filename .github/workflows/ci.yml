@@ -32,14 +32,14 @@ jobs:
         run: npx --yes @simpledoc/simpledoc@0.1.6 check
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Check formatting
         run: |
-          unformatted="$(gofmt -l .)"
+          unformatted="$(find . -type f -name '*.go' -not -path './vendor/*' | xargs gofmt -l)"
           if [ -n "$unformatted" ]; then
             echo "The following files are not gofmt-formatted:"
             echo "$unformatted"
@@ -51,6 +51,9 @@ jobs:
 
       - name: Run tests
         run: go test ./...
+
+      - name: Check coverage floor
+        run: ./scripts/check-go-coverage.sh
 
       - name: Build ghreplica
         run: go build ./cmd/ghreplica
@@ -76,3 +79,21 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t ghreplica:ci .
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11
+          args: --timeout=5m
