@@ -42,8 +42,7 @@ func newSearchStatusCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
 			}
-			printRepoSearchStatus(cmd.OutOrStdout(), status)
-			return nil
+			return printRepoSearchStatus(cmd.OutOrStdout(), status)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -76,8 +75,7 @@ func newSearchRelatedPRsCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), matches, jsonFields)
 			}
-			printSearchMatches(cmd.OutOrStdout(), matches)
-			return nil
+			return printSearchMatches(cmd.OutOrStdout(), matches)
 		},
 	}
 	cmd.Flags().StringVar(&mode, "mode", "path_overlap", "Search mode: path_overlap or range_overlap")
@@ -113,8 +111,7 @@ func newSearchPRsByPathsCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), matches, jsonFields)
 			}
-			printSearchMatches(cmd.OutOrStdout(), matches)
-			return nil
+			return printSearchMatches(cmd.OutOrStdout(), matches)
 		},
 	}
 	cmd.Flags().StringSliceVarP(&paths, "path", "p", nil, "File path to search for; repeat to search multiple paths")
@@ -152,8 +149,7 @@ func newSearchPRsByRangesCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), matches, jsonFields)
 			}
-			printSearchMatches(cmd.OutOrStdout(), matches)
-			return nil
+			return printSearchMatches(cmd.OutOrStdout(), matches)
 		},
 	}
 	cmd.Flags().StringSliceVarP(&paths, "path", "p", nil, "File path to search within; repeat with matching --start and --end values")
@@ -234,8 +230,7 @@ func newSearchMentionsCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), matches, jsonFields)
 			}
-			printMentionMatches(cmd.OutOrStdout(), matches)
-			return nil
+			return printMentionMatches(cmd.OutOrStdout(), matches)
 		},
 	}
 	cmd.Flags().StringVarP(&query, "query", "q", "", "Search expression")
@@ -281,8 +276,7 @@ func newSearchASTGrepCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), result, jsonFields)
 			}
-			printStructuralSearch(cmd.OutOrStdout(), result)
-			return nil
+			return printStructuralSearch(cmd.OutOrStdout(), result)
 		},
 	}
 	cmd.Flags().StringVar(&commitSHA, "commit", "", "Search a specific commit SHA")

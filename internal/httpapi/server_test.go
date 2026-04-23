@@ -659,6 +659,20 @@ func TestGitHubExtensionBatchReadObjectsRejectsInvalidInput(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	require.JSONEq(t, `{"message":"Unsupported object type"}`, rec.Body.String())
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/github-ext/repos/openclaw/openclaw/objects/batch", bytes.NewReader([]byte(`{`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"message":"Invalid request body"}`, rec.Body.String())
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/github-ext/repos/openclaw/openclaw/objects/batch", bytes.NewReader([]byte(`{"objects":[]}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Echo().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.JSONEq(t, `{"message":"Objects are required"}`, rec.Body.String())
 }
 
 func testDatabaseURL(t *testing.T) string {

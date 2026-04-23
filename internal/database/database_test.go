@@ -25,7 +25,7 @@ func TestPrewarmPoolOpensAndReturnsIdleConnections(t *testing.T) {
 
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
-	defer sqlDB.Close()
+	defer func() { require.NoError(t, sqlDB.Close()) }()
 
 	require.NoError(t, PrewarmPool(context.Background(), sqlDB, 2))
 

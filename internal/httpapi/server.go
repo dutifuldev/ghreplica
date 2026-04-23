@@ -192,7 +192,7 @@ func (s *Server) handleGetRepository(c echo.Context) error {
 		}
 		return err
 	}
-	return c.Blob(http.StatusOK, echo.MIMEApplicationJSONCharsetUTF8, repo.RawJSON)
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSON, repo.RawJSON)
 }
 
 func (s *Server) handleGetIssue(c echo.Context) error {
@@ -221,7 +221,7 @@ func (s *Server) handleGetIssue(c echo.Context) error {
 		return err
 	}
 
-	return c.Blob(http.StatusOK, echo.MIMEApplicationJSONCharsetUTF8, issue.RawJSON)
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSON, issue.RawJSON)
 }
 
 func (s *Server) handleListIssues(c echo.Context) error {
@@ -261,7 +261,7 @@ func (s *Server) handleListIssues(c echo.Context) error {
 		c.Response().Header().Set("Link", link)
 	}
 
-	return c.Blob(http.StatusOK, echo.MIMEApplicationJSONCharsetUTF8, encodeRawJSONArray(issues, func(issue rawJSONRow) []byte {
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSON, encodeRawJSONArray(issues, func(issue rawJSONRow) []byte {
 		return issue.RawJSON
 	}))
 }
@@ -308,7 +308,7 @@ func (s *Server) handleListPullRequests(c echo.Context) error {
 		c.Response().Header().Set("Link", link)
 	}
 
-	return c.Blob(http.StatusOK, echo.MIMEApplicationJSONCharsetUTF8, encodeRawJSONArray(pulls, func(pull rawJSONRow) []byte {
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSON, encodeRawJSONArray(pulls, func(pull rawJSONRow) []byte {
 		return pull.RawJSON
 	}))
 }
@@ -338,7 +338,7 @@ func (s *Server) handleGetPullRequest(c echo.Context) error {
 		return err
 	}
 
-	return c.Blob(http.StatusOK, echo.MIMEApplicationJSONCharsetUTF8, pull.RawJSON)
+	return c.Blob(http.StatusOK, echo.MIMEApplicationJSON, pull.RawJSON)
 }
 
 func (s *Server) handleListIssueComments(c echo.Context) error {

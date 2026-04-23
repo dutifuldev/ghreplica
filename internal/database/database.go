@@ -388,70 +388,80 @@ func RunMigrations(db *gorm.DB, dir string) error {
 	if err != nil {
 		return err
 	}
-
 	ctx := context.Background()
-	if _, err := sqlDB.ExecContext(ctx, `
+	if err := ensureSchemaMigrationsTable(ctx, sqlDB); err != nil {
+		return err
+	}
+	files, err := migrationFiles(dir)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		if err := applyMigrationFile(ctx, sqlDB, file); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureSchemaMigrationsTable(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)
-	`); err != nil {
+	`)
+	return err
+}
+
+func migrationFiles(dir string) ([]string, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "*.up.sql"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func applyMigrationFile(ctx context.Context, db *sql.DB, file string) error {
+	version := filepath.Base(file)
+	applied, err := migrationApplied(ctx, db, version)
+	if err != nil || applied {
 		return err
 	}
-
-	files, err := filepath.Glob(filepath.Join(dir, "*.up.sql"))
+	body, err := os.ReadFile(file)
 	if err != nil {
 		return err
 	}
-	sort.Strings(files)
-
-	for _, file := range files {
-		version := filepath.Base(file)
-		applied, err := migrationApplied(ctx, sqlDB, version)
-		if err != nil {
-			return err
-		}
-		if applied {
-			continue
-		}
-
-		body, err := os.ReadFile(file)
-		if err != nil {
-			return err
-		}
-		bodyText := string(body)
-
-		if isNonTransactionalMigration(bodyText) {
-			if _, err := sqlDB.ExecContext(ctx, bodyText); err != nil {
-				return fmt.Errorf("apply migration %s: %w", version, err)
-			}
-			if _, err := sqlDB.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
-				return err
-			}
-			continue
-		}
-
-		tx, err := sqlDB.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-
-		if _, err := tx.ExecContext(ctx, bodyText); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("apply migration %s: %w", version, err)
-		}
-
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
-			_ = tx.Rollback()
-			return err
-		}
-
-		if err := tx.Commit(); err != nil {
-			return err
-		}
+	bodyText := string(body)
+	if isNonTransactionalMigration(bodyText) {
+		return applyNonTransactionalMigration(ctx, db, version, bodyText)
 	}
+	return applyTransactionalMigration(ctx, db, version, bodyText)
+}
 
-	return nil
+func applyNonTransactionalMigration(ctx context.Context, db *sql.DB, version, body string) error {
+	if _, err := db.ExecContext(ctx, body); err != nil {
+		return fmt.Errorf("apply migration %s: %w", version, err)
+	}
+	_, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version)
+	return err
+}
+
+func applyTransactionalMigration(ctx context.Context, db *sql.DB, version, body string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, body); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("apply migration %s: %w", version, err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, version); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 func migrationApplied(ctx context.Context, db *sql.DB, version string) (bool, error) {

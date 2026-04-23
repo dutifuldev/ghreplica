@@ -1439,7 +1439,22 @@ func setUnexportedInt(field reflect.Value, value int64) {
 func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *backfillGitHubServer {
 	t.Helper()
 
-	repo := github.RepositoryResponse{
+	repo := newBackfillRepository(fixture)
+	pulls := newBackfillPulls(fixture, repo)
+	issues := newBackfillIssues(pulls)
+	server := &backfillGitHubServer{
+		pulls:  pulls,
+		issues: issues,
+	}
+	mux := http.NewServeMux()
+	registerBackfillServerRoutes(t, mux, server, repo)
+
+	server.Server = httptest.NewServer(mux)
+	return server
+}
+
+func newBackfillRepository(fixture testfixtures.LocalPullRepo) github.RepositoryResponse {
+	return github.RepositoryResponse{
 		ID:            101,
 		NodeID:        "R_repo",
 		Name:          "widgets",
@@ -1457,26 +1472,10 @@ func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *
 		CreatedAt: time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC),
 	}
+}
 
-	baseRepo := github.PullBranchRepository{
-		ID:            repo.ID,
-		NodeID:        repo.NodeID,
-		Name:          repo.Name,
-		FullName:      repo.FullName,
-		Private:       repo.Private,
-		Owner:         repo.Owner,
-		HTMLURL:       repo.HTMLURL,
-		Description:   repo.Description,
-		Fork:          repo.Fork,
-		URL:           repo.URL,
-		DefaultBranch: repo.DefaultBranch,
-		Visibility:    repo.Visibility,
-		Archived:      repo.Archived,
-		Disabled:      repo.Disabled,
-		CreatedAt:     repo.CreatedAt,
-		UpdatedAt:     repo.UpdatedAt,
-	}
-
+func newBackfillPulls(fixture testfixtures.LocalPullRepo, repo github.RepositoryResponse) map[int]github.PullRequestResponse {
+	baseRepo := github.PullBranchRepository(repo)
 	pulls := map[int]github.PullRequestResponse{}
 	order := []int{101, 102, 103}
 	for i, number := range order {
@@ -1500,10 +1499,12 @@ func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *
 			UpdatedAt:    time.Date(2026, 4, 15, 10, i, 0, 0, time.UTC),
 		}
 	}
+	return pulls
+}
 
+func newBackfillIssues(pulls map[int]github.PullRequestResponse) map[int]github.IssueResponse {
 	issues := map[int]github.IssueResponse{}
-	for _, number := range order {
-		pull := pulls[number]
+	for number, pull := range pulls {
 		issues[number] = github.IssueResponse{
 			ID:          int64(1000 + number),
 			NodeID:      "I_" + strconv.Itoa(number),
@@ -1519,145 +1520,141 @@ func newBackfillGitHubServer(t *testing.T, fixture testfixtures.LocalPullRepo) *
 			UpdatedAt:   pull.UpdatedAt,
 		}
 	}
+	return issues
+}
 
-	server := &backfillGitHubServer{
-		pulls:  pulls,
-		issues: issues,
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/acme/widgets", func(w http.ResponseWriter, r *http.Request) {
+func registerBackfillServerRoutes(t *testing.T, mux *http.ServeMux, server *backfillGitHubServer, repo github.RepositoryResponse) {
+	mux.HandleFunc("/repos/acme/widgets", handleBackfillRepository(t, repo))
+	mux.HandleFunc("/repos/acme/widgets/pulls", handleBackfillListPulls(t, server))
+	mux.HandleFunc("/repos/acme/widgets/issues", handleBackfillListIssues(t, server))
+	mux.HandleFunc("/repos/acme/widgets/issues/", handleBackfillGetIssue(t, server))
+	mux.HandleFunc("/repos/acme/widgets/pulls/", handleBackfillGetPull(t, server))
+}
+
+func handleBackfillRepository(t *testing.T, repo github.RepositoryResponse) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		writeBackfillJSON(t, w, repo)
-	})
-	mux.HandleFunc("/repos/acme/widgets/pulls", func(w http.ResponseWriter, r *http.Request) {
+	}
+}
+
+func handleBackfillListPulls(t *testing.T, server *backfillGitHubServer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		server.recordListPull()
 		if server.onListPull != nil {
 			server.onListPull()
 		}
 		server.mu.Lock()
 		defer server.mu.Unlock()
+		writeBackfillJSON(t, w, paginateBackfillList(t, backfillPullList(server.pulls), r, func(p github.PullRequestResponse) string {
+			return p.State
+		}))
+	}
+}
 
-		allPulls := make([]github.PullRequestResponse, 0, len(server.pulls))
-		for _, pull := range server.pulls {
-			allPulls = append(allPulls, pull)
-		}
-		sort.Slice(allPulls, func(i, j int) bool {
-			if allPulls[i].UpdatedAt.Equal(allPulls[j].UpdatedAt) {
-				return allPulls[i].Number > allPulls[j].Number
-			}
-			return allPulls[i].UpdatedAt.After(allPulls[j].UpdatedAt)
-		})
-
-		stateFilter := strings.TrimSpace(r.URL.Query().Get("state"))
-		if stateFilter != "" && stateFilter != "all" {
-			filtered := allPulls[:0]
-			for _, pull := range allPulls {
-				if pull.State == stateFilter {
-					filtered = append(filtered, pull)
-				}
-			}
-			allPulls = filtered
-		}
-
-		page := 1
-		if raw := strings.TrimSpace(r.URL.Query().Get("page")); raw != "" {
-			parsed, err := strconv.Atoi(raw)
-			require.NoError(t, err)
-			if parsed > 0 {
-				page = parsed
-			}
-		}
-		perPage := 100
-		if raw := strings.TrimSpace(r.URL.Query().Get("per_page")); raw != "" {
-			parsed, err := strconv.Atoi(raw)
-			require.NoError(t, err)
-			if parsed > 0 {
-				perPage = parsed
-			}
-		}
-		start := (page - 1) * perPage
-		if start >= len(allPulls) {
-			writeBackfillJSON(t, w, []github.PullRequestResponse{})
-			return
-		}
-		end := start + perPage
-		if end > len(allPulls) {
-			end = len(allPulls)
-		}
-		writeBackfillJSON(t, w, allPulls[start:end])
-	})
-	mux.HandleFunc("/repos/acme/widgets/issues", func(w http.ResponseWriter, r *http.Request) {
+func handleBackfillListIssues(t *testing.T, server *backfillGitHubServer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		server.recordListIssue()
 		server.mu.Lock()
 		defer server.mu.Unlock()
+		writeBackfillJSON(t, w, paginateBackfillList(t, backfillIssueList(server.issues), r, func(issue github.IssueResponse) string {
+			return issue.State
+		}))
+	}
+}
 
-		allIssues := make([]github.IssueResponse, 0, len(server.issues))
-		for _, issue := range server.issues {
-			allIssues = append(allIssues, issue)
-		}
-		sort.Slice(allIssues, func(i, j int) bool {
-			if allIssues[i].UpdatedAt.Equal(allIssues[j].UpdatedAt) {
-				return allIssues[i].Number > allIssues[j].Number
-			}
-			return allIssues[i].UpdatedAt.After(allIssues[j].UpdatedAt)
-		})
-
-		stateFilter := strings.TrimSpace(r.URL.Query().Get("state"))
-		if stateFilter != "" && stateFilter != "all" {
-			filtered := allIssues[:0]
-			for _, issue := range allIssues {
-				if issue.State == stateFilter {
-					filtered = append(filtered, issue)
-				}
-			}
-			allIssues = filtered
-		}
-
-		page := 1
-		if raw := strings.TrimSpace(r.URL.Query().Get("page")); raw != "" {
-			parsed, err := strconv.Atoi(raw)
-			require.NoError(t, err)
-			if parsed > 0 {
-				page = parsed
-			}
-		}
-		perPage := 100
-		if raw := strings.TrimSpace(r.URL.Query().Get("per_page")); raw != "" {
-			parsed, err := strconv.Atoi(raw)
-			require.NoError(t, err)
-			if parsed > 0 {
-				perPage = parsed
-			}
-		}
-		start := (page - 1) * perPage
-		if start >= len(allIssues) {
-			writeBackfillJSON(t, w, []github.IssueResponse{})
-			return
-		}
-		end := start + perPage
-		if end > len(allIssues) {
-			end = len(allIssues)
-		}
-		writeBackfillJSON(t, w, allIssues[start:end])
-	})
-	mux.HandleFunc("/repos/acme/widgets/issues/", func(w http.ResponseWriter, r *http.Request) {
+func handleBackfillGetIssue(t *testing.T, server *backfillGitHubServer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		number, ok := tailNumber(r.URL.Path, "/repos/acme/widgets/issues/")
 		require.True(t, ok)
 		server.recordGetIssue()
 		server.mu.Lock()
 		defer server.mu.Unlock()
 		writeBackfillJSON(t, w, server.issues[number])
-	})
-	mux.HandleFunc("/repos/acme/widgets/pulls/", func(w http.ResponseWriter, r *http.Request) {
+	}
+}
+
+func handleBackfillGetPull(t *testing.T, server *backfillGitHubServer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		number, ok := tailNumber(r.URL.Path, "/repos/acme/widgets/pulls/")
 		require.True(t, ok)
 		server.recordGetPull()
 		server.mu.Lock()
 		defer server.mu.Unlock()
 		writeBackfillJSON(t, w, server.pulls[number])
-	})
+	}
+}
 
-	server.Server = httptest.NewServer(mux)
-	return server
+func backfillPullList(pulls map[int]github.PullRequestResponse) []github.PullRequestResponse {
+	allPulls := make([]github.PullRequestResponse, 0, len(pulls))
+	for _, pull := range pulls {
+		allPulls = append(allPulls, pull)
+	}
+	sort.Slice(allPulls, func(i, j int) bool {
+		if allPulls[i].UpdatedAt.Equal(allPulls[j].UpdatedAt) {
+			return allPulls[i].Number > allPulls[j].Number
+		}
+		return allPulls[i].UpdatedAt.After(allPulls[j].UpdatedAt)
+	})
+	return allPulls
+}
+
+func backfillIssueList(issues map[int]github.IssueResponse) []github.IssueResponse {
+	allIssues := make([]github.IssueResponse, 0, len(issues))
+	for _, issue := range issues {
+		allIssues = append(allIssues, issue)
+	}
+	sort.Slice(allIssues, func(i, j int) bool {
+		if allIssues[i].UpdatedAt.Equal(allIssues[j].UpdatedAt) {
+			return allIssues[i].Number > allIssues[j].Number
+		}
+		return allIssues[i].UpdatedAt.After(allIssues[j].UpdatedAt)
+	})
+	return allIssues
+}
+
+func paginateBackfillList[T any](t *testing.T, items []T, r *http.Request, stateFn func(T) string) []T {
+	filtered := filterBackfillListByState(items, strings.TrimSpace(r.URL.Query().Get("state")), stateFn)
+	page := parseBackfillPageParam(t, r.URL.Query().Get("page"), 1)
+	perPage := parseBackfillPageParam(t, r.URL.Query().Get("per_page"), 100)
+	return sliceBackfillPage(filtered, page, perPage)
+}
+
+func filterBackfillListByState[T any](items []T, state string, stateFn func(T) string) []T {
+	if state == "" || state == "all" {
+		return items
+	}
+	filtered := make([]T, 0, len(items))
+	for _, item := range items {
+		if stateFn(item) == state {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func parseBackfillPageParam(t *testing.T, raw string, fallback int) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(raw)
+	require.NoError(t, err)
+	if parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func sliceBackfillPage[T any](items []T, page, perPage int) []T {
+	start := (page - 1) * perPage
+	if start >= len(items) {
+		return []T{}
+	}
+	end := start + perPage
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[start:end]
 }
 
 func tailNumber(path, prefix string) (int, bool) {

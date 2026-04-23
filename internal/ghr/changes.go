@@ -47,8 +47,7 @@ func newChangesRepoStatusCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
 			}
-			printRepoChangeStatus(cmd.OutOrStdout(), status)
-			return nil
+			return printRepoChangeStatus(cmd.OutOrStdout(), status)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -89,8 +88,7 @@ func newChangesPRStatusCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
 			}
-			printPullRequestChangeStatus(cmd.OutOrStdout(), repo, status)
-			return nil
+			return printPullRequestChangeStatus(cmd.OutOrStdout(), repo, status)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -120,8 +118,7 @@ func newChangesPRViewCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), snapshot, jsonFields)
 			}
-			printPullRequestChangeSnapshot(cmd.OutOrStdout(), repo, snapshot)
-			return nil
+			return printPullRequestChangeSnapshot(cmd.OutOrStdout(), repo, snapshot)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -151,8 +148,7 @@ func newChangesPRFilesCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), files, jsonFields)
 			}
-			printFileChanges(cmd.OutOrStdout(), files)
-			return nil
+			return printFileChanges(cmd.OutOrStdout(), files)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -188,8 +184,7 @@ func newChangesCommitViewCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), commit, jsonFields)
 			}
-			printCommitView(cmd.OutOrStdout(), repo, commit)
-			return nil
+			return printCommitView(cmd.OutOrStdout(), repo, commit)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -215,8 +210,7 @@ func newChangesCommitFilesCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), files, jsonFields)
 			}
-			printCommitFiles(cmd.OutOrStdout(), files)
-			return nil
+			return printCommitFiles(cmd.OutOrStdout(), files)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -242,8 +236,7 @@ func newChangesCompareCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), compare, jsonFields)
 			}
-			printCompare(cmd.OutOrStdout(), repo, compare)
-			return nil
+			return printCompare(cmd.OutOrStdout(), repo, compare)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")

@@ -886,56 +886,8 @@ func issueCommentsFixture() []github.IssueCommentResponse {
 	}}
 }
 
-func pullReviewsFixture() []github.PullRequestReviewResponse {
-	now := time.Date(2026, 4, 14, 15, 0, 0, 0, time.UTC)
-	author := &github.UserResponse{ID: 31, NodeID: "U_reviewer", Login: "reviewer", Type: "User", AvatarURL: "https://example.com/reviewer.png", HTMLURL: "https://github.com/reviewer", URL: "https://api.github.com/users/reviewer"}
-	return []github.PullRequestReviewResponse{{
-		ID:          401,
-		NodeID:      "PRR_kwDO401",
-		User:        author,
-		Body:        "Approved",
-		State:       "APPROVED",
-		HTMLURL:     "https://github.com/acme/widgets/pull/2#pullrequestreview-401",
-		URL:         "https://api.github.com/repos/acme/widgets/pulls/2/reviews/401",
-		CommitID:    "abc123",
-		SubmittedAt: &now,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}}
-}
-
-func pullReviewCommentsFixture() []github.PullRequestReviewCommentResponse {
-	now := time.Date(2026, 4, 14, 15, 5, 0, 0, time.UTC)
-	author := &github.UserResponse{ID: 31, NodeID: "U_reviewer", Login: "reviewer", Type: "User", AvatarURL: "https://example.com/reviewer.png", HTMLURL: "https://github.com/reviewer", URL: "https://api.github.com/users/reviewer"}
-	reviewID := int64(401)
-	line := 12
-	return []github.PullRequestReviewCommentResponse{{
-		ID:                  501,
-		NodeID:              "PRRC_kwDO501",
-		PullRequestURL:      "https://api.github.com/repos/acme/widgets/pulls/2",
-		PullRequestReviewID: &reviewID,
-		HTMLURL:             "https://github.com/acme/widgets/pull/2#discussion_r501",
-		URL:                 "https://api.github.com/repos/acme/widgets/pulls/comments/501",
-		Body:                "Please rename this variable",
-		Path:                "parser.go",
-		DiffHunk:            "@@ -1,1 +1,1 @@",
-		Line:                &line,
-		OriginalLine:        &line,
-		Side:                "RIGHT",
-		User:                author,
-		CreatedAt:           now,
-		UpdatedAt:           now,
-	}}
-}
-
 func boolPtr(value bool) *bool {
 	return &value
-}
-
-func writeJSON(t *testing.T, w http.ResponseWriter, payload any) {
-	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	require.NoError(t, json.NewEncoder(w).Encode(payload))
 }
 
 func testDatabaseURL(t *testing.T) string {

@@ -40,11 +40,7 @@ func NewScheduler(db *gorm.DB) *Scheduler {
 }
 
 func (s *Scheduler) EnqueueRepositoryRefresh(ctx context.Context, request Request) error {
-	jobType := strings.TrimSpace(request.JobType)
-	if jobType == "" {
-		jobType = JobTypeBootstrapRepository
-	}
-
+	jobType := normalizeRefreshJobType(request.JobType)
 	now := time.Now().UTC()
 	tracked, err := ResolveTrackedRepository(ctx, s.db, nil, request.FullName)
 	if err != nil {
@@ -56,24 +52,49 @@ func (s *Scheduler) EnqueueRepositoryRefresh(ctx context.Context, request Reques
 		return err
 	}
 
-	query := s.db.WithContext(ctx).
+	exists, err := refreshJobExists(ctx, s.db, tracked, repository, request.FullName, jobType, now)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
+	job := buildRepositoryRefreshJob(request, jobType, tracked, repository, now)
+	return s.db.WithContext(ctx).Create(&job).Error
+}
+
+func normalizeRefreshJobType(jobType string) string {
+	jobType = strings.TrimSpace(jobType)
+	if jobType == "" {
+		return JobTypeBootstrapRepository
+	}
+	return jobType
+}
+
+func refreshJobExists(ctx context.Context, db *gorm.DB, tracked *database.TrackedRepository, repository *database.Repository, fullName, jobType string, now time.Time) (bool, error) {
+	query := db.WithContext(ctx).
 		Where("job_type = ? AND ((status = ?) OR (status = ? AND (lease_expires_at IS NULL OR lease_expires_at > ?)))",
 			jobType,
 			"pending",
 			"processing",
 			now,
-		)
-	query = query.Where(refreshJobIdentityCondition(s.db.WithContext(ctx), tracked, repository, request.FullName))
+		).
+		Where(refreshJobIdentityCondition(db.WithContext(ctx), tracked, repository, fullName))
 
 	var existing database.RepositoryRefreshJob
-	err = query.Order("id ASC").First(&existing).Error
-	if err == nil {
-		return nil
+	err := query.Order("id ASC").First(&existing).Error
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return false, nil
+	default:
+		return false, err
 	}
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
-	}
+}
 
+func buildRepositoryRefreshJob(request Request, jobType string, tracked *database.TrackedRepository, repository *database.Repository, now time.Time) database.RepositoryRefreshJob {
 	job := database.RepositoryRefreshJob{
 		JobType:       jobType,
 		Owner:         request.Owner,
@@ -98,8 +119,7 @@ func (s *Scheduler) EnqueueRepositoryRefresh(ctx context.Context, request Reques
 			job.RepositoryID = tracked.RepositoryID
 		}
 	}
-
-	return s.db.WithContext(ctx).Create(&job).Error
+	return job
 }
 
 type Bootstrapper interface {
@@ -176,33 +196,18 @@ func (w *Worker) resolveJobLocator(ctx context.Context, job database.RepositoryR
 	owner := strings.TrimSpace(job.Owner)
 	name := strings.TrimSpace(job.Name)
 
-	if job.TrackedRepositoryID != nil {
-		var tracked database.TrackedRepository
-		err := w.db.WithContext(ctx).First(&tracked, *job.TrackedRepositoryID).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", "", err
-		}
-		if err == nil {
-			if strings.TrimSpace(tracked.Owner) != "" {
-				owner = strings.TrimSpace(tracked.Owner)
-			}
-			if strings.TrimSpace(tracked.Name) != "" {
-				name = strings.TrimSpace(tracked.Name)
-			}
-		}
+	tracked, err := w.lookupTrackedRepositoryLocator(ctx, job.TrackedRepositoryID)
+	if err != nil {
+		return "", "", err
 	}
+	owner, name = coalesceJobLocator(owner, name, tracked.Owner, tracked.Name)
 
 	repo, err := resolveRepositoryForJob(ctx, w.db, job)
 	if err != nil {
 		return "", "", err
 	}
 	if repo != nil {
-		if strings.TrimSpace(repo.OwnerLogin) != "" {
-			owner = strings.TrimSpace(repo.OwnerLogin)
-		}
-		if strings.TrimSpace(repo.Name) != "" {
-			name = strings.TrimSpace(repo.Name)
-		}
+		owner, name = coalesceJobLocator(owner, name, repo.OwnerLogin, repo.Name)
 	}
 
 	if owner == "" || name == "" {
@@ -210,6 +215,32 @@ func (w *Worker) resolveJobLocator(ctx context.Context, job database.RepositoryR
 	}
 
 	return owner, name, nil
+}
+
+func (w *Worker) lookupTrackedRepositoryLocator(ctx context.Context, trackedRepositoryID *uint) (database.TrackedRepository, error) {
+	if trackedRepositoryID == nil {
+		return database.TrackedRepository{}, nil
+	}
+	var tracked database.TrackedRepository
+	err := w.db.WithContext(ctx).First(&tracked, *trackedRepositoryID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return database.TrackedRepository{}, nil
+	}
+	return tracked, err
+}
+
+func coalesceJobLocator(owner, name string, candidates ...string) (string, string) {
+	trimmed := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		trimmed = append(trimmed, strings.TrimSpace(candidate))
+	}
+	if len(trimmed) > 0 && trimmed[0] != "" {
+		owner = trimmed[0]
+	}
+	if len(trimmed) > 1 && trimmed[1] != "" {
+		name = trimmed[1]
+	}
+	return owner, name
 }
 
 func (w *Worker) claimNextJob(ctx context.Context) (database.RepositoryRefreshJob, bool, error) {
@@ -416,84 +447,114 @@ func UpsertTrackedRepositoryForWebhook(ctx context.Context, db *gorm.DB, owner, 
 }
 
 func ResolveTrackedRepository(ctx context.Context, db *gorm.DB, repositoryID *uint, fullName string) (*database.TrackedRepository, error) {
-	var (
-		byRepository *database.TrackedRepository
-		byFullName   *database.TrackedRepository
-	)
-
-	if repositoryID != nil {
-		var tracked database.TrackedRepository
-		err := db.WithContext(ctx).Where("repository_id = ?", *repositoryID).Order("id ASC").First(&tracked).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
-		}
-		if err == nil {
-			byRepository = &tracked
-		}
+	byRepository, err := trackedRepositoryByRepositoryID(ctx, db, repositoryID)
+	if err != nil {
+		return nil, err
 	}
-
-	fullName = strings.TrimSpace(fullName)
-	if fullName != "" {
-		var tracked database.TrackedRepository
-		err := db.WithContext(ctx).Where("full_name = ?", fullName).First(&tracked).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
-		}
-		if err == nil {
-			byFullName = &tracked
-		}
+	byFullName, err := trackedRepositoryByFullName(ctx, db, fullName)
+	if err != nil {
+		return nil, err
 	}
-
-	switch {
-	case byRepository == nil && byFullName == nil:
+	switch resolveTrackedRepositoryMode(byRepository, byFullName) {
+	case trackedRepositoryResolutionNone:
 		return nil, nil
-	case byRepository != nil && (byFullName == nil || byRepository.ID == byFullName.ID):
+	case trackedRepositoryResolutionRepository:
 		return byRepository, nil
-	case byRepository == nil:
+	case trackedRepositoryResolutionFullName:
 		return byFullName, nil
 	default:
-		if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			mergedUpdates := mergeTrackedRepositoryRows(*byRepository, *byFullName)
-			if err := tx.Model(&database.RepositoryRefreshJob{}).
-				Where("tracked_repository_id = ?", byFullName.ID).
-				Updates(map[string]any{
-					"tracked_repository_id": byRepository.ID,
-					"repository_id":         mergedUpdates["repository_id"],
-					"owner":                 mergedUpdates["owner"],
-					"name":                  mergedUpdates["name"],
-					"full_name":             mergedUpdates["full_name"],
-				}).Error; err != nil {
-				return err
-			}
-			if err := tx.Delete(&database.TrackedRepository{}, byFullName.ID).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&database.TrackedRepository{}).
-				Where("id = ?", byRepository.ID).
-				Updates(mergedUpdates).Error; err != nil {
-				return err
-			}
-			if err := tx.Model(&database.RepositoryRefreshJob{}).
-				Where("tracked_repository_id = ?", byRepository.ID).
-				Updates(map[string]any{
-					"repository_id": mergedUpdates["repository_id"],
-					"owner":         mergedUpdates["owner"],
-					"name":          mergedUpdates["name"],
-					"full_name":     mergedUpdates["full_name"],
-				}).Error; err != nil {
-				return err
-			}
-			return nil
-		}); err != nil {
+		if err := mergeTrackedRepositoryMatches(ctx, db, *byRepository, *byFullName); err != nil {
 			return nil, err
 		}
-
-		var stored database.TrackedRepository
-		if err := db.WithContext(ctx).First(&stored, byRepository.ID).Error; err != nil {
-			return nil, err
-		}
-		return &stored, nil
+		return reloadTrackedRepository(ctx, db, byRepository.ID)
 	}
+}
+
+type trackedRepositoryResolution string
+
+const (
+	trackedRepositoryResolutionNone       trackedRepositoryResolution = "none"
+	trackedRepositoryResolutionRepository trackedRepositoryResolution = "repository"
+	trackedRepositoryResolutionFullName   trackedRepositoryResolution = "full_name"
+	trackedRepositoryResolutionMerge      trackedRepositoryResolution = "merge"
+)
+
+func trackedRepositoryByRepositoryID(ctx context.Context, db *gorm.DB, repositoryID *uint) (*database.TrackedRepository, error) {
+	if repositoryID == nil {
+		return nil, nil
+	}
+	return firstTrackedRepositoryMatch(ctx, db, "repository_id = ?", *repositoryID)
+}
+
+func trackedRepositoryByFullName(ctx context.Context, db *gorm.DB, fullName string) (*database.TrackedRepository, error) {
+	fullName = strings.TrimSpace(fullName)
+	if fullName == "" {
+		return nil, nil
+	}
+	return firstTrackedRepositoryMatch(ctx, db, "full_name = ?", fullName)
+}
+
+func firstTrackedRepositoryMatch(ctx context.Context, db *gorm.DB, query string, args ...any) (*database.TrackedRepository, error) {
+	var tracked database.TrackedRepository
+	err := db.WithContext(ctx).Where(query, args...).Order("id ASC").First(&tracked).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &tracked, nil
+}
+
+func resolveTrackedRepositoryMode(byRepository, byFullName *database.TrackedRepository) trackedRepositoryResolution {
+	switch {
+	case byRepository == nil && byFullName == nil:
+		return trackedRepositoryResolutionNone
+	case byRepository != nil && (byFullName == nil || byRepository.ID == byFullName.ID):
+		return trackedRepositoryResolutionRepository
+	case byRepository == nil:
+		return trackedRepositoryResolutionFullName
+	default:
+		return trackedRepositoryResolutionMerge
+	}
+}
+
+func mergeTrackedRepositoryMatches(ctx context.Context, db *gorm.DB, byRepository, byFullName database.TrackedRepository) error {
+	mergedUpdates := mergeTrackedRepositoryRows(byRepository, byFullName)
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := updateRepositoryRefreshJobs(tx, byFullName.ID, byRepository.ID, mergedUpdates); err != nil {
+			return err
+		}
+		if err := tx.Delete(&database.TrackedRepository{}, byFullName.ID).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&database.TrackedRepository{}).
+			Where("id = ?", byRepository.ID).
+			Updates(mergedUpdates).Error; err != nil {
+			return err
+		}
+		return updateRepositoryRefreshJobs(tx, byRepository.ID, byRepository.ID, mergedUpdates)
+	})
+}
+
+func updateRepositoryRefreshJobs(tx *gorm.DB, fromTrackedRepositoryID, toTrackedRepositoryID uint, mergedUpdates map[string]any) error {
+	return tx.Model(&database.RepositoryRefreshJob{}).
+		Where("tracked_repository_id = ?", fromTrackedRepositoryID).
+		Updates(map[string]any{
+			"tracked_repository_id": toTrackedRepositoryID,
+			"repository_id":         mergedUpdates["repository_id"],
+			"owner":                 mergedUpdates["owner"],
+			"name":                  mergedUpdates["name"],
+			"full_name":             mergedUpdates["full_name"],
+		}).Error
+}
+
+func reloadTrackedRepository(ctx context.Context, db *gorm.DB, trackedRepositoryID uint) (*database.TrackedRepository, error) {
+	var stored database.TrackedRepository
+	if err := db.WithContext(ctx).First(&stored, trackedRepositoryID).Error; err != nil {
+		return nil, err
+	}
+	return &stored, nil
 }
 
 func mergeTrackedRepositoryRows(stable, current database.TrackedRepository) map[string]any {

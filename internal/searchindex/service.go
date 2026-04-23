@@ -47,102 +47,142 @@ func (s *Service) RebuildRepositoryByID(ctx context.Context, repositoryID uint) 
 	if err := s.markRebuildStarted(ctx, repositoryID, startedAt); err != nil {
 		return err
 	}
-
-	var issues []database.Issue
-	if err := s.db.WithContext(ctx).
-		Preload("Author").
-		Where("repository_id = ? AND is_pull_request = ?", repositoryID, false).
-		Find(&issues).Error; err != nil {
-		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
+	issues, pulls, issueComments, reviews, reviewComments, err := s.loadRebuildRepositoryData(ctx, repositoryID)
+	if err != nil {
+		return s.failRepositoryRebuild(ctx, repositoryID, err)
+	}
+	docs, sourceUpdatedAt := buildRepositoryDocuments(issues, pulls, issueComments, reviews, reviewComments)
+	if err := s.replaceRepositoryDocuments(ctx, repositoryID, docs); err != nil {
+		return s.failRepositoryRebuild(ctx, repositoryID, err)
+	}
+	if err := s.markRebuildSucceeded(ctx, repositoryID, time.Now().UTC(), sourceUpdatedAt); err != nil {
 		return err
 	}
+	return nil
+}
 
+func (s *Service) failRepositoryRebuild(ctx context.Context, repositoryID uint, err error) error {
+	_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
+	return err
+}
+
+func (s *Service) loadRebuildRepositoryData(ctx context.Context, repositoryID uint) ([]database.Issue, []database.PullRequest, []database.IssueComment, []database.PullRequestReview, []database.PullRequestReviewComment, error) {
+	issues, err := s.loadRebuildIssues(ctx, repositoryID)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	pulls, err := s.loadRebuildPulls(ctx, repositoryID)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	issueComments, err := s.loadRebuildIssueComments(ctx, repositoryID)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	reviews, err := s.loadRebuildReviews(ctx, repositoryID)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	reviewComments, err := s.loadRebuildReviewComments(ctx, repositoryID)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	return issues, pulls, issueComments, reviews, reviewComments, nil
+}
+
+func (s *Service) loadRebuildIssues(ctx context.Context, repositoryID uint) ([]database.Issue, error) {
+	var issues []database.Issue
+	err := s.db.WithContext(ctx).
+		Preload("Author").
+		Where("repository_id = ? AND is_pull_request = ?", repositoryID, false).
+		Find(&issues).Error
+	return issues, err
+}
+
+func (s *Service) loadRebuildPulls(ctx context.Context, repositoryID uint) ([]database.PullRequest, error) {
 	var pulls []database.PullRequest
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("Issue").
 		Preload("Issue.Author").
 		Where("repository_id = ?", repositoryID).
-		Find(&pulls).Error; err != nil {
-		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
-		return err
-	}
+		Find(&pulls).Error
+	return pulls, err
+}
 
+func (s *Service) loadRebuildIssueComments(ctx context.Context, repositoryID uint) ([]database.IssueComment, error) {
 	var issueComments []database.IssueComment
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("Author").
 		Preload("Issue").
 		Where("repository_id = ?", repositoryID).
-		Find(&issueComments).Error; err != nil {
-		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
-		return err
-	}
+		Find(&issueComments).Error
+	return issueComments, err
+}
 
+func (s *Service) loadRebuildReviews(ctx context.Context, repositoryID uint) ([]database.PullRequestReview, error) {
 	var reviews []database.PullRequestReview
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("Author").
 		Preload("PullRequest").
 		Preload("PullRequest.Issue").
 		Where("repository_id = ?", repositoryID).
-		Find(&reviews).Error; err != nil {
-		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
-		return err
-	}
+		Find(&reviews).Error
+	return reviews, err
+}
 
+func (s *Service) loadRebuildReviewComments(ctx context.Context, repositoryID uint) ([]database.PullRequestReviewComment, error) {
 	var reviewComments []database.PullRequestReviewComment
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Preload("Author").
 		Preload("PullRequest").
 		Preload("PullRequest.Issue").
 		Where("repository_id = ?", repositoryID).
-		Find(&reviewComments).Error; err != nil {
-		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
-		return err
-	}
+		Find(&reviewComments).Error
+	return reviewComments, err
+}
 
+func buildRepositoryDocuments(issues []database.Issue, pulls []database.PullRequest, issueComments []database.IssueComment, reviews []database.PullRequestReview, reviewComments []database.PullRequestReviewComment) ([]database.SearchDocument, time.Time) {
 	docs := make([]database.SearchDocument, 0, len(issues)+len(pulls)+len(issueComments)+len(reviews)+len(reviewComments))
 	var sourceUpdatedAt time.Time
 	for _, issue := range issues {
-		if doc, ok := buildIssueDocument(issue); ok {
-			docs = append(docs, doc)
-			if doc.ObjectUpdatedAt.After(sourceUpdatedAt) {
-				sourceUpdatedAt = doc.ObjectUpdatedAt
-			}
-		}
+		appendMaybeDocument(&docs, &sourceUpdatedAt, newMaybeDocument(buildIssueDocument(issue)))
 	}
 	for _, pull := range pulls {
-		if doc, ok := buildPullRequestDocument(pull); ok {
-			docs = append(docs, doc)
-			if doc.ObjectUpdatedAt.After(sourceUpdatedAt) {
-				sourceUpdatedAt = doc.ObjectUpdatedAt
-			}
-		}
+		appendMaybeDocument(&docs, &sourceUpdatedAt, newMaybeDocument(buildPullRequestDocument(pull)))
 	}
 	for _, comment := range issueComments {
-		if doc, ok := buildIssueCommentDocument(comment); ok {
-			docs = append(docs, doc)
-			if doc.ObjectUpdatedAt.After(sourceUpdatedAt) {
-				sourceUpdatedAt = doc.ObjectUpdatedAt
-			}
-		}
+		appendMaybeDocument(&docs, &sourceUpdatedAt, newMaybeDocument(buildIssueCommentDocument(comment)))
 	}
 	for _, review := range reviews {
-		if doc, ok := buildPullRequestReviewDocument(review); ok {
-			docs = append(docs, doc)
-			if doc.ObjectUpdatedAt.After(sourceUpdatedAt) {
-				sourceUpdatedAt = doc.ObjectUpdatedAt
-			}
-		}
+		appendMaybeDocument(&docs, &sourceUpdatedAt, newMaybeDocument(buildPullRequestReviewDocument(review)))
 	}
 	for _, comment := range reviewComments {
-		if doc, ok := buildPullRequestReviewCommentDocument(comment); ok {
-			docs = append(docs, doc)
-			if doc.ObjectUpdatedAt.After(sourceUpdatedAt) {
-				sourceUpdatedAt = doc.ObjectUpdatedAt
-			}
-		}
+		appendMaybeDocument(&docs, &sourceUpdatedAt, newMaybeDocument(buildPullRequestReviewCommentDocument(comment)))
 	}
+	return docs, sourceUpdatedAt
+}
 
-	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+type maybeDocument struct {
+	doc database.SearchDocument
+	ok  bool
+}
+
+func newMaybeDocument(doc database.SearchDocument, ok bool) maybeDocument {
+	return maybeDocument{doc: doc, ok: ok}
+}
+
+func appendMaybeDocument(docs *[]database.SearchDocument, sourceUpdatedAt *time.Time, doc maybeDocument) {
+	if !doc.ok {
+		return
+	}
+	*docs = append(*docs, doc.doc)
+	if doc.doc.ObjectUpdatedAt.After(*sourceUpdatedAt) {
+		*sourceUpdatedAt = doc.doc.ObjectUpdatedAt
+	}
+}
+
+func (s *Service) replaceRepositoryDocuments(ctx context.Context, repositoryID uint, docs []database.SearchDocument) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("repository_id = ?", repositoryID).Delete(&database.SearchDocument{}).Error; err != nil {
 			return err
 		}
@@ -150,15 +190,7 @@ func (s *Service) RebuildRepositoryByID(ctx context.Context, repositoryID uint) 
 			return nil
 		}
 		return tx.CreateInBatches(docs, 200).Error
-	}); err != nil {
-		_ = s.markRebuildFailed(ctx, repositoryID, time.Now().UTC(), err)
-		return err
-	}
-
-	if err := s.markRebuildSucceeded(ctx, repositoryID, time.Now().UTC(), sourceUpdatedAt); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 func (s *Service) UpsertIssue(ctx context.Context, issue database.Issue) error {
@@ -222,7 +254,7 @@ func (s *Service) SearchMentions(ctx context.Context, repositoryID uint, request
 	if err != nil {
 		return nil, err
 	}
-	if request.Mode == ModeFTS && s.db.Dialector.Name() == "postgres" {
+	if request.Mode == ModeFTS && s.db.Name() == "postgres" {
 		return s.searchPostgres(ctx, repositoryID, request, documentTypes)
 	}
 	return s.searchFallback(ctx, repositoryID, request, documentTypes)
@@ -379,36 +411,19 @@ func normalizeMentionRequest(request MentionRequest) (MentionRequest, []string, 
 		return MentionRequest{}, nil, invalidMentionRequest("query is required")
 	}
 
-	request.Mode = strings.TrimSpace(request.Mode)
-	if request.Mode == "" {
-		request.Mode = ModeFTS
+	mode, err := normalizeMentionMode(request.Mode)
+	if err != nil {
+		return MentionRequest{}, nil, err
 	}
-	switch request.Mode {
-	case ModeFTS, ModeFuzzy, ModeRegex:
-	default:
-		return MentionRequest{}, nil, invalidMentionRequest("mode must be fts, fuzzy, or regex")
+	state, err := normalizeMentionState(request.State)
+	if err != nil {
+		return MentionRequest{}, nil, err
 	}
-
-	request.State = strings.TrimSpace(strings.ToLower(request.State))
-	if request.State == "" {
-		request.State = "all"
-	}
-	switch request.State {
-	case "all", "open", "closed":
-	default:
-		return MentionRequest{}, nil, invalidMentionRequest("state must be open, closed, or all")
-	}
-
+	request.Mode = mode
+	request.State = state
 	request.Author = strings.TrimSpace(request.Author)
-	if request.Limit <= 0 {
-		request.Limit = 20
-	}
-	if request.Limit > 100 {
-		request.Limit = 100
-	}
-	if request.Page <= 0 {
-		request.Page = 1
-	}
+	request.Limit = clampMentionLimit(request.Limit)
+	request.Page = clampMentionPage(request.Page)
 
 	documentTypes, err := normalizeScopes(request.Scopes)
 	if err != nil {
@@ -420,13 +435,7 @@ func normalizeMentionRequest(request MentionRequest) (MentionRequest, []string, 
 
 func normalizeScopes(scopes []string) ([]string, error) {
 	if len(scopes) == 0 {
-		return []string{
-			DocumentTypeIssue,
-			DocumentTypePullRequest,
-			DocumentTypeIssueComment,
-			DocumentTypePullRequestReview,
-			DocumentTypePullRequestReviewComment,
-		}, nil
+		return defaultMentionDocumentTypes(), nil
 	}
 
 	documentTypes := make([]string, 0, len(scopes))
@@ -436,20 +445,9 @@ func normalizeScopes(scopes []string) ([]string, error) {
 		if scope == "" {
 			continue
 		}
-		var documentType string
-		switch scope {
-		case ScopeIssues:
-			documentType = DocumentTypeIssue
-		case ScopePullRequests:
-			documentType = DocumentTypePullRequest
-		case ScopeIssueComments:
-			documentType = DocumentTypeIssueComment
-		case ScopePullRequestReviews:
-			documentType = DocumentTypePullRequestReview
-		case ScopePullRequestReviewComments:
-			documentType = DocumentTypePullRequestReviewComment
-		default:
-			return nil, invalidMentionRequest("unsupported scope")
+		documentType, err := documentTypeForScope(scope)
+		if err != nil {
+			return nil, err
 		}
 		if _, ok := seen[documentType]; ok {
 			continue
@@ -461,6 +459,77 @@ func normalizeScopes(scopes []string) ([]string, error) {
 		return nil, invalidMentionRequest("at least one valid scope is required")
 	}
 	return documentTypes, nil
+}
+
+func normalizeMentionMode(mode string) (string, error) {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		mode = ModeFTS
+	}
+	switch mode {
+	case ModeFTS, ModeFuzzy, ModeRegex:
+		return mode, nil
+	default:
+		return "", invalidMentionRequest("mode must be fts, fuzzy, or regex")
+	}
+}
+
+func normalizeMentionState(state string) (string, error) {
+	state = strings.TrimSpace(strings.ToLower(state))
+	if state == "" {
+		state = "all"
+	}
+	switch state {
+	case "all", "open", "closed":
+		return state, nil
+	default:
+		return "", invalidMentionRequest("state must be open, closed, or all")
+	}
+}
+
+func clampMentionLimit(limit int) int {
+	switch {
+	case limit <= 0:
+		return 20
+	case limit > 100:
+		return 100
+	default:
+		return limit
+	}
+}
+
+func clampMentionPage(page int) int {
+	if page <= 0 {
+		return 1
+	}
+	return page
+}
+
+func defaultMentionDocumentTypes() []string {
+	return []string{
+		DocumentTypeIssue,
+		DocumentTypePullRequest,
+		DocumentTypeIssueComment,
+		DocumentTypePullRequestReview,
+		DocumentTypePullRequestReviewComment,
+	}
+}
+
+func documentTypeForScope(scope string) (string, error) {
+	switch scope {
+	case ScopeIssues:
+		return DocumentTypeIssue, nil
+	case ScopePullRequests:
+		return DocumentTypePullRequest, nil
+	case ScopeIssueComments:
+		return DocumentTypeIssueComment, nil
+	case ScopePullRequestReviews:
+		return DocumentTypePullRequestReview, nil
+	case ScopePullRequestReviewComments:
+		return DocumentTypePullRequestReviewComment, nil
+	default:
+		return "", invalidMentionRequest("unsupported scope")
+	}
 }
 
 func scopesFromDocumentTypes(documentTypes []string) []string {
@@ -729,35 +798,42 @@ func fuzzyFieldScore(text, query string) float64 {
 		return 0
 	}
 	best := trigramSimilarity(normalizedQuery, normalizedText)
+	best = bestFuzzyWindowScore(normalizedText, normalizedQuery, best)
+	return best
+}
+
+func bestFuzzyWindowScore(normalizedText, normalizedQuery string, best float64) float64 {
 	textTokens := strings.Fields(normalizedText)
-	queryTokens := strings.Fields(normalizedQuery)
-	windowSize := len(queryTokens)
-	if windowSize <= 0 {
-		windowSize = 1
+	if len(textTokens) == 0 {
+		return best
 	}
-	if len(textTokens) > 0 {
-		minWindow := windowSize - 1
-		if minWindow < 1 {
-			minWindow = 1
-		}
-		maxWindow := windowSize + 2
-		if maxWindow < 1 {
-			maxWindow = 1
-		}
-		for size := minWindow; size <= maxWindow; size++ {
-			if size > len(textTokens) {
-				break
-			}
-			for i := 0; i+size <= len(textTokens); i++ {
-				candidate := strings.Join(textTokens[i:i+size], " ")
-				score := trigramSimilarity(normalizedQuery, candidate)
-				if score > best {
-					best = score
-				}
+	for _, size := range fuzzyWindowSizes(normalizedQuery, len(textTokens)) {
+		for i := 0; i+size <= len(textTokens); i++ {
+			candidate := strings.Join(textTokens[i:i+size], " ")
+			score := trigramSimilarity(normalizedQuery, candidate)
+			if score > best {
+				best = score
 			}
 		}
 	}
 	return best
+}
+
+func fuzzyWindowSizes(normalizedQuery string, textTokenCount int) []int {
+	windowSize := len(strings.Fields(normalizedQuery))
+	if windowSize <= 0 {
+		windowSize = 1
+	}
+	minWindow := max(windowSize-1, 1)
+	maxWindow := max(windowSize+2, 1)
+	sizes := make([]int, 0, maxWindow-minWindow+1)
+	for size := minWindow; size <= maxWindow; size++ {
+		if size > textTokenCount {
+			break
+		}
+		sizes = append(sizes, size)
+	}
+	return sizes
 }
 
 func buildExcerpt(text string, request MentionRequest, re *regexp.Regexp) string {
@@ -766,35 +842,7 @@ func buildExcerpt(text string, request MentionRequest, re *regexp.Regexp) string
 		return ""
 	}
 	runes := []rune(text)
-	start := 0
-
-	switch request.Mode {
-	case ModeRegex:
-		if re != nil {
-			if loc := re.FindStringIndex(text); loc != nil {
-				start = len([]rune(text[:loc[0]]))
-			}
-		}
-	case ModeFTS, ModeFuzzy:
-		needle := strings.TrimSpace(request.Query)
-		if needle != "" {
-			lowerText := strings.ToLower(text)
-			lowerNeedle := strings.ToLower(needle)
-			if idx := strings.Index(lowerText, lowerNeedle); idx >= 0 {
-				start = len([]rune(text[:idx]))
-			} else {
-				for _, token := range strings.Fields(normalizeSearchText(needle)) {
-					if token == "" {
-						continue
-					}
-					if idx := strings.Index(lowerText, token); idx >= 0 {
-						start = len([]rune(text[:idx]))
-						break
-					}
-				}
-			}
-		}
-	}
+	start := excerptStart(text, request, re)
 
 	const excerptLength = 160
 	if len(runes) <= excerptLength {
@@ -817,6 +865,49 @@ func buildExcerpt(text string, request MentionRequest, re *regexp.Regexp) string
 		excerpt += "..."
 	}
 	return excerpt
+}
+
+func excerptStart(text string, request MentionRequest, re *regexp.Regexp) int {
+	switch request.Mode {
+	case ModeRegex:
+		return regexExcerptStart(text, re)
+	case ModeFTS, ModeFuzzy:
+		return queryExcerptStart(text, request.Query)
+	default:
+		return 0
+	}
+}
+
+func regexExcerptStart(text string, re *regexp.Regexp) int {
+	if re == nil {
+		return 0
+	}
+	loc := re.FindStringIndex(text)
+	if loc == nil {
+		return 0
+	}
+	return len([]rune(text[:loc[0]]))
+}
+
+func queryExcerptStart(text, query string) int {
+	needle := strings.TrimSpace(query)
+	if needle == "" {
+		return 0
+	}
+	lowerText := strings.ToLower(text)
+	lowerNeedle := strings.ToLower(needle)
+	if idx := strings.Index(lowerText, lowerNeedle); idx >= 0 {
+		return len([]rune(text[:idx]))
+	}
+	for _, token := range strings.Fields(normalizeSearchText(needle)) {
+		if token == "" {
+			continue
+		}
+		if idx := strings.Index(lowerText, token); idx >= 0 {
+			return len([]rune(text[:idx]))
+		}
+	}
+	return 0
 }
 
 func normalizeSearchText(text string) string {
@@ -947,15 +1038,4 @@ func trigramSet(text string) map[string]struct{} {
 		out[string(runes[i:i+3])] = struct{}{}
 	}
 	return out
-}
-
-func fuzzyThreshold(normalized string) float64 {
-	switch {
-	case len(normalized) <= 4:
-		return 0.55
-	case len(normalized) <= 8:
-		return 0.4
-	default:
-		return 0.28
-	}
 }

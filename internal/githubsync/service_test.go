@@ -24,30 +24,7 @@ func TestBootstrapRepositoryAndServeGitHubLikeEndpoints(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, database.ApplyTestSchema(db))
 
-	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/acme/widgets":
-			writeJSON(t, w, repoFixture())
-		case "/repos/acme/widgets/issues":
-			writeJSON(t, w, issuesFixture())
-		case "/repos/acme/widgets/issues/1":
-			writeJSON(t, w, issuesFixture()[1])
-		case "/repos/acme/widgets/issues/2":
-			writeJSON(t, w, issuesFixture()[0])
-		case "/repos/acme/widgets/pulls":
-			writeJSON(t, w, pullsFixture())
-		case "/repos/acme/widgets/pulls/2":
-			writeJSON(t, w, pullsFixture()[0])
-		case "/repos/acme/widgets/issues/comments":
-			writeJSON(t, w, issueCommentsFixture())
-		case "/repos/acme/widgets/pulls/2/reviews":
-			writeJSON(t, w, pullReviewsFixture())
-		case "/repos/acme/widgets/pulls/2/comments":
-			writeJSON(t, w, pullReviewCommentsFixture())
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+	githubServer := newBootstrapGitHubServer(t)
 	t.Cleanup(githubServer.Close)
 
 	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
@@ -132,30 +109,7 @@ func TestBootstrapRepositoryNormalizesWebhookAliasSyncMode(t *testing.T) {
 		Enabled:  true,
 	}).Error)
 
-	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/acme/widgets":
-			writeJSON(t, w, repoFixture())
-		case "/repos/acme/widgets/issues":
-			writeJSON(t, w, issuesFixture())
-		case "/repos/acme/widgets/issues/1":
-			writeJSON(t, w, issuesFixture()[1])
-		case "/repos/acme/widgets/issues/2":
-			writeJSON(t, w, issuesFixture()[0])
-		case "/repos/acme/widgets/pulls":
-			writeJSON(t, w, pullsFixture())
-		case "/repos/acme/widgets/pulls/2":
-			writeJSON(t, w, pullsFixture()[0])
-		case "/repos/acme/widgets/issues/comments":
-			writeJSON(t, w, issueCommentsFixture())
-		case "/repos/acme/widgets/pulls/2/reviews":
-			writeJSON(t, w, pullReviewsFixture())
-		case "/repos/acme/widgets/pulls/2/comments":
-			writeJSON(t, w, pullReviewCommentsFixture())
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+	githubServer := newBootstrapGitHubServer(t)
 	t.Cleanup(githubServer.Close)
 
 	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
@@ -167,6 +121,40 @@ func TestBootstrapRepositoryNormalizesWebhookAliasSyncMode(t *testing.T) {
 	require.True(t, tracked.WebhookProjectionEnabled)
 	require.True(t, tracked.AllowManualBackfill)
 	require.Equal(t, "backfilled", tracked.PullsCompleteness)
+}
+
+func newBootstrapGitHubServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handleBootstrapRepositoryRoute(t, w, r) {
+			return
+		}
+		http.NotFound(w, r)
+	}))
+}
+
+func handleBootstrapRepositoryRoute(t *testing.T, w http.ResponseWriter, r *http.Request) bool {
+	if payload, ok := bootstrapPayload(r.URL.Path); ok {
+		writeJSON(t, w, payload)
+		return true
+	}
+	return false
+}
+
+func bootstrapPayload(path string) (any, bool) {
+	payloads := map[string]any{
+		"/repos/acme/widgets":                  repoFixture(),
+		"/repos/acme/widgets/issues":           issuesFixture(),
+		"/repos/acme/widgets/issues/1":         issuesFixture()[1],
+		"/repos/acme/widgets/issues/2":         issuesFixture()[0],
+		"/repos/acme/widgets/pulls":            pullsFixture(),
+		"/repos/acme/widgets/pulls/2":          pullsFixture()[0],
+		"/repos/acme/widgets/issues/comments":  issueCommentsFixture(),
+		"/repos/acme/widgets/pulls/2/reviews":  pullReviewsFixture(),
+		"/repos/acme/widgets/pulls/2/comments": pullReviewCommentsFixture(),
+	}
+	payload, ok := payloads[path]
+	return payload, ok
 }
 
 func TestUpsertRepositoryTracksRenameByGitHubID(t *testing.T) {

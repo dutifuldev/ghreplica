@@ -41,26 +41,45 @@ func (s *Server) handleBatchReadObjects(c echo.Context) error {
 		}
 		return err
 	}
+	input, issueNumbers, pullNumbers, err := parseBatchObjectReadRequest(c)
+	if err != nil {
+		return err
+	}
+	issuesByNumber, err := s.loadIssuesByNumber(c.Request().Context(), repoID, issueNumbers)
+	if err != nil {
+		return err
+	}
+	pullsByNumber, err := s.loadPullRequestsByNumber(c.Request().Context(), repoID, pullNumbers)
+	if err != nil {
+		return err
+	}
+	results := buildBatchObjectReadResults(input.Objects, issuesByNumber, pullsByNumber)
+	return c.JSON(http.StatusOK, batchObjectReadResponse{Results: results})
+}
 
+func parseBatchObjectReadRequest(c echo.Context) (batchObjectReadRequest, []int, []int, error) {
 	var input batchObjectReadRequest
 	if err := c.Bind(&input); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		return batchObjectReadRequest{}, nil, nil, echo.NewHTTPError(http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
 	}
-
 	if len(input.Objects) == 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Objects are required"})
+		return batchObjectReadRequest{}, nil, nil, echo.NewHTTPError(http.StatusBadRequest, map[string]string{"message": "Objects are required"})
 	}
 	if len(input.Objects) > maxBatchObjectRead {
-		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Too many objects"})
+		return batchObjectReadRequest{}, nil, nil, echo.NewHTTPError(http.StatusBadRequest, map[string]string{"message": "Too many objects"})
 	}
+	issueNumbers, pullNumbers, err := collectBatchObjectNumbers(input.Objects)
+	return input, issueNumbers, pullNumbers, err
+}
 
-	issueNumbers := make([]int, 0, len(input.Objects))
+func collectBatchObjectNumbers(objects []batchObjectRef) ([]int, []int, error) {
+	issueNumbers := make([]int, 0, len(objects))
 	issueSeen := map[int]struct{}{}
-	pullNumbers := make([]int, 0, len(input.Objects))
+	pullNumbers := make([]int, 0, len(objects))
 	pullSeen := map[int]struct{}{}
-	for _, object := range input.Objects {
+	for _, object := range objects {
 		if object.Number <= 0 {
-			return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid object number"})
+			return nil, nil, echo.NewHTTPError(http.StatusBadRequest, map[string]string{"message": "Invalid object number"})
 		}
 		switch object.Type {
 		case "issue":
@@ -74,43 +93,36 @@ func (s *Server) handleBatchReadObjects(c echo.Context) error {
 				pullNumbers = append(pullNumbers, object.Number)
 			}
 		default:
-			return c.JSON(http.StatusBadRequest, map[string]string{"message": "Unsupported object type"})
+			return nil, nil, echo.NewHTTPError(http.StatusBadRequest, map[string]string{"message": "Unsupported object type"})
 		}
 	}
+	return issueNumbers, pullNumbers, nil
+}
 
-	issuesByNumber, err := s.loadIssuesByNumber(c.Request().Context(), repoID, issueNumbers)
-	if err != nil {
-		return err
-	}
-	pullsByNumber, err := s.loadPullRequestsByNumber(c.Request().Context(), repoID, pullNumbers)
-	if err != nil {
-		return err
-	}
-
-	results := make([]batchObjectReadResult, 0, len(input.Objects))
-	for _, object := range input.Objects {
+func buildBatchObjectReadResults(objects []batchObjectRef, issuesByNumber, pullsByNumber map[int]json.RawMessage) []batchObjectReadResult {
+	results := make([]batchObjectReadResult, 0, len(objects))
+	for _, object := range objects {
 		result := batchObjectReadResult{
 			Type:   object.Type,
 			Number: object.Number,
 		}
 		switch object.Type {
 		case "issue":
-			raw, ok := issuesByNumber[object.Number]
-			if ok {
-				result.Found = true
-				result.Object = raw
-			}
+			assignBatchObjectPayload(&result, issuesByNumber[object.Number])
 		case "pull_request":
-			raw, ok := pullsByNumber[object.Number]
-			if ok {
-				result.Found = true
-				result.Object = raw
-			}
+			assignBatchObjectPayload(&result, pullsByNumber[object.Number])
 		}
 		results = append(results, result)
 	}
+	return results
+}
 
-	return c.JSON(http.StatusOK, batchObjectReadResponse{Results: results})
+func assignBatchObjectPayload(result *batchObjectReadResult, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	result.Found = true
+	result.Object = raw
 }
 
 func (s *Server) loadIssuesByNumber(ctx context.Context, repositoryID uint, numbers []int) (map[int]json.RawMessage, error) {

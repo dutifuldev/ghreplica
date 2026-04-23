@@ -435,76 +435,96 @@ func (s *Service) GetPullRequestChangeStatus(ctx context.Context, owner, repo st
 		PullRequestNumber: number,
 	}
 
-	var pull database.PullRequest
-	err = s.db.WithContext(ctx).
-		Where("repository_id = ? AND number = ?", repository.ID, number).
-		First(&pull).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.applyPullRequestCoreStatus(ctx, repository.ID, number, &status); err != nil {
 		return gitindex.PullRequestStatus{}, err
 	}
-	if err == nil {
-		status.State = pull.State
-		status.Draft = pull.Draft
-	}
-
-	var snapshot database.PullRequestChangeSnapshot
-	err = s.db.WithContext(ctx).
-		Where("repository_id = ? AND pull_request_number = ?", repository.ID, number).
-		First(&snapshot).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := s.applyPullRequestSnapshotStatus(ctx, repository.ID, number, &status); err != nil {
 		return gitindex.PullRequestStatus{}, err
 	}
-	if err == nil {
-		status.Indexed = true
-		status.HeadSHA = snapshot.HeadSHA
-		status.BaseSHA = snapshot.BaseSHA
-		status.MergeBaseSHA = snapshot.MergeBaseSHA
-		status.BaseRef = snapshot.BaseRef
-		status.IndexedAs = snapshot.IndexedAs
-		status.IndexFreshness = snapshot.IndexFreshness
-		status.LastIndexedAt = snapshot.LastIndexedAt
-		status.ChangedFiles = snapshot.PathCount
-		status.IndexedFileCount = snapshot.IndexedFileCount
-		status.PathOnlyFileCount = maxInt(0, snapshot.PathCount-snapshot.IndexedFileCount)
-		status.HunkCount = snapshot.HunkCount
-		status.Additions = snapshot.Additions
-		status.Deletions = snapshot.Deletions
-		status.PatchBytes = snapshot.PatchBytes
-
-		var skipped int64
-		if err := s.db.WithContext(ctx).
-			Model(&database.PullRequestChangeFile{}).
-			Where("snapshot_id = ? AND indexed_as <> ?", snapshot.ID, "full").
-			Count(&skipped).Error; err != nil {
-			return gitindex.PullRequestStatus{}, err
-		}
-		status.SkippedFileCount = int(skipped)
-	}
-
-	state, err := s.repoChangeStateOptional(ctx, repository.ID)
-	if err != nil {
+	if err := s.applyPullRequestRepoState(ctx, repository.ID, &status); err != nil {
 		return gitindex.PullRequestStatus{}, err
-	}
-	if state != nil {
-		now := time.Now().UTC()
-		status.BackfillInProgress = leaseIsActive(now, state.BackfillLeaseHeartbeatAt, state.BackfillLeaseUntil)
-		status.InventoryNeedsRefresh = state.Dirty
-		status.LastError = state.LastError
 	}
 	return status, nil
+}
+
+func (s *Service) applyPullRequestCoreStatus(ctx context.Context, repositoryID uint, number int, status *gitindex.PullRequestStatus) error {
+	var pull database.PullRequest
+	err := s.db.WithContext(ctx).
+		Where("repository_id = ? AND number = ?", repositoryID, number).
+		First(&pull).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	status.State = pull.State
+	status.Draft = pull.Draft
+	return nil
+}
+
+func (s *Service) applyPullRequestSnapshotStatus(ctx context.Context, repositoryID uint, number int, status *gitindex.PullRequestStatus) error {
+	var snapshot database.PullRequestChangeSnapshot
+	err := s.db.WithContext(ctx).
+		Where("repository_id = ? AND pull_request_number = ?", repositoryID, number).
+		First(&snapshot).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	status.Indexed = true
+	status.HeadSHA = snapshot.HeadSHA
+	status.BaseSHA = snapshot.BaseSHA
+	status.MergeBaseSHA = snapshot.MergeBaseSHA
+	status.BaseRef = snapshot.BaseRef
+	status.IndexedAs = snapshot.IndexedAs
+	status.IndexFreshness = snapshot.IndexFreshness
+	status.LastIndexedAt = snapshot.LastIndexedAt
+	status.ChangedFiles = snapshot.PathCount
+	status.IndexedFileCount = snapshot.IndexedFileCount
+	status.PathOnlyFileCount = maxInt(0, snapshot.PathCount-snapshot.IndexedFileCount)
+	status.HunkCount = snapshot.HunkCount
+	status.Additions = snapshot.Additions
+	status.Deletions = snapshot.Deletions
+	status.PatchBytes = snapshot.PatchBytes
+
+	skipped, err := s.countSkippedSnapshotFiles(ctx, snapshot.ID)
+	if err != nil {
+		return err
+	}
+	status.SkippedFileCount = skipped
+	return nil
+}
+
+func (s *Service) countSkippedSnapshotFiles(ctx context.Context, snapshotID uint) (int, error) {
+	var skipped int64
+	err := s.db.WithContext(ctx).
+		Model(&database.PullRequestChangeFile{}).
+		Where("snapshot_id = ? AND indexed_as <> ?", snapshotID, "full").
+		Count(&skipped).Error
+	return int(skipped), err
+}
+
+func (s *Service) applyPullRequestRepoState(ctx context.Context, repositoryID uint, status *gitindex.PullRequestStatus) error {
+	state, err := s.repoChangeStateOptional(ctx, repositoryID)
+	if err != nil || state == nil {
+		return err
+	}
+	now := time.Now().UTC()
+	status.BackfillInProgress = leaseIsActive(now, state.BackfillLeaseHeartbeatAt, state.BackfillLeaseUntil)
+	status.InventoryNeedsRefresh = state.Dirty
+	status.LastError = state.LastError
+	return nil
 }
 
 func (s *Service) BackfillOpenPullRequests(ctx context.Context, owner, repo string, state database.RepoChangeSyncState, options RepoBackfillOptions) (RepoBackfillResult, error) {
 	if s.git == nil {
 		return RepoBackfillResult{}, errors.New("git index service is not configured")
 	}
-	if options.MaxPRs <= 0 {
-		options.MaxPRs = 25
-	}
-	if options.MaxRuntime <= 0 {
-		options.MaxRuntime = 3 * time.Minute
-	}
-
+	options = normalizeBackfillOptions(options)
 	repository, err := findRepositoryByName(ctx, s.db, owner, repo)
 	if err != nil {
 		return RepoBackfillResult{}, err
@@ -512,75 +532,116 @@ func (s *Service) BackfillOpenPullRequests(ctx context.Context, owner, repo stri
 	if state.BackfillGeneration <= 0 {
 		return RepoBackfillResult{}, nil
 	}
-
 	candidates, err := s.listBackfillCandidatesFromInventory(ctx, repository.ID, state.BackfillGeneration, state.OpenPRCursorUpdatedAt, state.OpenPRCursorNumber, options.MaxPRs)
 	if err != nil {
 		return RepoBackfillResult{}, err
 	}
-	stateCounts, err := s.repoChangeStateByRepositoryID(ctx, repository.ID)
+	result, err := s.newBackfillResult(ctx, repository.ID)
 	if err != nil {
 		return RepoBackfillResult{}, err
 	}
-	result := RepoBackfillResult{
+	deadline := time.Now().UTC().Add(options.MaxRuntime)
+	lastProcessed, err := s.processBackfillCandidates(ctx, owner, repo, repository, state.ID, options.MaxPRs, deadline, candidates, &result)
+	if err != nil {
+		return RepoBackfillResult{}, err
+	}
+	if err := s.finalizeBackfillCursor(ctx, repository.ID, state.BackfillGeneration, lastProcessed, &result); err != nil {
+		return RepoBackfillResult{}, err
+	}
+	return s.refreshBackfillResultCounts(ctx, repository.ID, result)
+}
+
+func normalizeBackfillOptions(options RepoBackfillOptions) RepoBackfillOptions {
+	if options.MaxPRs <= 0 {
+		options.MaxPRs = 25
+	}
+	if options.MaxRuntime <= 0 {
+		options.MaxRuntime = 3 * time.Minute
+	}
+	return options
+}
+
+func (s *Service) newBackfillResult(ctx context.Context, repositoryID uint) (RepoBackfillResult, error) {
+	stateCounts, err := s.repoChangeStateByRepositoryID(ctx, repositoryID)
+	if err != nil {
+		return RepoBackfillResult{}, err
+	}
+	return RepoBackfillResult{
 		OpenPRTotal:   stateCounts.OpenPRTotal,
 		OpenPRCurrent: stateCounts.OpenPRCurrent,
 		OpenPRStale:   stateCounts.OpenPRStale,
 		OpenPRMissing: maxInt(0, stateCounts.OpenPRTotal-stateCounts.OpenPRCurrent-stateCounts.OpenPRStale),
-	}
-	deadline := time.Now().UTC().Add(options.MaxRuntime)
+	}, nil
+}
+
+func (s *Service) processBackfillCandidates(ctx context.Context, owner, repo string, repository database.Repository, stateID uint, maxPRs int, deadline time.Time, candidates []backfillCandidate, result *RepoBackfillResult) (*database.RepoOpenPullInventory, error) {
 	var lastProcessed *database.RepoOpenPullInventory
 	for _, candidate := range candidates {
-		if result.ProcessedPRs >= options.MaxPRs || time.Now().UTC().After(deadline) {
+		if backfillLoopDone(*result, maxPRs, deadline) {
 			break
 		}
-		result.ProcessedPRs++
-		newFreshness := candidate.inventory.FreshnessState
-		updatedInventory := candidate.inventory
-		pull, err := s.syncPullRequestChangeOnly(ctx, owner, repo, repository, candidate.inventory.PullRequestNumber)
+		updatedInventory, freshness, err := s.processBackfillCandidate(ctx, owner, repo, repository, candidate, result)
 		if err != nil {
-			result.FailedPRs++
-			if strings.TrimSpace(newFreshness) == "" {
-				newFreshness = "failed"
-			}
-		} else {
-			result.IndexedPRs++
-			updatedInventory = inventoryFromPull(repository.ID, pull)
-			updatedInventory.Generation = candidate.inventory.Generation
-			var freshnessErr error
-			newFreshness, freshnessErr = s.reconcileInventoryFreshness(ctx, repository.ID, updatedInventory)
-			if freshnessErr != nil {
-				return RepoBackfillResult{}, freshnessErr
-			}
+			return nil, err
 		}
-		if err := s.advanceBackfillProgress(ctx, state.ID, updatedInventory, newFreshness); err != nil {
-			return RepoBackfillResult{}, err
+		if err := s.advanceBackfillProgress(ctx, stateID, updatedInventory, freshness); err != nil {
+			return nil, err
 		}
 		candidateCopy := updatedInventory
 		lastProcessed = &candidateCopy
 	}
+	return lastProcessed, nil
+}
 
-	if lastProcessed != nil {
-		more, err := s.hasBackfillCandidatesAfterCursor(ctx, repository.ID, state.BackfillGeneration, lastProcessed.GitHubUpdatedAt, lastProcessed.PullRequestNumber)
-		if err != nil {
-			return RepoBackfillResult{}, err
+func backfillLoopDone(result RepoBackfillResult, maxPRs int, deadline time.Time) bool {
+	return result.ProcessedPRs >= maxPRs || time.Now().UTC().After(deadline)
+}
+
+func (s *Service) processBackfillCandidate(ctx context.Context, owner, repo string, repository database.Repository, candidate backfillCandidate, result *RepoBackfillResult) (database.RepoOpenPullInventory, string, error) {
+	result.ProcessedPRs++
+	newFreshness := candidate.inventory.FreshnessState
+	updatedInventory := candidate.inventory
+	pull, err := s.syncPullRequestChangeOnly(ctx, owner, repo, repository, candidate.inventory.PullRequestNumber)
+	if err != nil {
+		result.FailedPRs++
+		if strings.TrimSpace(newFreshness) == "" {
+			newFreshness = "failed"
 		}
-		if more {
-			result.Completed = false
-			result.NextCursorNum = intPtr(lastProcessed.PullRequestNumber)
-			nextTime := lastProcessed.GitHubUpdatedAt.UTC()
-			result.NextCursorTime = &nextTime
-		} else {
-			result.Completed = true
-		}
-	} else {
-		any, err := s.hasAnyBackfillCandidates(ctx, repository.ID, state.BackfillGeneration)
+		return updatedInventory, newFreshness, nil
+	}
+	result.IndexedPRs++
+	updatedInventory = inventoryFromPull(repository.ID, pull)
+	updatedInventory.Generation = candidate.inventory.Generation
+	newFreshness, err = s.reconcileInventoryFreshness(ctx, repository.ID, updatedInventory)
+	return updatedInventory, newFreshness, err
+}
+
+func (s *Service) finalizeBackfillCursor(ctx context.Context, repositoryID uint, generation int, lastProcessed *database.RepoOpenPullInventory, result *RepoBackfillResult) error {
+	if lastProcessed == nil {
+		any, err := s.hasAnyBackfillCandidates(ctx, repositoryID, generation)
 		if err != nil {
-			return RepoBackfillResult{}, err
+			return err
 		}
 		result.Completed = !any
+		return nil
 	}
+	more, err := s.hasBackfillCandidatesAfterCursor(ctx, repositoryID, generation, lastProcessed.GitHubUpdatedAt, lastProcessed.PullRequestNumber)
+	if err != nil {
+		return err
+	}
+	if more {
+		result.Completed = false
+		result.NextCursorNum = intPtr(lastProcessed.PullRequestNumber)
+		nextTime := lastProcessed.GitHubUpdatedAt.UTC()
+		result.NextCursorTime = &nextTime
+		return nil
+	}
+	result.Completed = true
+	return nil
+}
 
-	finalState, err := s.repoChangeStateByRepositoryID(ctx, repository.ID)
+func (s *Service) refreshBackfillResultCounts(ctx context.Context, repositoryID uint, result RepoBackfillResult) (RepoBackfillResult, error) {
+	finalState, err := s.repoChangeStateByRepositoryID(ctx, repositoryID)
 	if err != nil {
 		return RepoBackfillResult{}, err
 	}
@@ -666,32 +727,56 @@ func (w *ChangeSyncWorker) processTargetedRefreshBurst(ctx context.Context) (boo
 }
 
 func (w *ChangeSyncWorker) nextRepoWork(ctx context.Context) (changeSyncRepoWorkKind, error) {
-	if _, ok, err := w.pickRecentPRRepairState(ctx); err != nil {
-		return changeSyncRepoWorkNone, err
-	} else if ok {
-		return changeSyncRepoWorkRecentRepair, nil
-	}
-	if _, ok, err := w.pickFullHistoryRepairState(ctx, 0); err != nil {
-		return changeSyncRepoWorkNone, err
-	} else if ok {
-		return changeSyncRepoWorkFullHistoryRepair, nil
-	}
-	if _, ok, err := w.pickInventoryScanState(ctx, false); err != nil {
-		return changeSyncRepoWorkNone, err
-	} else if ok {
-		return changeSyncRepoWorkInitialInventory, nil
-	}
-	if _, ok, err := w.pickBackfillState(ctx); err != nil {
-		return changeSyncRepoWorkNone, err
-	} else if ok {
-		return changeSyncRepoWorkBackfill, nil
-	}
-	if _, ok, err := w.pickInventoryScanState(ctx, true); err != nil {
-		return changeSyncRepoWorkNone, err
-	} else if ok {
-		return changeSyncRepoWorkAgedInventory, nil
+	for _, pick := range w.repoWorkPickers() {
+		ok, err := pick.available(ctx)
+		if err != nil {
+			return changeSyncRepoWorkNone, err
+		}
+		if ok {
+			return pick.kind, nil
+		}
 	}
 	return changeSyncRepoWorkNone, nil
+}
+
+type repoWorkPicker struct {
+	kind      changeSyncRepoWorkKind
+	available func(context.Context) (bool, error)
+}
+
+func (w *ChangeSyncWorker) repoWorkPickers() []repoWorkPicker {
+	return []repoWorkPicker{
+		{kind: changeSyncRepoWorkRecentRepair, available: w.hasRecentPRRepairWork},
+		{kind: changeSyncRepoWorkFullHistoryRepair, available: w.hasFullHistoryRepairWork},
+		{kind: changeSyncRepoWorkInitialInventory, available: w.hasInitialInventoryWork},
+		{kind: changeSyncRepoWorkBackfill, available: w.hasBackfillWork},
+		{kind: changeSyncRepoWorkAgedInventory, available: w.hasAgedInventoryWork},
+	}
+}
+
+func (w *ChangeSyncWorker) hasRecentPRRepairWork(ctx context.Context) (bool, error) {
+	_, ok, err := w.pickRecentPRRepairState(ctx)
+	return ok, err
+}
+
+func (w *ChangeSyncWorker) hasFullHistoryRepairWork(ctx context.Context) (bool, error) {
+	_, ok, err := w.pickFullHistoryRepairState(ctx, 0)
+	return ok, err
+}
+
+func (w *ChangeSyncWorker) hasInitialInventoryWork(ctx context.Context) (bool, error) {
+	_, ok, err := w.pickInventoryScanState(ctx, false)
+	return ok, err
+}
+
+func (w *ChangeSyncWorker) hasBackfillWork(ctx context.Context) (bool, error) {
+	_, ok, err := w.pickBackfillState(ctx)
+	return ok, err
+}
+
+func (w *ChangeSyncWorker) hasAgedInventoryWork(ctx context.Context) (bool, error) {
+	_, ok, err := w.pickInventoryScanState(ctx, true)
+	return ok, err
 }
 
 func (w *ChangeSyncWorker) runRepoWork(ctx context.Context, kind changeSyncRepoWorkKind) (bool, error) {
@@ -748,15 +833,35 @@ func (w *ChangeSyncWorker) processRecentPRRepair(ctx context.Context) (bool, err
 		return false, nil
 	}
 
-	now := time.Now().UTC()
 	leaseAcquireStartedAt := time.Now()
-	acquired, leasedUntil, err := w.leases.acquire(ctx, state.ID, recentPRRepairLeaseKind, now)
+	state, acquired, err := w.startRecentPRRepairLease(ctx, state)
 	if err != nil {
 		return false, err
 	}
 	if !acquired {
 		return false, nil
 	}
+	result, err := w.runRecentPRRepairPass(ctx, state, time.Since(leaseAcquireStartedAt))
+	if err != nil {
+		return true, err
+	}
+	if state.BackfillMode == changeBackfillModeFullHistory && !result.Completed {
+		if processed, err := w.processFullHistoryRepairForRepository(ctx, state.RepositoryID); err != nil {
+			return true, err
+		} else if processed {
+			return true, nil
+		}
+	}
+	return true, nil
+}
+
+func (w *ChangeSyncWorker) startRecentPRRepairLease(ctx context.Context, state database.RepoChangeSyncState) (database.RepoChangeSyncState, bool, error) {
+	now := time.Now().UTC()
+	acquired, leasedUntil, err := w.leases.acquire(ctx, state.ID, recentPRRepairLeaseKind, now)
+	if err != nil || !acquired {
+		return state, acquired, err
+	}
+
 	startUpdates := map[string]any{
 		"last_recent_pr_repair_started_at": now,
 		"updated_at":                       now,
@@ -770,25 +875,14 @@ func (w *ChangeSyncWorker) processRecentPRRepair(ctx context.Context) (bool, err
 	if err := w.db.WithContext(ctx).Model(&database.RepoChangeSyncState{}).
 		Where("id = ? AND recent_pr_repair_lease_owner_id = ?", state.ID, w.leases.owner()).
 		Updates(startUpdates).Error; err != nil {
-		return false, err
+		return state, false, err
 	}
 	slog.Info("recent PR repair lease acquired", "state_id", state.ID, "repository_id", state.RepositoryID, "owner_id", w.leases.owner(), "lease_until", leasedUntil)
 	state.RecentPRRepairLeaseOwnerID = w.leases.owner()
 	state.RecentPRRepairLeaseStartedAt = &now
 	state.RecentPRRepairLeaseHeartbeatAt = &now
 	state.RecentPRRepairLeaseUntil = leasedUntil
-	result, err := w.runRecentPRRepairPass(ctx, state, time.Since(leaseAcquireStartedAt))
-	if err != nil {
-		return true, err
-	}
-	if state.BackfillMode == changeBackfillModeFullHistory && !result.Completed {
-		if processed, err := w.processFullHistoryRepairForRepository(ctx, state.RepositoryID); err != nil {
-			return true, err
-		} else if processed {
-			return true, nil
-		}
-	}
-	return true, nil
+	return state, true, nil
 }
 
 func (w *ChangeSyncWorker) processFullHistoryRepair(ctx context.Context) (bool, error) {
@@ -1087,27 +1181,10 @@ func (w *ChangeSyncWorker) runFullHistoryRepairPass(ctx context.Context, state d
 		if err != nil {
 			return err
 		}
-		owner, name, err := splitFullName(repository.FullName)
+		var page int
+		result, page, err = w.runFullHistoryRepairLoop(passCtx, repository.FullName, state.FullHistoryCursorPage)
 		if err != nil {
 			return err
-		}
-		page := state.FullHistoryCursorPage
-		if page <= 0 {
-			page = 1
-		}
-		for i := 0; i < w.fullHistoryRepairMaxPages; i++ {
-			pageResult, err := w.service.RepairPullRequestHistoryPage(passCtx, owner, name, page, w.fullHistoryRepairPerPage)
-			if err != nil {
-				return err
-			}
-			accumulateRepairPassMetrics(&result, pageResult)
-			if pageResult.Completed {
-				result.Completed = true
-				result.NextPage = 1
-				break
-			}
-			page++
-			result.NextPage = page
 		}
 		state.FullHistoryCursorPage = page
 		return nil
@@ -1122,6 +1199,30 @@ func (w *ChangeSyncWorker) runFullHistoryRepairPass(ctx context.Context, state d
 		w.service.repairMetrics.recordSuccess(fullHistoryRepairPhase, state.RepositoryID, repository.FullName, result, leaseWait, time.Since(startedAt))
 	}
 	return w.completeFullHistoryRepairPass(ctx, state, result)
+}
+
+func (w *ChangeSyncWorker) runFullHistoryRepairLoop(ctx context.Context, fullName string, startPage int) (repairPassMetrics, int, error) {
+	owner, name, err := splitFullName(fullName)
+	if err != nil {
+		return repairPassMetrics{}, startPage, err
+	}
+	page := max(startPage, 1)
+	result := repairPassMetrics{}
+	for i := 0; i < w.fullHistoryRepairMaxPages; i++ {
+		pageResult, err := w.service.RepairPullRequestHistoryPage(ctx, owner, name, page, w.fullHistoryRepairPerPage)
+		if err != nil {
+			return repairPassMetrics{}, page, err
+		}
+		accumulateRepairPassMetrics(&result, pageResult)
+		if pageResult.Completed {
+			result.Completed = true
+			result.NextPage = 1
+			return result, page, nil
+		}
+		page++
+		result.NextPage = page
+	}
+	return result, page, nil
 }
 
 func (w *ChangeSyncWorker) completeFetchPass(ctx context.Context, state database.RepoChangeSyncState, result RepoBackfillResult) error {
@@ -1739,45 +1840,73 @@ func normalizeBackfillMode(mode string) string {
 }
 
 func (s *Service) syncOpenPullInventory(ctx context.Context, owner, repo string, state database.RepoChangeSyncState) (RepoBackfillResult, error) {
-	scanStartedAt := time.Now().UTC()
-	if state.FetchLeaseStartedAt != nil && !state.FetchLeaseStartedAt.IsZero() {
-		scanStartedAt = state.FetchLeaseStartedAt.UTC()
-	}
+	scanStartedAt := inventoryScanStartedAt(state)
 	openPulls, err := s.github.ListPullRequests(ctx, owner, repo, "open")
 	if err != nil {
 		return RepoBackfillResult{}, err
 	}
+	sortOpenPulls(openPulls)
+	snapshotMap, err := s.pullRequestSnapshotMap(ctx, state.RepositoryID)
+	if err != nil {
+		return RepoBackfillResult{}, err
+	}
+	now := time.Now().UTC()
+	nextGeneration := inventoryGenerationForState(state)
+	rows, freshnessUpdates, result := buildOpenPullInventoryRows(state.RepositoryID, nextGeneration, openPulls, snapshotMap, now)
+
+	if err := s.prepareInventoryGeneration(ctx, state.RepositoryID, state.InventoryGenerationCurrent, nextGeneration); err != nil {
+		return RepoBackfillResult{}, err
+	}
+	if err := s.writeInventoryGeneration(ctx, rows, now); err != nil {
+		return RepoBackfillResult{}, err
+	}
+	if err := s.applySnapshotFreshnessUpdates(ctx, freshnessUpdates, now); err != nil {
+		return RepoBackfillResult{}, err
+	}
+	if err := s.commitOpenPullInventoryState(ctx, state, result, scanStartedAt, nextGeneration, now); err != nil {
+		return RepoBackfillResult{}, err
+	}
+
+	result.OpenPRMissing = maxInt(0, result.OpenPRTotal-result.OpenPRCurrent-result.OpenPRStale)
+	return result, nil
+}
+
+func inventoryScanStartedAt(state database.RepoChangeSyncState) time.Time {
+	scanStartedAt := time.Now().UTC()
+	if state.FetchLeaseStartedAt != nil && !state.FetchLeaseStartedAt.IsZero() {
+		return state.FetchLeaseStartedAt.UTC()
+	}
+	return scanStartedAt
+}
+
+func sortOpenPulls(openPulls []gh.PullRequestResponse) {
 	sort.Slice(openPulls, func(i, j int) bool {
 		if openPulls[i].UpdatedAt.Equal(openPulls[j].UpdatedAt) {
 			return openPulls[i].Number > openPulls[j].Number
 		}
 		return openPulls[i].UpdatedAt.After(openPulls[j].UpdatedAt)
 	})
+}
 
-	repositoryID := state.RepositoryID
-	snapshotMap, err := s.pullRequestSnapshotMap(ctx, repositoryID)
-	if err != nil {
-		return RepoBackfillResult{}, err
-	}
-	result := RepoBackfillResult{OpenPRTotal: len(openPulls)}
-	now := time.Now().UTC()
-	inventoryRows := make([]database.RepoOpenPullInventory, 0, len(openPulls))
-	snapshotFreshnessUpdates := make(map[string][]uint)
+func inventoryGenerationForState(state database.RepoChangeSyncState) int {
 	nextGeneration := nextInventoryGeneration(state)
 	if state.InventoryGenerationBuilding != nil && *state.InventoryGenerationBuilding > 0 {
 		nextGeneration = *state.InventoryGenerationBuilding
 	}
+	return nextGeneration
+}
 
+func buildOpenPullInventoryRows(repositoryID uint, generation int, openPulls []gh.PullRequestResponse, snapshotMap map[int]*database.PullRequestChangeSnapshot, seenAt time.Time) ([]database.RepoOpenPullInventory, map[string][]uint, RepoBackfillResult) {
+	result := RepoBackfillResult{OpenPRTotal: len(openPulls)}
+	rows := make([]database.RepoOpenPullInventory, 0, len(openPulls))
+	freshnessUpdates := make(map[string][]uint)
 	for _, pull := range openPulls {
 		snapshot := snapshotMap[pull.Number]
 		freshness := desiredFreshness(snapshot, pull)
-		if snapshot != nil && snapshot.IndexFreshness != freshness {
-			snapshotFreshnessUpdates[freshness] = append(snapshotFreshnessUpdates[freshness], snapshot.ID)
-		}
-
-		inventoryRows = append(inventoryRows, database.RepoOpenPullInventory{
+		recordSnapshotFreshnessUpdate(freshnessUpdates, snapshot, freshness)
+		rows = append(rows, database.RepoOpenPullInventory{
 			RepositoryID:      repositoryID,
-			Generation:        nextGeneration,
+			Generation:        generation,
 			PullRequestNumber: pull.Number,
 			GitHubUpdatedAt:   pull.UpdatedAt.UTC(),
 			HeadSHA:           strings.TrimSpace(pull.Head.SHA),
@@ -1786,22 +1915,21 @@ func (s *Service) syncOpenPullInventory(ctx context.Context, owner, repo string,
 			State:             strings.TrimSpace(pull.State),
 			Draft:             pull.Draft,
 			FreshnessState:    freshness,
-			LastSeenAt:        now,
+			LastSeenAt:        seenAt,
 		})
-
 		result.OpenPRCurrent, result.OpenPRStale = adjustBackfillCounts(result.OpenPRCurrent, result.OpenPRStale, "", freshness)
 	}
+	return rows, freshnessUpdates, result
+}
 
-	if err := s.prepareInventoryGeneration(ctx, repositoryID, state.InventoryGenerationCurrent, nextGeneration); err != nil {
-		return RepoBackfillResult{}, err
+func recordSnapshotFreshnessUpdate(updates map[string][]uint, snapshot *database.PullRequestChangeSnapshot, freshness string) {
+	if snapshot != nil && snapshot.IndexFreshness != freshness {
+		updates[freshness] = append(updates[freshness], snapshot.ID)
 	}
-	if err := s.writeInventoryGeneration(ctx, inventoryRows, now); err != nil {
-		return RepoBackfillResult{}, err
-	}
-	if err := s.applySnapshotFreshnessUpdates(ctx, snapshotFreshnessUpdates, now); err != nil {
-		return RepoBackfillResult{}, err
-	}
-	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+}
+
+func (s *Service) commitOpenPullInventoryState(ctx context.Context, state database.RepoChangeSyncState, result RepoBackfillResult, scanStartedAt time.Time, nextGeneration int, now time.Time) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return tx.Model(&database.RepoChangeSyncState{}).
 			Where("id = ?", state.ID).
 			Updates(map[string]any{
@@ -1818,12 +1946,7 @@ func (s *Service) syncOpenPullInventory(ctx context.Context, owner, repo string,
 				"last_open_pr_scan_at":         now,
 				"updated_at":                   now,
 			}).Error
-	}); err != nil {
-		return RepoBackfillResult{}, err
-	}
-
-	result.OpenPRMissing = maxInt(0, result.OpenPRTotal-result.OpenPRCurrent-result.OpenPRStale)
-	return result, nil
+	})
 }
 
 func (s *Service) prepareInventoryGeneration(ctx context.Context, repositoryID uint, currentGeneration, nextGeneration int) error {
@@ -1986,83 +2109,100 @@ func (s *Service) reconcileTargetedRefresh(ctx context.Context, repositoryID uin
 	if state == nil || state.InventoryGenerationCurrent <= 0 {
 		return nil
 	}
-
 	now := time.Now().UTC()
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var inventory database.RepoOpenPullInventory
-		inventoryFound := true
-		if err := tx.Where("repository_id = ? AND generation = ? AND pull_request_number = ?", repositoryID, state.InventoryGenerationCurrent, number).
-			First(&inventory).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				inventoryFound = false
-			} else {
-				return err
-			}
-		}
-
-		var snapshot database.PullRequestChangeSnapshot
-		snapshotFound := true
-		if err := tx.Where("repository_id = ? AND pull_request_number = ?", repositoryID, number).
-			First(&snapshot).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				snapshotFound = false
-			} else {
-				return err
-			}
-		}
-		var snapshotPtr *database.PullRequestChangeSnapshot
-		if snapshotFound {
-			snapshotPtr = &snapshot
-		}
-		newFreshness := desiredFreshness(snapshotPtr, pull)
-
-		if snapshotFound && snapshot.IndexFreshness != newFreshness {
-			if err := tx.Model(&database.PullRequestChangeSnapshot{}).
-				Where("id = ?", snapshot.ID).
-				Updates(map[string]any{
-					"index_freshness": newFreshness,
-					"updated_at":      now,
-				}).Error; err != nil {
-				return err
-			}
-		}
-
-		if strings.TrimSpace(pull.State) != "open" {
-			if inventoryFound {
-				if err := tx.Where("id = ?", inventory.ID).Delete(&database.RepoOpenPullInventory{}).Error; err != nil {
-					return err
-				}
-			}
-			return s.updateRepoInventoryCountsTx(tx, *state, now, nil)
-		}
-
-		if inventoryFound {
-			if err := tx.Model(&database.RepoOpenPullInventory{}).
-				Where("id = ?", inventory.ID).
-				Updates(map[string]any{
-					"github_updated_at": pull.UpdatedAt.UTC(),
-					"head_sha":          strings.TrimSpace(pull.Head.SHA),
-					"base_sha":          strings.TrimSpace(pull.Base.SHA),
-					"base_ref":          strings.TrimSpace(pull.Base.Ref),
-					"state":             strings.TrimSpace(pull.State),
-					"draft":             pull.Draft,
-					"freshness_state":   newFreshness,
-					"last_seen_at":      now,
-					"updated_at":        now,
-				}).Error; err != nil {
-				return err
-			}
-		} else {
-			inventoryRow := inventoryFromPull(repositoryID, pull)
-			inventoryRow.Generation = state.InventoryGenerationCurrent
-			inventoryRow.FreshnessState = newFreshness
-			inventoryRow.LastSeenAt = now
-			if err := tx.Create(&inventoryRow).Error; err != nil {
-				return err
-			}
-		}
-		return s.updateRepoInventoryCountsTx(tx, *state, now, nil)
+		return s.reconcileTargetedRefreshTx(tx, *state, repositoryID, number, pull, now)
 	})
+}
+
+func (s *Service) reconcileTargetedRefreshTx(tx *gorm.DB, state database.RepoChangeSyncState, repositoryID uint, number int, pull gh.PullRequestResponse, now time.Time) error {
+	inventory, inventoryFound, err := loadTargetedRefreshInventory(tx, repositoryID, state.InventoryGenerationCurrent, number)
+	if err != nil {
+		return err
+	}
+	snapshotPtr, err := loadTargetedRefreshSnapshot(tx, repositoryID, number)
+	if err != nil {
+		return err
+	}
+	newFreshness := desiredFreshness(snapshotPtr, pull)
+	if err := updateTargetedRefreshSnapshot(tx, snapshotPtr, newFreshness, now); err != nil {
+		return err
+	}
+	if strings.TrimSpace(pull.State) != "open" {
+		if err := deleteTargetedRefreshInventory(tx, inventory, inventoryFound); err != nil {
+			return err
+		}
+		return s.updateRepoInventoryCountsTx(tx, state, now, nil)
+	}
+	if err := upsertTargetedRefreshInventory(tx, repositoryID, state.InventoryGenerationCurrent, inventory, inventoryFound, pull, newFreshness, now); err != nil {
+		return err
+	}
+	return s.updateRepoInventoryCountsTx(tx, state, now, nil)
+}
+
+func loadTargetedRefreshInventory(tx *gorm.DB, repositoryID uint, generation, number int) (database.RepoOpenPullInventory, bool, error) {
+	var inventory database.RepoOpenPullInventory
+	err := tx.Where("repository_id = ? AND generation = ? AND pull_request_number = ?", repositoryID, generation, number).
+		First(&inventory).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return database.RepoOpenPullInventory{}, false, nil
+	}
+	return inventory, err == nil, err
+}
+
+func loadTargetedRefreshSnapshot(tx *gorm.DB, repositoryID uint, number int) (*database.PullRequestChangeSnapshot, error) {
+	var snapshot database.PullRequestChangeSnapshot
+	err := tx.Where("repository_id = ? AND pull_request_number = ?", repositoryID, number).
+		First(&snapshot).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &snapshot, nil
+}
+
+func updateTargetedRefreshSnapshot(tx *gorm.DB, snapshot *database.PullRequestChangeSnapshot, freshness string, now time.Time) error {
+	if snapshot == nil || snapshot.IndexFreshness == freshness {
+		return nil
+	}
+	return tx.Model(&database.PullRequestChangeSnapshot{}).
+		Where("id = ?", snapshot.ID).
+		Updates(map[string]any{
+			"index_freshness": freshness,
+			"updated_at":      now,
+		}).Error
+}
+
+func deleteTargetedRefreshInventory(tx *gorm.DB, inventory database.RepoOpenPullInventory, found bool) error {
+	if !found {
+		return nil
+	}
+	return tx.Where("id = ?", inventory.ID).Delete(&database.RepoOpenPullInventory{}).Error
+}
+
+func upsertTargetedRefreshInventory(tx *gorm.DB, repositoryID uint, generation int, inventory database.RepoOpenPullInventory, found bool, pull gh.PullRequestResponse, freshness string, now time.Time) error {
+	if found {
+		return tx.Model(&database.RepoOpenPullInventory{}).
+			Where("id = ?", inventory.ID).
+			Updates(map[string]any{
+				"github_updated_at": pull.UpdatedAt.UTC(),
+				"head_sha":          strings.TrimSpace(pull.Head.SHA),
+				"base_sha":          strings.TrimSpace(pull.Base.SHA),
+				"base_ref":          strings.TrimSpace(pull.Base.Ref),
+				"state":             strings.TrimSpace(pull.State),
+				"draft":             pull.Draft,
+				"freshness_state":   freshness,
+				"last_seen_at":      now,
+				"updated_at":        now,
+			}).Error
+	}
+	inventoryRow := inventoryFromPull(repositoryID, pull)
+	inventoryRow.Generation = generation
+	inventoryRow.FreshnessState = freshness
+	inventoryRow.LastSeenAt = now
+	return tx.Create(&inventoryRow).Error
 }
 
 func (s *Service) markInventoryBaseRefStale(ctx context.Context, repositoryID uint, ref string) error {

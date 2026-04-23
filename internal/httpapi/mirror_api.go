@@ -347,19 +347,31 @@ func newMirrorRepositoryStatusResponse(status gitindex.RepoStatus) mirrorReposit
 }
 
 func mirrorSyncState(status gitindex.RepoStatus) string {
-	if strings.TrimSpace(status.LastError) != "" {
+	if mirrorStatusDegraded(status) {
 		return "degraded"
 	}
-	if status.InventoryScanRunning || status.BackfillRunning || status.TargetedRefreshRunning {
+	if mirrorStatusRunning(status) {
 		return "running"
 	}
-	if status.TargetedRefreshPending || status.InventoryNeedsRefresh || status.OpenPRMissingStale || status.OpenPRStale > 0 {
-		return "pending"
-	}
-	if status.OpenPRMissing != nil && *status.OpenPRMissing > 0 {
+	if mirrorStatusPending(status) {
 		return "pending"
 	}
 	return "idle"
+}
+
+func mirrorStatusDegraded(status gitindex.RepoStatus) bool {
+	return strings.TrimSpace(status.LastError) != ""
+}
+
+func mirrorStatusRunning(status gitindex.RepoStatus) bool {
+	return status.InventoryScanRunning || status.BackfillRunning || status.TargetedRefreshRunning
+}
+
+func mirrorStatusPending(status gitindex.RepoStatus) bool {
+	if status.TargetedRefreshPending || status.InventoryNeedsRefresh || status.OpenPRMissingStale || status.OpenPRStale > 0 {
+		return true
+	}
+	return status.OpenPRMissing != nil && *status.OpenPRMissing > 0
 }
 
 func ownerFromFullName(fullName string) string {
@@ -376,14 +388,6 @@ func nameFromFullName(fullName string) string {
 		return fullName
 	}
 	return parts[1]
-}
-
-func mapsKeys(input map[uint]*database.Repository) []uint {
-	out := make([]uint, 0, len(input))
-	for id := range input {
-		out = append(out, id)
-	}
-	return out
 }
 
 func int64Ptr(value int64) *int64 {

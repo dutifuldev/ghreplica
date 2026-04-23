@@ -183,16 +183,16 @@ func listAll[T any](ctx context.Context, client *Client, path string) ([]T, erro
 		}
 
 		if resp.StatusCode >= 300 {
-			defer resp.Body.Close()
+			defer closeGitHubBody(resp.Body)
 			return nil, decodeHTTPError(resp)
 		}
 
 		var page []T
 		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
-			resp.Body.Close()
+			closeGitHubBody(resp.Body)
 			return nil, err
 		}
-		resp.Body.Close()
+		closeGitHubBody(resp.Body)
 
 		results = append(results, page...)
 		nextPath = nextLink(resp.Header.Get("Link"))
@@ -211,7 +211,7 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeGitHubBody(resp.Body)
 
 	if resp.StatusCode >= 300 {
 		return decodeHTTPError(resp)
@@ -294,7 +294,7 @@ func (c *Client) fetchInstallationToken(ctx context.Context) (string, time.Time,
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	defer resp.Body.Close()
+	defer closeGitHubBody(resp.Body)
 	if resp.StatusCode >= 300 {
 		return "", time.Time{}, decodeHTTPError(resp)
 	}
@@ -406,5 +406,11 @@ func decodeHTTPError(resp *http.Response) error {
 	return &HTTPError{
 		StatusCode: resp.StatusCode,
 		Message:    fmt.Sprintf("github api returned %s: %s", strconv.Itoa(resp.StatusCode), message),
+	}
+}
+
+func closeGitHubBody(closer io.Closer) {
+	if closer != nil {
+		_ = closer.Close()
 	}
 }

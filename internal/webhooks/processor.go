@@ -29,12 +29,8 @@ func NewProcessor(db *gorm.DB, projector WebhookProjector, staler BaseRefStaler,
 
 func (p *Processor) ProcessWebhookDelivery(ctx context.Context, deliveryID string) error {
 	now := time.Now().UTC()
-
-	var delivery database.WebhookDelivery
-	if err := p.db.WithContext(ctx).Where("delivery_id = ?", deliveryID).First(&delivery).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
-		}
+	delivery, ok, err := p.loadPendingDelivery(ctx, deliveryID)
+	if err != nil || !ok {
 		return err
 	}
 	if delivery.ProcessedAt != nil {
@@ -50,56 +46,91 @@ func (p *Processor) ProcessWebhookDelivery(ctx context.Context, deliveryID strin
 	if repoRef == nil {
 		return p.markProcessed(ctx, deliveryID, map[string]any{"processed_at": now})
 	}
-
-	existingRepositoryID, err := repositoryIDByRef(ctx, p.db, repoRef)
+	tracked, existingRepositoryID, err := p.upsertTrackedRepositoryForWebhook(ctx, repoRef, now)
 	if err != nil {
 		return err
 	}
 
+	updates, err := p.processTrackedWebhookDelivery(ctx, tracked, repoRef, delivery.Event, decoded, now, existingRepositoryID)
+	if err != nil {
+		return err
+	}
+	return p.markProcessed(ctx, deliveryID, updates)
+}
+
+func (p *Processor) loadPendingDelivery(ctx context.Context, deliveryID string) (database.WebhookDelivery, bool, error) {
+	var delivery database.WebhookDelivery
+	if err := p.db.WithContext(ctx).Where("delivery_id = ?", deliveryID).First(&delivery).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return database.WebhookDelivery{}, false, nil
+		}
+		return database.WebhookDelivery{}, false, err
+	}
+	return delivery, true, nil
+}
+
+func (p *Processor) upsertTrackedRepositoryForWebhook(ctx context.Context, repoRef *repositoryRef, seenAt time.Time) (database.TrackedRepository, uint, error) {
+	existingRepositoryID, err := repositoryIDByRef(ctx, p.db, repoRef)
+	if err != nil {
+		return database.TrackedRepository{}, 0, err
+	}
 	var trackedRepositoryID *uint
 	if existingRepositoryID != 0 {
 		trackedRepositoryID = &existingRepositoryID
 	}
+	tracked, err := refresh.UpsertTrackedRepositoryForWebhook(ctx, p.db, repoRef.Owner, repoRef.Name, repoRef.FullName, trackedRepositoryID, seenAt)
+	return tracked, existingRepositoryID, err
+}
 
-	tracked, err := refresh.UpsertTrackedRepositoryForWebhook(ctx, p.db, repoRef.Owner, repoRef.Name, repoRef.FullName, trackedRepositoryID, now)
-	if err != nil {
-		return err
-	}
-
+func (p *Processor) processTrackedWebhookDelivery(ctx context.Context, tracked database.TrackedRepository, repoRef *repositoryRef, event string, decoded decodedWebhookEvent, now time.Time, existingRepositoryID uint) (map[string]any, error) {
 	updates := map[string]any{"processed_at": now}
-	if tracked.Enabled && tracked.WebhookProjectionEnabled {
-		if policy, ok := webhookEventPolicyFor(delivery.Event); ok {
-			result, err := p.projectEvent(ctx, policy, decoded)
-			if err != nil {
-				return err
-			}
-			if err := applyProjectionFollowUp(ctx, eventFollowUpDependencies{
-				staler:   p.staler,
-				recorder: p.recorder,
-			}, result, time.Now().UTC()); err != nil {
-				return err
-			}
-			repositoryID := result.repositoryID
-			if repositoryID != 0 {
-				updates["repository_id"] = repositoryID
-			}
-			if err := p.updateTrackedRepositoryProjectionState(ctx, tracked, repoRef, repositoryID, delivery.Event, now); err != nil {
-				return err
-			}
-		}
-	} else if tracked.RepositoryID != nil {
-		updates["repository_id"] = *tracked.RepositoryID
-	} else {
-		repositoryID, err := repositoryIDByRef(ctx, p.db, repoRef)
-		if err != nil {
-			return err
-		}
-		if repositoryID != 0 {
-			updates["repository_id"] = repositoryID
-		}
+	if !tracked.Enabled || !tracked.WebhookProjectionEnabled {
+		return p.nonProjectedWebhookUpdates(ctx, tracked, repoRef, updates, existingRepositoryID)
 	}
+	return p.projectedWebhookUpdates(ctx, tracked, repoRef, event, decoded, updates, now)
+}
 
-	return p.markProcessed(ctx, deliveryID, updates)
+func (p *Processor) projectedWebhookUpdates(ctx context.Context, tracked database.TrackedRepository, repoRef *repositoryRef, event string, decoded decodedWebhookEvent, updates map[string]any, now time.Time) (map[string]any, error) {
+	policy, ok := webhookEventPolicyFor(event)
+	if !ok {
+		return updates, nil
+	}
+	result, err := p.projectEvent(ctx, policy, decoded)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyProjectionFollowUp(ctx, eventFollowUpDependencies{
+		staler:   p.staler,
+		recorder: p.recorder,
+	}, result, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	if result.repositoryID != 0 {
+		updates["repository_id"] = result.repositoryID
+	}
+	if err := p.updateTrackedRepositoryProjectionState(ctx, tracked, repoRef, result.repositoryID, event, now); err != nil {
+		return nil, err
+	}
+	return updates, nil
+}
+
+func (p *Processor) nonProjectedWebhookUpdates(ctx context.Context, tracked database.TrackedRepository, repoRef *repositoryRef, updates map[string]any, existingRepositoryID uint) (map[string]any, error) {
+	if tracked.RepositoryID != nil {
+		updates["repository_id"] = *tracked.RepositoryID
+		return updates, nil
+	}
+	if existingRepositoryID != 0 {
+		updates["repository_id"] = existingRepositoryID
+		return updates, nil
+	}
+	repositoryID, err := repositoryIDByRef(ctx, p.db, repoRef)
+	if err != nil {
+		return nil, err
+	}
+	if repositoryID != 0 {
+		updates["repository_id"] = repositoryID
+	}
+	return updates, nil
 }
 
 func (p *Processor) markProcessed(ctx context.Context, deliveryID string, updates map[string]any) error {
@@ -119,31 +150,29 @@ func (p *Processor) updateTrackedRepositoryProjectionState(ctx context.Context, 
 	if repositoryID != 0 && (tracked.RepositoryID == nil || *tracked.RepositoryID != repositoryID) {
 		updates["repository_id"] = repositoryID
 	}
-
-	if current := strings.TrimSpace(tracked.IssuesCompleteness); current == "" || current == "empty" {
-		if _, ok := refresh.CompletenessUpdatesForEvent(event)["issues_completeness"]; ok {
-			updates["issues_completeness"] = "sparse"
-		}
-	}
-	if current := strings.TrimSpace(tracked.PullsCompleteness); current == "" || current == "empty" {
-		if _, ok := refresh.CompletenessUpdatesForEvent(event)["pulls_completeness"]; ok {
-			updates["pulls_completeness"] = "sparse"
-		}
-	}
-	if current := strings.TrimSpace(tracked.CommentsCompleteness); current == "" || current == "empty" {
-		if _, ok := refresh.CompletenessUpdatesForEvent(event)["comments_completeness"]; ok {
-			updates["comments_completeness"] = "sparse"
-		}
-	}
-	if current := strings.TrimSpace(tracked.ReviewsCompleteness); current == "" || current == "empty" {
-		if _, ok := refresh.CompletenessUpdatesForEvent(event)["reviews_completeness"]; ok {
-			updates["reviews_completeness"] = "sparse"
-		}
-	}
+	applyTrackedRepositoryCompletenessUpdates(updates, tracked, event)
 
 	return p.db.WithContext(ctx).Model(&database.TrackedRepository{}).
 		Where("id = ?", tracked.ID).
 		Updates(updates).Error
+}
+
+func applyTrackedRepositoryCompletenessUpdates(updates map[string]any, tracked database.TrackedRepository, event string) {
+	completenessUpdates := refresh.CompletenessUpdatesForEvent(event)
+	applyCompletenessUpdate(updates, completenessUpdates, "issues_completeness", tracked.IssuesCompleteness)
+	applyCompletenessUpdate(updates, completenessUpdates, "pulls_completeness", tracked.PullsCompleteness)
+	applyCompletenessUpdate(updates, completenessUpdates, "comments_completeness", tracked.CommentsCompleteness)
+	applyCompletenessUpdate(updates, completenessUpdates, "reviews_completeness", tracked.ReviewsCompleteness)
+}
+
+func applyCompletenessUpdate(updates map[string]any, completenessUpdates map[string]any, key, current string) {
+	current = strings.TrimSpace(current)
+	if current != "" && current != "empty" {
+		return
+	}
+	if _, ok := completenessUpdates[key]; ok {
+		updates[key] = "sparse"
+	}
 }
 
 func (p *Processor) projectEvent(ctx context.Context, policy webhookEventPolicy, event decodedWebhookEvent) (eventProjectionResult, error) {
