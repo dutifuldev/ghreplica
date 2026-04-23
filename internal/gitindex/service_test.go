@@ -20,9 +20,7 @@ import (
 
 func TestIndexPullRequestBuildsSnapshotAndCommitIndexes(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
+	db := openGitIndexTestDB(t, "pull-request-index.db")
 
 	fixture := testfixtures.CreateLocalPullRepo(t)
 	repo, pull := seedRepositoryAndPullRequest(t, db, fixture, 101)
@@ -112,9 +110,7 @@ func TestIndexPullRequestReusesExistingCommitDetail(t *testing.T) {
 
 func TestIndexPullRequestSkipsOversizedMergeCommitDetail(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
+	db := openGitIndexTestDB(t, "oversized-merge.db")
 
 	fixture := createMergeHeavyPullRepo(t)
 	repo, pull := seedRepositoryAndPullRequest(t, db, fixture, 201)
@@ -159,9 +155,7 @@ func TestIndexPullRequestSkipsOversizedMergeCommitDetail(t *testing.T) {
 
 func TestIndexPullRequestMarksPathOnlyMergeCommitFilesAsPathOnly(t *testing.T) {
 	ctx := context.Background()
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
+	db := openGitIndexTestDB(t, "path-only-merge.db")
 
 	fixture := createMergePathOnlyPullRepo(t)
 	repo, pull := seedRepositoryAndPullRequest(t, db, fixture, 202)

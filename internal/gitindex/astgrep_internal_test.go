@@ -82,9 +82,7 @@ func TestStructuralSearchHelpers(t *testing.T) {
 func TestResolveGitRefOrSHAUsesStoredGitRef(t *testing.T) {
 	t.Parallel()
 
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
+	db := openGitIndexTestDB(t, "resolve-ref.db")
 
 	service := NewService(db, gh.NewClient("https://api.github.com", gh.AuthConfig{}), t.TempDir())
 
@@ -172,9 +170,7 @@ func TestSearchStructuralRefAndCommitTargets(t *testing.T) {
 func TestRunASTGrepMarksInvalidRequests(t *testing.T) {
 	t.Parallel()
 
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
+	db := openGitIndexTestDB(t, "invalid-request.db")
 
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644))
@@ -182,7 +178,7 @@ func TestRunASTGrepMarksInvalidRequests(t *testing.T) {
 	service := NewService(db, gh.NewClient("https://api.github.com", gh.AuthConfig{}), t.TempDir()).
 		WithASTGrepBinary(writeFakeASTGrepBinary(t, "", "", "unknown language: nope", 1))
 
-	_, _, err = service.runASTGrep(context.Background(), root, StructuralSearchRequest{
+	_, _, err := service.runASTGrep(context.Background(), root, StructuralSearchRequest{
 		Language: "nope",
 		Rule:     map[string]any{"pattern": "main"},
 		Limit:    1,
@@ -194,9 +190,7 @@ func TestRunASTGrepMarksInvalidRequests(t *testing.T) {
 func TestServiceOptionsAndMarkBaseRefStale(t *testing.T) {
 	t.Parallel()
 
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
+	db := openGitIndexTestDB(t, "service-options.db")
 
 	service := NewService(db, gh.NewClient("https://api.github.com", gh.AuthConfig{}), t.TempDir())
 	require.Equal(t, defaultIndexTimeout, service.indexTimeout)
@@ -383,9 +377,7 @@ func TestFileClassificationHelpers(t *testing.T) {
 func TestSyncResolvedRefAndParseNumstatZ(t *testing.T) {
 	t.Parallel()
 
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
-	require.NoError(t, err)
-	require.NoError(t, database.ApplyTestSchema(db))
+	db := openGitIndexTestDB(t, "sync-ref.db")
 
 	service := NewService(db, gh.NewClient("https://api.github.com", gh.AuthConfig{}), t.TempDir())
 	service.gitBin = writeFakeGitBinary(t)

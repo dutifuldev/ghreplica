@@ -51,11 +51,9 @@ func (l *countingLogger) count(table string) int {
 }
 
 func TestInsertPullRequestChangeRowsUsesBatches(t *testing.T) {
-	db, err := database.Open("sqlite://file::memory:?cache=shared")
-	require.NoError(t, err)
+	db := openGitIndexTestDB(t, "insert-change-rows.db")
 	counts := newCountingLogger()
 	db = db.Session(&gorm.Session{Logger: counts})
-	require.NoError(t, database.ApplyTestSchema(db))
 
 	snapshot := database.PullRequestChangeSnapshot{
 		RepositoryID:      1,
