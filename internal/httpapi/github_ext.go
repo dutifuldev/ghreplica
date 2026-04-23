@@ -60,13 +60,13 @@ func (s *Server) handleBatchReadObjects(c echo.Context) error {
 func parseBatchObjectReadRequest(c echo.Context) (batchObjectReadRequest, []int, []int, error) {
 	var input batchObjectReadRequest
 	if err := c.Bind(&input); err != nil {
-		return batchObjectReadRequest{}, nil, nil, c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		return batchObjectReadRequest{}, nil, nil, echo.NewHTTPError(http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
 	}
 	if len(input.Objects) == 0 {
-		return batchObjectReadRequest{}, nil, nil, c.JSON(http.StatusBadRequest, map[string]string{"message": "Objects are required"})
+		return batchObjectReadRequest{}, nil, nil, echo.NewHTTPError(http.StatusBadRequest, map[string]string{"message": "Objects are required"})
 	}
 	if len(input.Objects) > maxBatchObjectRead {
-		return batchObjectReadRequest{}, nil, nil, c.JSON(http.StatusBadRequest, map[string]string{"message": "Too many objects"})
+		return batchObjectReadRequest{}, nil, nil, echo.NewHTTPError(http.StatusBadRequest, map[string]string{"message": "Too many objects"})
 	}
 	issueNumbers, pullNumbers, err := collectBatchObjectNumbers(input.Objects)
 	return input, issueNumbers, pullNumbers, err

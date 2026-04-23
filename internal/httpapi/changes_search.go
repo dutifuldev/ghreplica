@@ -146,11 +146,11 @@ func ensureSearchRepositoryExists(ctx context.Context, db *gorm.DB, owner, repo 
 func bindStructuralSearchRequest(c echo.Context) (gitindex.StructuralSearchRequest, error) {
 	var payload searchASTGrepRequest
 	if err := c.Bind(&payload); err != nil {
-		return gitindex.StructuralSearchRequest{}, c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		return gitindex.StructuralSearchRequest{}, echo.NewHTTPError(http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
 	}
 	rule, err := parseStructuralRule(payload.Rule)
 	if err != nil {
-		return gitindex.StructuralSearchRequest{}, c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid rule payload"})
+		return gitindex.StructuralSearchRequest{}, echo.NewHTTPError(http.StatusBadRequest, map[string]string{"message": "Invalid rule payload"})
 	}
 	return gitindex.StructuralSearchRequest{
 		CommitSHA:         strings.TrimSpace(payload.CommitSHA),
@@ -271,10 +271,10 @@ func (s *Server) handleCompareChanges(c echo.Context) error {
 
 func (s *Server) compareRepository(c echo.Context) (database.Repository, error) {
 	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
+	if err == nil || !errors.Is(err, gorm.ErrRecordNotFound) {
 		return repo, err
 	}
-	return database.Repository{}, c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+	return database.Repository{}, echo.NewHTTPError(http.StatusNotFound, map[string]string{"message": "Not Found"})
 }
 
 func parseCompareSpec(spec string) (string, string, error) {

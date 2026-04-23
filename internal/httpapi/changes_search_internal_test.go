@@ -150,6 +150,14 @@ func TestASTGrepAndSearchStatusHandlers(t *testing.T) {
 		rec = httptest.NewRecorder()
 		server.Echo().ServeHTTP(rec, req)
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+
+		search.err = nil
+		server = NewServer(db, Options{StructuralSearch: search})
+		req = httptest.NewRequest(http.MethodPost, "/v1/search/repos/acme/widgets/ast-grep", bytes.NewReader([]byte(`{`)))
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		server.Echo().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 }
 
@@ -386,6 +394,10 @@ func TestChangeSearchSuccessAndHelperBranches(t *testing.T) {
 	require.NoError(t, server.handleCompareChanges(c))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 
+	c, _ = newServerTestContext(server, http.MethodGet, "/v1/changes/repos/missing/repo/compare/main...head", nil, []string{"owner", "repo", "spec"}, []string{"missing", "repo", "main...head"})
+	err := server.handleCompareChanges(c)
+	require.EqualError(t, err, "code=404, message=map[message:Not Found]")
+
 	require.False(t, rangeOverlap(0, 0, 1, 1))
 	require.False(t, rangeOverlap(1, 1, 0, 0))
 	require.True(t, rangeOverlap(4, 3, 4, 4))
@@ -614,16 +626,16 @@ func seedChangeSearchSupportData(t *testing.T, db *gorm.DB) {
 		PeeledCommitSHA: "base",
 	}).Error)
 	require.NoError(t, db.Create(&database.GitCommit{
-		RepositoryID: 1,
-		SHA:          "head",
-		TreeSHA:      "tree",
-		AuthorName:   "octocat",
-		AuthorEmail:  "octocat@example.com",
-		AuthoredAt:   now,
-		CommitterName:"octocat",
-		CommitterEmail:"octocat@example.com",
-		CommittedAt:  now,
-		Message:      "commit",
+		RepositoryID:   1,
+		SHA:            "head",
+		TreeSHA:        "tree",
+		AuthorName:     "octocat",
+		AuthorEmail:    "octocat@example.com",
+		AuthoredAt:     now,
+		CommitterName:  "octocat",
+		CommitterEmail: "octocat@example.com",
+		CommittedAt:    now,
+		Message:        "commit",
 	}).Error)
 	require.NoError(t, db.Create(&database.GitCommitParent{
 		RepositoryID:  1,
