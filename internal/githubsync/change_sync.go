@@ -343,6 +343,9 @@ func (s *Service) EnqueuePullRequestRefresh(ctx context.Context, repositoryID ui
 				"last_webhook_at": seenAt,
 				"updated_at":      seenAt,
 				"last_error":      "",
+				"attempt_count":   0,
+				"next_attempt_at": nil,
+				"parked_at":       nil,
 			}),
 		}).Create(&row).Error
 	})
@@ -357,6 +360,7 @@ func (s *Service) GetRepoChangeStatus(ctx context.Context, owner, repo string) (
 	now := time.Now().UTC()
 	currentPhase, currentPhaseStartedAt := currentRepoPhase(now, row)
 	lastFailedRepairPhase, lastRepairError := latestFailedRepairPhase(row)
+	openPRMissing, openPRMissingStale := s.repoOpenPRMissing(row, now)
 	return gitindex.RepoStatus{
 		RepositoryID:                      row.RepositoryID,
 		FullName:                          row.FullName,
@@ -400,9 +404,25 @@ func (s *Service) GetRepoChangeStatus(ctx context.Context, owner, repo string) (
 		OpenPRTotal:                       row.OpenPRTotal,
 		OpenPRCurrent:                     row.OpenPRCurrent,
 		OpenPRStale:                       row.OpenPRStale,
-		OpenPRMissing:                     maxInt(0, row.OpenPRTotal-row.OpenPRCurrent-row.OpenPRStale),
+		OpenPRMissing:                     openPRMissing,
+		OpenPRMissingStale:                openPRMissingStale,
 		LastError:                         row.LastError,
 	}, nil
+}
+
+func (s *Service) repoOpenPRMissing(row repoChangeStatusRow, now time.Time) (*int, bool) {
+	if row.Dirty || row.InventoryLastCommittedAt == nil {
+		return nil, true
+	}
+	maxAge := s.openPRInventoryMaxAge
+	if maxAge <= 0 {
+		maxAge = 6 * time.Hour
+	}
+	if row.InventoryLastCommittedAt.UTC().Add(maxAge).Before(now) {
+		return nil, true
+	}
+	missing := maxInt(0, row.OpenPRTotal-row.OpenPRCurrent-row.OpenPRStale)
+	return &missing, false
 }
 
 func (s *Service) GetPullRequestChangeStatus(ctx context.Context, owner, repo string, number int) (gitindex.PullRequestStatus, error) {
@@ -1270,7 +1290,6 @@ func (w *ChangeSyncWorker) finishFullHistoryRepairWithError(ctx context.Context,
 func (w *ChangeSyncWorker) acquireNextTargetedRefresh(ctx context.Context) (database.RepoTargetedPullRefresh, bool, error) {
 	now := time.Now().UTC()
 	staleBefore := now.Add(-w.leases.staleAfter)
-	retryBefore := now.Add(-time.Minute)
 	recentDueBefore := now.Add(-w.recentPRRepairInterval)
 	fullHistoryDueBefore := now.Add(-w.fullHistoryRepairInterval)
 	var row database.RepoTargetedPullRefresh
@@ -1278,7 +1297,8 @@ func (w *ChangeSyncWorker) acquireNextTargetedRefresh(ctx context.Context) (data
 		Joins("LEFT JOIN repo_change_sync_states ON repo_change_sync_states.repository_id = repo_targeted_pull_refreshes.repository_id").
 		Where("requested_at IS NOT NULL").
 		Where("(last_completed_at IS NULL OR requested_at > last_completed_at)").
-		Where("(last_attempted_at IS NULL OR last_attempted_at <= ?)", retryBefore).
+		Where("parked_at IS NULL").
+		Where("(attempt_count = 0 OR next_attempt_at IS NULL OR next_attempt_at <= ?)", now).
 		Where("(lease_until IS NULL OR lease_until <= ? OR lease_heartbeat_at IS NULL OR lease_heartbeat_at <= ?)", now, staleBefore).
 		Where(
 			`repo_change_sync_states.repository_id IS NULL OR NOT (
@@ -1295,7 +1315,11 @@ func (w *ChangeSyncWorker) acquireNextTargetedRefresh(ctx context.Context) (data
 			changeBackfillModeFullHistory,
 			fullHistoryDueBefore,
 		).
-		Order("repo_targeted_pull_refreshes.requested_at ASC, repo_targeted_pull_refreshes.repository_id ASC, repo_targeted_pull_refreshes.pull_request_number ASC").
+		Order("CASE WHEN repo_targeted_pull_refreshes.attempt_count = 0 THEN 0 ELSE 1 END ASC").
+		Order("CASE WHEN repo_targeted_pull_refreshes.attempt_count = 0 THEN repo_targeted_pull_refreshes.requested_at END DESC").
+		Order("CASE WHEN repo_targeted_pull_refreshes.attempt_count > 0 THEN repo_targeted_pull_refreshes.next_attempt_at END ASC").
+		Order("CASE WHEN repo_targeted_pull_refreshes.attempt_count > 0 THEN repo_targeted_pull_refreshes.requested_at END DESC").
+		Order("repo_targeted_pull_refreshes.repository_id ASC, repo_targeted_pull_refreshes.pull_request_number ASC").
 		First(&row).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1367,8 +1391,21 @@ func (w *ChangeSyncWorker) finishTargetedRefresh(ctx context.Context, row databa
 	if refreshErr == nil {
 		updates["last_completed_at"] = now
 		updates["last_error"] = ""
+		updates["attempt_count"] = 0
+		updates["next_attempt_at"] = nil
+		updates["parked_at"] = nil
 	} else {
 		updates["last_error"] = refreshErr.Error()
+		attemptCount := row.AttemptCount + 1
+		updates["attempt_count"] = attemptCount
+		if attemptCount >= 5 {
+			updates["parked_at"] = now
+			updates["next_attempt_at"] = nil
+		} else {
+			nextAttemptAt := now.Add(targetedRefreshBackoff(attemptCount))
+			updates["next_attempt_at"] = nextAttemptAt
+			updates["parked_at"] = nil
+		}
 	}
 	if err := w.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&database.RepoTargetedPullRefresh{}).
@@ -1409,12 +1446,26 @@ func targetedRefreshPendingExists(ctx context.Context, db *gorm.DB, repositoryID
 			WHERE repository_id = ?
 			  AND requested_at IS NOT NULL
 			  AND (last_completed_at IS NULL OR requested_at > last_completed_at)
+			  AND parked_at IS NULL
 		)`,
 		repositoryID,
 	).Scan(&pending).Error; err != nil {
 		return false, err
 	}
 	return pending.Bool, nil
+}
+
+func targetedRefreshBackoff(attemptCount int) time.Duration {
+	switch attemptCount {
+	case 1:
+		return time.Minute
+	case 2:
+		return 5 * time.Minute
+	case 3:
+		return 15 * time.Minute
+	default:
+		return time.Hour
+	}
 }
 
 type repoChangeStatusRow struct {

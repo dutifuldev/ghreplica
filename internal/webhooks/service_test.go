@@ -37,6 +37,9 @@ func newWebhookService(t *testing.T, db *gorm.DB, projector webhooks.WebhookProj
 		Projector: projector,
 		Staler:    staler,
 		Recorder:  recorder,
+		ImmediatePullRequestProjectorFactory: func(tx *gorm.DB) webhooks.ImmediatePullRequestProjector {
+			return githubsync.NewService(tx, github.NewClient("https://api.github.com", github.AuthConfig{})).WithoutSearch()
+		},
 	})
 	service.SetDispatcher(dispatcher)
 	return service, dispatcher
@@ -80,20 +83,15 @@ func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testin
 	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-1").First(&delivery).Error)
 	require.Equal(t, "pull_request", delivery.Event)
 	require.Nil(t, delivery.ProcessedAt)
-	require.Nil(t, delivery.RepositoryID)
+	require.NotNil(t, delivery.RepositoryID)
 
 	var repoCount int64
 	require.NoError(t, db.WithContext(ctx).Model(&database.Repository{}).Count(&repoCount).Error)
-	require.Zero(t, repoCount)
-
-	require.NoError(t, ingestor.ProcessWebhookDelivery(ctx, "delivery-1"))
-
-	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-1").First(&delivery).Error)
-	require.NotNil(t, delivery.ProcessedAt)
-	require.NotNil(t, delivery.RepositoryID)
+	require.EqualValues(t, 1, repoCount)
 
 	var repo database.Repository
 	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&repo).Error)
+	require.Equal(t, repo.ID, *delivery.RepositoryID)
 
 	var issue database.Issue
 	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 2).First(&issue).Error)
@@ -102,6 +100,12 @@ func TestWebhookIngestionProjectsPullRequestPayloadIntoCanonicalTables(t *testin
 	var pull database.PullRequest
 	require.NoError(t, db.WithContext(ctx).Where("repository_id = ? AND number = ?", repo.ID, 2).First(&pull).Error)
 	require.Equal(t, "fix/parser", pull.HeadRef)
+
+	require.NoError(t, ingestor.ProcessWebhookDelivery(ctx, "delivery-1"))
+
+	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-1").First(&delivery).Error)
+	require.NotNil(t, delivery.ProcessedAt)
+	require.NotNil(t, delivery.RepositoryID)
 
 	var tracked database.TrackedRepository
 	require.NoError(t, db.WithContext(ctx).Where("full_name = ?", "acme/widgets").First(&tracked).Error)

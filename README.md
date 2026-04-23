@@ -217,11 +217,12 @@ go run ./cmd/ghreplica sync repo dutifuldev/ghreplica
 go run ./cmd/ghreplica sync issue openclaw/openclaw 66797
 go run ./cmd/ghreplica sync pr openclaw/openclaw 66863
 go run ./cmd/ghreplica backfill repo openclaw/openclaw --mode open_only
+go run ./cmd/ghreplica refresh inventory repo openclaw/openclaw
 go run ./cmd/ghreplica search-index repo openclaw/openclaw
 go build ./cmd/ghr
 ```
 
-The sync commands are for targeted ingestion and repair. `sync repo` mirrors the repo-level data we support. `sync issue` and `sync pr` are useful when you want one object and its related discussion right away. `backfill repo` is for bounded repo coverage work. `search-index repo` rebuilds the mirrored text-search corpus for a repo.
+The sync commands are for targeted ingestion and repair. `sync repo` mirrors the repo-level data we support. `sync issue` and `sync pr` are useful when you want one object and its related discussion right away. `backfill repo` is for bounded repo coverage work. `refresh inventory repo` forces a fresh open-PR inventory snapshot for a tracked repo from the machine itself. `search-index repo` rebuilds the mirrored text-search corpus for a repo.
 
 If you only want the CLI locally, build it directly:
 

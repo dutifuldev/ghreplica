@@ -21,11 +21,12 @@ import (
 )
 
 type Service struct {
-	db            *gorm.DB
-	github        *gh.Client
-	git           *gitindex.Service
-	search        *searchindex.Service
-	repairMetrics *repairMetricsRegistry
+	db                    *gorm.DB
+	github                *gh.Client
+	git                   *gitindex.Service
+	search                *searchindex.Service
+	repairMetrics         *repairMetricsRegistry
+	openPRInventoryMaxAge time.Duration
 }
 
 func NewService(db *gorm.DB, githubClient *gh.Client, gitIndex ...*gitindex.Service) *Service {
@@ -34,17 +35,30 @@ func NewService(db *gorm.DB, githubClient *gh.Client, gitIndex ...*gitindex.Serv
 		indexer = gitIndex[0]
 	}
 	return &Service{
-		db:            db,
-		github:        githubClient,
-		git:           indexer,
-		search:        searchindex.NewService(db),
-		repairMetrics: newRepairMetricsRegistry(),
+		db:                    db,
+		github:                githubClient,
+		git:                   indexer,
+		search:                searchindex.NewService(db),
+		repairMetrics:         newRepairMetricsRegistry(),
+		openPRInventoryMaxAge: 6 * time.Hour,
 	}
 }
 
 func (s *Service) withoutSearch() *Service {
 	clone := *s
 	clone.search = nil
+	return &clone
+}
+
+func (s *Service) WithoutSearch() *Service {
+	return s.withoutSearch()
+}
+
+func (s *Service) WithOpenPRInventoryMaxAge(maxAge time.Duration) *Service {
+	clone := *s
+	if maxAge > 0 {
+		clone.openPRInventoryMaxAge = maxAge
+	}
 	return &clone
 }
 
@@ -742,7 +756,10 @@ func (s *Service) upsertIssue(ctx context.Context, repositoryID uint, issue gh.I
 	}
 
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "repository_id"}, {Name: "number"}},
+		Columns: []clause.Column{{Name: "repository_id"}, {Name: "number"}},
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Expr{SQL: "excluded.github_updated_at > issues.github_updated_at"},
+		}},
 		DoUpdates: clause.AssignmentColumns([]string{"github_id", "node_id", "title", "body", "state", "state_reason", "author_id", "comments_count", "locked", "is_pull_request", "pull_request_api_url", "html_url", "api_url", "github_created_at", "github_updated_at", "closed_at", "raw_json"}),
 	}).Create(&model).Error; err != nil {
 		return database.Issue{}, err
@@ -827,7 +844,10 @@ func (s *Service) upsertPullRequest(ctx context.Context, repositoryID uint, pull
 	}
 
 	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "issue_id"}},
+		Columns: []clause.Column{{Name: "issue_id"}},
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Expr{SQL: "excluded.github_updated_at > pull_requests.github_updated_at"},
+		}},
 		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "github_id", "node_id", "number", "state", "draft", "head_repo_id", "head_ref", "head_sha", "base_repo_id", "base_ref", "base_sha", "mergeable", "mergeable_state", "merged", "merged_at", "merged_by_id", "merge_commit_sha", "additions", "deletions", "changed_files", "commits_count", "html_url", "api_url", "diff_url", "patch_url", "github_created_at", "github_updated_at", "raw_json"}),
 	}).Create(&model).Error; err != nil {
 		return err
@@ -1051,9 +1071,6 @@ func (s *Service) upsertPullRequestReviewComment(ctx context.Context, repository
 func (s *Service) ensureIssueForPullRequest(ctx context.Context, repositoryID uint, pull gh.PullRequestResponse) (database.Issue, error) {
 	var existing database.Issue
 	err := s.db.WithContext(ctx).Where("repository_id = ? AND number = ?", repositoryID, pull.Number).First(&existing).Error
-	if err == nil {
-		return existing, nil
-	}
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return database.Issue{}, err
 	}
@@ -1071,6 +1088,23 @@ func (s *Service) ensureIssueForPullRequest(ctx context.Context, repositoryID ui
 		URL:         pull.URL,
 		CreatedAt:   pull.CreatedAt,
 		UpdatedAt:   pull.UpdatedAt,
+	}
+	if err == nil {
+		issueLike.StateReason = existing.StateReason
+		issueLike.Locked = existing.Locked
+		issueLike.Comments = existing.CommentsCount
+		switch {
+		case pull.State == "open":
+			issueLike.ClosedAt = nil
+		case pull.MergedAt != nil:
+			closedAt := pull.MergedAt.UTC()
+			issueLike.ClosedAt = &closedAt
+		default:
+			issueLike.ClosedAt = existing.ClosedAt
+		}
+	} else if pull.MergedAt != nil {
+		closedAt := pull.MergedAt.UTC()
+		issueLike.ClosedAt = &closedAt
 	}
 	return s.upsertIssue(ctx, repositoryID, issueLike)
 }

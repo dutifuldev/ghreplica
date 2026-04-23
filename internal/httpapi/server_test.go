@@ -292,7 +292,7 @@ func TestMirrorRepositoryEndpoints(t *testing.T) {
 				OpenPRTotal:                10,
 				OpenPRCurrent:              6,
 				OpenPRStale:                1,
-				OpenPRMissing:              3,
+				OpenPRMissing:              testIntPtr(3),
 				LastBackfillStartedAt:      &now,
 				LastInventoryScanStartedAt: &now,
 			},
@@ -418,6 +418,10 @@ func TestMirrorStatusEndpointResolvesTrackedRepositoryAcrossRename(t *testing.T)
 	require.Equal(t, "acme/widgets-renamed", payload["full_name"])
 	require.Equal(t, true, payload["tracked_repository_present"])
 	require.EqualValues(t, repo.ID, payload["repository_id"])
+}
+
+func testIntPtr(v int) *int {
+	return &v
 }
 
 func TestGitHubLikeEndpointsExposeRealFixtureShapes(t *testing.T) {

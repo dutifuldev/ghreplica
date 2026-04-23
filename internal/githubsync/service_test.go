@@ -252,6 +252,141 @@ func TestUpsertRepositoryReclaimsFullNameFromDifferentGitHubID(t *testing.T) {
 	require.Equal(t, repoFixture().FullName, currentStored.FullName)
 }
 
+func TestRefreshOpenPullInventoryNow(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	repository := database.Repository{
+		GitHubID:   101,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.Create(&repository).Error)
+	require.NoError(t, db.Create(&database.RepoChangeSyncState{
+		RepositoryID: repository.ID,
+		Dirty:        true,
+		BackfillMode: "open_only",
+	}).Error)
+
+	var listPullCount int
+	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/acme/widgets/pulls" {
+			listPullCount++
+			writeJSON(t, w, pullsFixture())
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	result, err := service.RefreshOpenPullInventoryNow(ctx, "acme", "widgets", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, len(pullsFixture()), result.OpenPRTotal)
+	require.Equal(t, len(pullsFixture()), result.OpenPRMissing)
+	require.Equal(t, 1, listPullCount)
+
+	status, err := service.GetRepoChangeStatus(ctx, "acme", "widgets")
+	require.NoError(t, err)
+	require.Equal(t, 1, status.InventoryGenerationCurrent)
+	require.NotNil(t, status.InventoryLastCommittedAt)
+	require.False(t, status.InventoryScanRunning)
+	require.Equal(t, len(pullsFixture()), status.OpenPRTotal)
+	require.NotNil(t, status.OpenPRMissing)
+	require.Equal(t, len(pullsFixture()), *status.OpenPRMissing)
+	require.False(t, status.OpenPRMissingStale)
+	require.Empty(t, status.LastError)
+}
+
+func TestRefreshOpenPullInventoryNowRejectsActiveRepoPhase(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	repository := database.Repository{
+		GitHubID:   102,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.Create(&repository).Error)
+
+	now := time.Now().UTC()
+	until := now.Add(time.Minute)
+	require.NoError(t, db.Create(&database.RepoChangeSyncState{
+		RepositoryID:             repository.ID,
+		BackfillMode:             "open_only",
+		LastBackfillStartedAt:    &now,
+		BackfillLeaseHeartbeatAt: &now,
+		BackfillLeaseUntil:       &until,
+	}).Error)
+
+	var listPullCount int
+	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/acme/widgets/pulls" {
+			listPullCount++
+			writeJSON(t, w, pullsFixture())
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	_, err = service.RefreshOpenPullInventoryNow(ctx, "acme", "widgets", time.Minute)
+	require.EqualError(t, err, "cannot refresh inventory while backfill is running for acme/widgets")
+	require.Zero(t, listPullCount)
+}
+
+func TestRefreshOpenPullInventoryNowAllowsCompatibleRepoPhase(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	repository := database.Repository{
+		GitHubID:   103,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.Create(&repository).Error)
+
+	now := time.Now().UTC()
+	until := now.Add(time.Minute)
+	require.NoError(t, db.Create(&database.RepoChangeSyncState{
+		RepositoryID:                    repository.ID,
+		BackfillMode:                    "open_only",
+		InventoryGenerationCurrent:      1,
+		TargetedRefreshLeaseHeartbeatAt: &now,
+		TargetedRefreshLeaseUntil:       &until,
+	}).Error)
+
+	var listPullCount int
+	githubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/acme/widgets/pulls" {
+			listPullCount++
+			writeJSON(t, w, pullsFixture())
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(githubServer.Close)
+
+	service := githubsync.NewService(db, github.NewClient(githubServer.URL, github.AuthConfig{}))
+	result, err := service.RefreshOpenPullInventoryNow(ctx, "acme", "widgets", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.OpenPRTotal)
+	require.Equal(t, 1, listPullCount)
+}
+
 func TestUpsertsMaintainSearchDocuments(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(testDatabaseURL(t))
@@ -322,6 +457,76 @@ func TestUpsertIssuePreservesLiteralUnicodeEscapeMarkersInRawJSON(t *testing.T) 
 	require.Equal(t, `literal \u0000 marker`, stored.Body)
 	require.Contains(t, string(stored.RawJSON), `\\u0000`)
 	require.Contains(t, string(stored.RawJSON), `"body":"literal \\u0000 marker"`)
+}
+
+func TestUpsertIssueDoesNotOverwriteNewerCanonicalState(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+
+	repo, err := service.UpsertRepository(ctx, repoFixture())
+	require.NoError(t, err)
+
+	newer := issuesFixture()[0]
+	newer.Title = "Newest title"
+	newer.Body = "Newest body"
+	newer.UpdatedAt = newer.UpdatedAt.Add(5 * time.Minute)
+
+	older := issuesFixture()[0]
+	older.Title = "Older title"
+	older.Body = "Older body"
+	older.UpdatedAt = newer.UpdatedAt.Add(-time.Minute)
+
+	stored, err := service.UpsertIssue(ctx, repo.ID, newer)
+	require.NoError(t, err)
+	require.Equal(t, "Newest title", stored.Title)
+
+	stored, err = service.UpsertIssue(ctx, repo.ID, older)
+	require.NoError(t, err)
+	require.Equal(t, "Newest title", stored.Title)
+	require.Equal(t, "Newest body", stored.Body)
+	require.Contains(t, string(stored.RawJSON), "Newest title")
+}
+
+func TestUpsertPullRequestDoesNotOverwriteNewerCanonicalState(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(testDatabaseURL(t))
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	service := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
+
+	repo, err := service.UpsertRepository(ctx, repoFixture())
+	require.NoError(t, err)
+
+	newer := pullsFixture()[0]
+	newer.Title = "Newest PR title"
+	newer.Head.Ref = "feature/newest"
+	newer.UpdatedAt = newer.UpdatedAt.Add(10 * time.Minute)
+
+	older := pullsFixture()[0]
+	older.Title = "Older PR title"
+	older.Head.Ref = "feature/older"
+	older.UpdatedAt = newer.UpdatedAt.Add(-time.Minute)
+
+	require.NoError(t, service.UpsertPullRequest(ctx, repo.ID, newer))
+	require.NoError(t, service.UpsertPullRequest(ctx, repo.ID, older))
+
+	var stored database.PullRequest
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND number = ?", repo.ID, newer.Number).
+		First(&stored).Error)
+	require.Equal(t, "feature/newest", stored.HeadRef)
+	require.Contains(t, string(stored.RawJSON), "Newest PR title")
+
+	var issue database.Issue
+	require.NoError(t, db.WithContext(ctx).
+		Where("repository_id = ? AND number = ?", repo.ID, newer.Number).
+		First(&issue).Error)
+	require.Equal(t, "Newest PR title", issue.Title)
 }
 
 func TestTargetedSyncIssueAndPullRequest(t *testing.T) {

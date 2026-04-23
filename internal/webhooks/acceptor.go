@@ -9,22 +9,28 @@ import (
 	"time"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
+	gh "github.com/dutifuldev/ghreplica/internal/github"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
 type Acceptor struct {
-	db         *gorm.DB
-	sqlDB      *sql.DB
-	dispatcher DeliveryDispatcher
+	db                                   *gorm.DB
+	sqlDB                                *sql.DB
+	dispatcher                           DeliveryDispatcher
+	immediatePullRequestProjectorFactory ImmediatePullRequestProjectorFactory
 }
 
-func NewAcceptor(db *gorm.DB) *Acceptor {
+func NewAcceptor(db *gorm.DB, immediatePullRequestProjectorFactory ImmediatePullRequestProjectorFactory) *Acceptor {
 	sqlDB, err := db.DB()
 	if err != nil {
 		sqlDB = nil
 	}
-	return &Acceptor{db: db, sqlDB: sqlDB}
+	return &Acceptor{
+		db:                                   db,
+		sqlDB:                                sqlDB,
+		immediatePullRequestProjectorFactory: immediatePullRequestProjectorFactory,
+	}
 }
 
 func (a *Acceptor) SetDispatcher(dispatcher DeliveryDispatcher) {
@@ -46,25 +52,34 @@ func (a *Acceptor) HandleWebhook(ctx context.Context, deliveryID, event string, 
 		return err
 	}
 
-	tx, err := a.sqlDB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
+	return a.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		sqlTx, ok := tx.Statement.ConnPool.(*sql.Tx)
+		if !ok || sqlTx == nil {
+			return errors.New("webhook SQL transaction is not available")
+		}
 
-	inserted, err := a.insertWebhookDeliveryTx(ctx, tx, delivery)
-	if err != nil {
-		return err
-	}
-	if !inserted {
-		return nil
-	}
+		inserted, err := a.insertWebhookDeliveryTx(ctx, sqlTx, delivery)
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			return nil
+		}
 
-	if err := a.dispatcher.EnqueueWebhookDeliveryTx(ctx, tx, delivery.DeliveryID); err != nil {
-		return err
-	}
+		repositoryID, err := a.projectImmediatePullRequest(ctx, tx, delivery)
+		if err != nil {
+			return err
+		}
+		if repositoryID != 0 {
+			if err := tx.Model(&database.WebhookDelivery{}).
+				Where("delivery_id = ?", delivery.DeliveryID).
+				Update("repository_id", repositoryID).Error; err != nil {
+				return err
+			}
+		}
 
-	return tx.Commit()
+		return a.dispatcher.EnqueueWebhookDeliveryTx(ctx, sqlTx, delivery.DeliveryID)
+	})
 }
 
 func (a *Acceptor) insertWebhookDeliveryTx(ctx context.Context, tx *sql.Tx, delivery database.WebhookDelivery) (bool, error) {
@@ -101,6 +116,47 @@ func (a *Acceptor) insertWebhookDeliveryTx(ctx context.Context, tx *sql.Tx, deli
 		return false, err
 	}
 	return rowsAffected > 0, nil
+}
+
+func (a *Acceptor) projectImmediatePullRequest(ctx context.Context, tx *gorm.DB, delivery database.WebhookDelivery) (uint, error) {
+	if delivery.Event != "pull_request" || a.immediatePullRequestProjectorFactory == nil {
+		return 0, nil
+	}
+
+	projector := a.immediatePullRequestProjectorFactory(tx)
+	if projector == nil {
+		return 0, nil
+	}
+
+	var payloadEnvelope struct {
+		Repository  gh.RepositoryResponse  `json:"repository"`
+		PullRequest gh.PullRequestResponse `json:"pull_request"`
+	}
+	if err := json.Unmarshal(delivery.PayloadJSON, &payloadEnvelope); err != nil {
+		return 0, err
+	}
+
+	repo, err := projector.UpsertRepository(ctx, payloadEnvelope.Repository)
+	if err != nil {
+		return 0, err
+	}
+	if err := projector.UpsertPullRequest(ctx, repo.ID, payloadEnvelope.PullRequest); err != nil {
+		return 0, err
+	}
+
+	seenAt := delivery.ReceivedAt.UTC()
+	if err := projector.NoteRepositoryWebhook(ctx, repo.ID, seenAt); err != nil {
+		return 0, err
+	}
+	if err := projector.EnqueuePullRequestRefresh(ctx, repo.ID, payloadEnvelope.PullRequest.Number, seenAt); err != nil {
+		return 0, err
+	}
+	if pullRequestWebhookNeedsInventoryRefresh(delivery.Action, delivery.PayloadJSON) {
+		if err := projector.MarkInventoryNeedsRefresh(ctx, repo.ID, seenAt); err != nil {
+			return 0, err
+		}
+	}
+	return repo.ID, nil
 }
 
 type envelope struct {

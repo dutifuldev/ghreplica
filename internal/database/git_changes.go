@@ -249,7 +249,10 @@ type RepoTargetedPullRefresh struct {
 	LastWebhookAt     *time.Time
 	LastAttemptedAt   *time.Time
 	LastCompletedAt   *time.Time
-	LeaseOwnerID      string `gorm:"index"`
+	AttemptCount      int
+	NextAttemptAt     *time.Time `gorm:"index"`
+	ParkedAt          *time.Time `gorm:"index"`
+	LeaseOwnerID      string     `gorm:"index"`
 	LeaseStartedAt    *time.Time
 	LeaseHeartbeatAt  *time.Time `gorm:"index"`
 	LeaseUntil        *time.Time `gorm:"index"`
