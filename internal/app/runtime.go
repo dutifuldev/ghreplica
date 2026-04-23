@@ -238,7 +238,7 @@ func NewServeRuntime(cfg config.Config) (*ServeRuntime, error) {
 		Projector: syncGitHubSync,
 		Staler:    syncGitHubSync,
 		Recorder:  syncGitHubSync,
-		ImmediatePullRequestProjectorFactory: func(tx *gorm.DB) webhooks.ImmediatePullRequestProjector {
+		ImmediateWebhookProjectorFactory: func(tx *gorm.DB) webhooks.ImmediateWebhookProjector {
 			return githubsync.NewService(tx, githubClient).
 				WithOpenPRInventoryMaxAge(cfg.OpenPRInventoryMaxAge).
 				WithoutSearch()
