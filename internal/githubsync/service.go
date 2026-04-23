@@ -139,6 +139,18 @@ func (s *Service) UpsertPullRequestReviewComment(ctx context.Context, repository
 	return s.upsertPullRequestReviewComment(ctx, repositoryID, pullNumber, comment)
 }
 
+func (s *Service) DeleteIssue(ctx context.Context, repositoryID uint, issue gh.IssueResponse) error {
+	return s.deleteIssue(ctx, repositoryID, issue)
+}
+
+func (s *Service) DeleteIssueComment(ctx context.Context, repositoryID uint, comment gh.IssueCommentResponse) error {
+	return s.deleteIssueComment(ctx, repositoryID, comment)
+}
+
+func (s *Service) DeletePullRequestReviewComment(ctx context.Context, repositoryID uint, comment gh.PullRequestReviewCommentResponse) error {
+	return s.deletePullRequestReviewComment(ctx, repositoryID, comment)
+}
+
 func (s *Service) loadStoredIssuesByNumber(ctx context.Context, repositoryID uint, numbers []int) (map[int]database.Issue, error) {
 	if len(numbers) == 0 {
 		return map[int]database.Issue{}, nil
@@ -778,6 +790,20 @@ func (s *Service) upsertIssue(ctx context.Context, repositoryID uint, issue gh.I
 	return stored, nil
 }
 
+func (s *Service) deleteIssue(ctx context.Context, repositoryID uint, issue gh.IssueResponse) error {
+	if err := s.db.WithContext(ctx).
+		Where("repository_id = ? AND number = ?", repositoryID, issue.Number).
+		Delete(&database.Issue{}).Error; err != nil {
+		return err
+	}
+	if s.search != nil {
+		if err := s.search.DeleteByGitHubID(ctx, repositoryID, searchindex.DocumentTypeIssue, issue.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) upsertPullRequest(ctx context.Context, repositoryID uint, pull gh.PullRequestResponse) error {
 	issue, err := s.ensureIssueForPullRequest(ctx, repositoryID, pull)
 	if err != nil {
@@ -863,6 +889,20 @@ func (s *Service) upsertPullRequest(ctx context.Context, repositoryID uint, pull
 			return err
 		}
 		if err := s.search.UpsertPullRequest(ctx, stored); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) deleteIssueComment(ctx context.Context, repositoryID uint, comment gh.IssueCommentResponse) error {
+	if err := s.db.WithContext(ctx).
+		Where("github_id = ?", comment.ID).
+		Delete(&database.IssueComment{}).Error; err != nil {
+		return err
+	}
+	if s.search != nil {
+		if err := s.search.DeleteByGitHubID(ctx, repositoryID, searchindex.DocumentTypeIssueComment, comment.ID); err != nil {
 			return err
 		}
 	}
@@ -986,6 +1026,20 @@ func (s *Service) upsertPullRequestReview(ctx context.Context, repositoryID uint
 			return err
 		}
 		if err := s.search.UpsertPullRequestReview(ctx, stored); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) deletePullRequestReviewComment(ctx context.Context, repositoryID uint, comment gh.PullRequestReviewCommentResponse) error {
+	if err := s.db.WithContext(ctx).
+		Where("github_id = ?", comment.ID).
+		Delete(&database.PullRequestReviewComment{}).Error; err != nil {
+		return err
+	}
+	if s.search != nil {
+		if err := s.search.DeleteByGitHubID(ctx, repositoryID, searchindex.DocumentTypePullRequestReviewComment, comment.ID); err != nil {
 			return err
 		}
 	}

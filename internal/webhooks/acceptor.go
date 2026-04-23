@@ -46,7 +46,12 @@ func (a *Acceptor) HandleWebhook(ctx context.Context, deliveryID, event string, 
 		return errors.New("webhook delivery dispatcher is not configured")
 	}
 
-	delivery, _, err := buildWebhookDelivery(deliveryID, event, headers, payload, now)
+	decoded, err := decodeWebhookEvent(event, payload)
+	if err != nil {
+		return err
+	}
+
+	delivery, err := buildWebhookDelivery(deliveryID, headers, decoded, payload, now)
 	if err != nil {
 		return err
 	}
@@ -65,10 +70,17 @@ func (a *Acceptor) HandleWebhook(ctx context.Context, deliveryID, event string, 
 			return nil
 		}
 
-		repositoryID, err := a.projectImmediateEvent(ctx, tx, delivery)
+		projector := a.immediateProjectorForTx(tx)
+		result, err := a.projectImmediateEvent(ctx, projector, decoded)
 		if err != nil {
 			return err
 		}
+		if err := applyProjectionFollowUp(ctx, eventFollowUpDependencies{
+			recorder: projector,
+		}, result, time.Now().UTC()); err != nil {
+			return err
+		}
+		repositoryID := result.repositoryID
 		if repositoryID != 0 {
 			if err := tx.Model(&database.WebhookDelivery{}).
 				Where("delivery_id = ?", delivery.DeliveryID).
@@ -117,59 +129,38 @@ func (a *Acceptor) insertWebhookDeliveryTx(ctx context.Context, tx *sql.Tx, deli
 	return rowsAffected > 0, nil
 }
 
-func (a *Acceptor) projectImmediateEvent(ctx context.Context, tx *gorm.DB, delivery database.WebhookDelivery) (uint, error) {
-	if !supportsImmediateProjection(delivery.Event) || a.immediateWebhookProjectorFactory == nil {
-		return 0, nil
+func (a *Acceptor) projectImmediateEvent(ctx context.Context, projector ImmediateWebhookProjector, event decodedWebhookEvent) (eventProjectionResult, error) {
+	policy, ok := webhookEventPolicyFor(event.Event)
+	if !ok || !policy.immediate || projector == nil {
+		return eventProjectionResult{}, nil
 	}
 
-	projector := a.immediateWebhookProjectorFactory(tx)
-	if projector == nil {
-		return 0, nil
-	}
-
-	return projectWebhookEvent(ctx, eventProjectionDependencies{
-		db:        tx,
+	return policy.project(ctx, eventProjectionDependencies{
 		projector: projector,
-		recorder:  projector,
-	}, delivery.Event, delivery.Action, delivery.PayloadJSON, nil)
+	}, event)
 }
 
-type envelope struct {
-	Action     string `json:"action"`
-	Repository *struct {
-		ID       int64  `json:"id"`
-		Name     string `json:"name"`
-		FullName string `json:"full_name"`
-		Owner    *struct {
-			Login string `json:"login"`
-		} `json:"owner"`
-	} `json:"repository"`
-}
-
-func buildWebhookDelivery(deliveryID, event string, headers http.Header, payload []byte, receivedAt time.Time) (database.WebhookDelivery, *repositoryRef, error) {
-	var payloadEnvelope envelope
-	if err := json.Unmarshal(payload, &payloadEnvelope); err != nil {
-		return database.WebhookDelivery{}, nil, err
-	}
-
+func buildWebhookDelivery(deliveryID string, headers http.Header, event decodedWebhookEvent, payload []byte, receivedAt time.Time) (database.WebhookDelivery, error) {
 	headersJSON, err := json.Marshal(headers)
 	if err != nil {
-		return database.WebhookDelivery{}, nil, err
+		return database.WebhookDelivery{}, err
 	}
 
 	delivery := database.WebhookDelivery{
 		DeliveryID:  deliveryID,
-		Event:       event,
-		Action:      payloadEnvelope.Action,
+		Event:       event.Event,
+		Action:      event.Action,
 		HeadersJSON: datatypes.JSON(headersJSON),
 		PayloadJSON: datatypes.JSON(payload),
 		ReceivedAt:  receivedAt,
 	}
 
-	repoRef, err := extractRepository(payloadEnvelope.Repository)
-	if err != nil {
-		return database.WebhookDelivery{}, nil, err
-	}
+	return delivery, nil
+}
 
-	return delivery, repoRef, nil
+func (a *Acceptor) immediateProjectorForTx(tx *gorm.DB) ImmediateWebhookProjector {
+	if a.immediateWebhookProjectorFactory == nil {
+		return nil
+	}
+	return a.immediateWebhookProjectorFactory(tx)
 }

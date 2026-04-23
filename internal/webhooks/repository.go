@@ -2,36 +2,13 @@ package webhooks
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 
 	"github.com/dutifuldev/ghreplica/internal/database"
+	gh "github.com/dutifuldev/ghreplica/internal/github"
 	"gorm.io/gorm"
 )
-
-func pullRequestWebhookNeedsInventoryRefresh(action string, payload []byte) bool {
-	switch strings.TrimSpace(action) {
-	case "opened", "closed", "reopened":
-		return true
-	case "edited":
-		var payloadEnvelope struct {
-			Changes struct {
-				Base *struct {
-					Ref *struct {
-						From string `json:"from"`
-					} `json:"ref"`
-				} `json:"base"`
-			} `json:"changes"`
-		}
-		if err := json.Unmarshal(payload, &payloadEnvelope); err != nil {
-			return false
-		}
-		return payloadEnvelope.Changes.Base != nil && payloadEnvelope.Changes.Base.Ref != nil && strings.TrimSpace(payloadEnvelope.Changes.Base.Ref.From) != ""
-	default:
-		return false
-	}
-}
 
 type repositoryRef struct {
 	GitHubID int64
@@ -71,22 +48,7 @@ func repositoryIDByRef(ctx context.Context, db *gorm.DB, repoRef *repositoryRef)
 	return repository.ID, nil
 }
 
-func repositoryRefFromPayload(payload []byte) (*repositoryRef, error) {
-	var payloadEnvelope envelope
-	if err := json.Unmarshal(payload, &payloadEnvelope); err != nil {
-		return nil, err
-	}
-	return extractRepository(payloadEnvelope.Repository)
-}
-
-func extractRepository(repository *struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	FullName string `json:"full_name"`
-	Owner    *struct {
-		Login string `json:"login"`
-	} `json:"owner"`
-}) (*repositoryRef, error) {
+func repositoryRefFromGitHubRepository(repository *gh.RepositoryResponse) (*repositoryRef, error) {
 	if repository == nil {
 		return nil, nil
 	}

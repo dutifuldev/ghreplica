@@ -8,7 +8,6 @@ import (
 
 	"github.com/dutifuldev/ghreplica/internal/database"
 	"github.com/dutifuldev/ghreplica/internal/refresh"
-	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"gorm.io/gorm"
 )
 
@@ -17,16 +16,14 @@ type Processor struct {
 	projector WebhookProjector
 	staler    BaseRefStaler
 	recorder  RepoChangeWebhookRecorder
-	search    *searchindex.Service
 }
 
-func NewProcessor(db *gorm.DB, projector WebhookProjector, staler BaseRefStaler, recorder RepoChangeWebhookRecorder, search *searchindex.Service) *Processor {
+func NewProcessor(db *gorm.DB, projector WebhookProjector, staler BaseRefStaler, recorder RepoChangeWebhookRecorder) *Processor {
 	return &Processor{
 		db:        db,
 		projector: projector,
 		staler:    staler,
 		recorder:  recorder,
-		search:    search,
 	}
 }
 
@@ -44,10 +41,11 @@ func (p *Processor) ProcessWebhookDelivery(ctx context.Context, deliveryID strin
 		return nil
 	}
 
-	repoRef, err := repositoryRefFromPayload(delivery.PayloadJSON)
+	decoded, err := decodeWebhookEvent(delivery.Event, delivery.PayloadJSON)
 	if err != nil {
 		return err
 	}
+	repoRef := decoded.RepoRef
 
 	if repoRef == nil {
 		return p.markProcessed(ctx, deliveryID, map[string]any{"processed_at": now})
@@ -70,11 +68,18 @@ func (p *Processor) ProcessWebhookDelivery(ctx context.Context, deliveryID strin
 
 	updates := map[string]any{"processed_at": now}
 	if tracked.Enabled && tracked.WebhookProjectionEnabled {
-		if _, ok := supportedWebhookEvents[delivery.Event]; ok {
-			repositoryID, err := p.projectEvent(ctx, delivery.Event, delivery.Action, delivery.PayloadJSON, repoRef)
+		if policy, ok := webhookEventPolicyFor(delivery.Event); ok {
+			result, err := p.projectEvent(ctx, policy, decoded)
 			if err != nil {
 				return err
 			}
+			if err := applyProjectionFollowUp(ctx, eventFollowUpDependencies{
+				staler:   p.staler,
+				recorder: p.recorder,
+			}, result, time.Now().UTC()); err != nil {
+				return err
+			}
+			repositoryID := result.repositoryID
 			if repositoryID != 0 {
 				updates["repository_id"] = repositoryID
 			}
@@ -141,12 +146,11 @@ func (p *Processor) updateTrackedRepositoryProjectionState(ctx context.Context, 
 		Updates(updates).Error
 }
 
-func (p *Processor) projectEvent(ctx context.Context, event, action string, payload []byte, repoRef *repositoryRef) (uint, error) {
-	return projectWebhookEvent(ctx, eventProjectionDependencies{
-		db:        p.db,
+func (p *Processor) projectEvent(ctx context.Context, policy webhookEventPolicy, event decodedWebhookEvent) (eventProjectionResult, error) {
+	return policy.project(ctx, eventProjectionDependencies{
 		projector: p.projector,
-		staler:    p.staler,
-		recorder:  p.recorder,
-		search:    p.search,
-	}, event, action, payload, repoRef)
+		repositoryIDLookup: func(ctx context.Context, repoRef *repositoryRef) (uint, error) {
+			return repositoryIDByRef(ctx, p.db, repoRef)
+		},
+	}, event)
 }

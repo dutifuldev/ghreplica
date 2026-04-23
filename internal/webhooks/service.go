@@ -8,7 +8,6 @@ import (
 
 	"github.com/dutifuldev/ghreplica/internal/database"
 	gh "github.com/dutifuldev/ghreplica/internal/github"
-	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"gorm.io/gorm"
 )
 
@@ -19,6 +18,9 @@ type WebhookProjector interface {
 	UpsertIssueComment(ctx context.Context, repositoryID uint, comment gh.IssueCommentResponse) error
 	UpsertPullRequestReview(ctx context.Context, repositoryID uint, pullNumber int, review gh.PullRequestReviewResponse) error
 	UpsertPullRequestReviewComment(ctx context.Context, repositoryID uint, pullNumber int, comment gh.PullRequestReviewCommentResponse) error
+	DeleteIssue(ctx context.Context, repositoryID uint, issue gh.IssueResponse) error
+	DeleteIssueComment(ctx context.Context, repositoryID uint, comment gh.IssueCommentResponse) error
+	DeletePullRequestReviewComment(ctx context.Context, repositoryID uint, comment gh.PullRequestReviewCommentResponse) error
 }
 
 type pullRequestIndexer interface {
@@ -50,7 +52,6 @@ type Dependencies struct {
 	Projector                        WebhookProjector
 	Staler                           BaseRefStaler
 	Recorder                         RepoChangeWebhookRecorder
-	Search                           *searchindex.Service
 	ImmediateWebhookProjectorFactory ImmediateWebhookProjectorFactory
 }
 
@@ -59,28 +60,13 @@ type Service struct {
 	processor *Processor
 }
 
-var supportedWebhookEvents = map[string]struct{}{
-	"ping":                        {},
-	"issues":                      {},
-	"issue_comment":               {},
-	"pull_request":                {},
-	"pull_request_review":         {},
-	"pull_request_review_comment": {},
-	"push":                        {},
-	"repository":                  {},
-}
-
 func NewService(acceptorDB, processorDB *gorm.DB, deps Dependencies) *Service {
 	if processorDB == nil {
 		processorDB = acceptorDB
 	}
-	search := deps.Search
-	if search == nil {
-		search = searchindex.NewService(processorDB)
-	}
 	return &Service{
 		acceptor:  NewAcceptor(acceptorDB, deps.ImmediateWebhookProjectorFactory),
-		processor: NewProcessor(processorDB, deps.Projector, deps.Staler, deps.Recorder, search),
+		processor: NewProcessor(processorDB, deps.Projector, deps.Staler, deps.Recorder),
 	}
 }
 
