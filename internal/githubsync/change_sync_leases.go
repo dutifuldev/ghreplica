@@ -271,6 +271,13 @@ func (w *ChangeSyncWorker) runWithLeaseHeartbeat(ctx context.Context, stateID ui
 	passCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	done, errCh := w.startLeaseHeartbeat(passCtx, cancel, stateID, kind)
+	runErr := fn(passCtx)
+	close(done)
+	return w.finalizeLeaseHeartbeat(stateID, kind, runErr, errCh)
+}
+
+func (w *ChangeSyncWorker) startLeaseHeartbeat(passCtx context.Context, cancel context.CancelFunc, stateID uint, kind repoLeaseKind) (chan struct{}, chan error) {
 	done := make(chan struct{})
 	errCh := make(chan error, 1)
 	go func() {
@@ -294,10 +301,10 @@ func (w *ChangeSyncWorker) runWithLeaseHeartbeat(ctx context.Context, stateID ui
 			}
 		}
 	}()
+	return done, errCh
+}
 
-	runErr := fn(passCtx)
-	close(done)
-
+func (w *ChangeSyncWorker) finalizeLeaseHeartbeat(stateID uint, kind repoLeaseKind, runErr error, errCh <-chan error) error {
 	select {
 	case hbErr := <-errCh:
 		if runErr == nil {
@@ -306,6 +313,5 @@ func (w *ChangeSyncWorker) runWithLeaseHeartbeat(ctx context.Context, stateID ui
 		slog.Warn("change sync pass ended after heartbeat failure", "phase", kind, "state_id", stateID, "owner_id", w.leases.owner(), "run_error", runErr, "heartbeat_error", hbErr)
 	default:
 	}
-
 	return runErr
 }

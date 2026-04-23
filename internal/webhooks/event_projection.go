@@ -253,27 +253,44 @@ func applyProjectionFollowUp(ctx context.Context, deps eventFollowUpDependencies
 	if result.repositoryID == 0 {
 		return nil
 	}
-	if result.followUp.noteRepositoryWebhook && deps.recorder != nil {
-		if err := deps.recorder.NoteRepositoryWebhook(ctx, result.repositoryID, seenAt); err != nil {
-			return err
-		}
+	if err := noteProjectionWebhook(ctx, deps, result, seenAt); err != nil {
+		return err
 	}
-	if result.followUp.enqueuePullRequestNumber != nil && deps.recorder != nil {
-		if err := deps.recorder.EnqueuePullRequestRefresh(ctx, result.repositoryID, *result.followUp.enqueuePullRequestNumber, seenAt); err != nil {
-			return err
-		}
+	if err := enqueueProjectionPullRefresh(ctx, deps, result, seenAt); err != nil {
+		return err
 	}
-	if strings.TrimSpace(result.followUp.staleBaseRef) != "" && deps.staler != nil {
-		if err := deps.staler.MarkBaseRefStale(ctx, result.repositoryID, result.followUp.staleBaseRef); err != nil {
-			return err
-		}
+	if err := markProjectionBaseRefStale(ctx, deps, result); err != nil {
+		return err
 	}
-	if result.followUp.markInventoryRefresh && deps.recorder != nil {
-		if err := deps.recorder.MarkInventoryNeedsRefresh(ctx, result.repositoryID, seenAt); err != nil {
-			return err
-		}
+	return markProjectionInventoryRefresh(ctx, deps, result, seenAt)
+}
+
+func noteProjectionWebhook(ctx context.Context, deps eventFollowUpDependencies, result eventProjectionResult, seenAt time.Time) error {
+	if !result.followUp.noteRepositoryWebhook || deps.recorder == nil {
+		return nil
 	}
-	return nil
+	return deps.recorder.NoteRepositoryWebhook(ctx, result.repositoryID, seenAt)
+}
+
+func enqueueProjectionPullRefresh(ctx context.Context, deps eventFollowUpDependencies, result eventProjectionResult, seenAt time.Time) error {
+	if result.followUp.enqueuePullRequestNumber == nil || deps.recorder == nil {
+		return nil
+	}
+	return deps.recorder.EnqueuePullRequestRefresh(ctx, result.repositoryID, *result.followUp.enqueuePullRequestNumber, seenAt)
+}
+
+func markProjectionBaseRefStale(ctx context.Context, deps eventFollowUpDependencies, result eventProjectionResult) error {
+	if strings.TrimSpace(result.followUp.staleBaseRef) == "" || deps.staler == nil {
+		return nil
+	}
+	return deps.staler.MarkBaseRefStale(ctx, result.repositoryID, result.followUp.staleBaseRef)
+}
+
+func markProjectionInventoryRefresh(ctx context.Context, deps eventFollowUpDependencies, result eventProjectionResult, seenAt time.Time) error {
+	if !result.followUp.markInventoryRefresh || deps.recorder == nil {
+		return nil
+	}
+	return deps.recorder.MarkInventoryNeedsRefresh(ctx, result.repositoryID, seenAt)
 }
 
 func lookupRepositoryID(ctx context.Context, deps eventProjectionDependencies, repoRef *repositoryRef) (uint, error) {

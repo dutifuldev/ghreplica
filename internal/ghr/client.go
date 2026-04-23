@@ -254,7 +254,7 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeGHRBody(resp.Body)
 
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
@@ -285,7 +285,7 @@ func (c *Client) postJSON(ctx context.Context, path string, requestBody any, out
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeGHRBody(resp.Body)
 
 	if resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
@@ -297,4 +297,10 @@ func (c *Client) postJSON(ctx context.Context, path string, requestBody any, out
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func closeGHRBody(closer io.Closer) {
+	if closer != nil {
+		_ = closer.Close()
+	}
 }

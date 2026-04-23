@@ -103,8 +103,7 @@ func newRepoViewCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), resp, jsonFields)
 			}
-			printRepoView(cmd.OutOrStdout(), resp)
-			return nil
+			return printRepoView(cmd.OutOrStdout(), resp)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -131,8 +130,7 @@ func newRepoStatusCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
 			}
-			printMirrorRepository(cmd.OutOrStdout(), status)
-			return nil
+			return printMirrorRepository(cmd.OutOrStdout(), status)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -169,8 +167,7 @@ func newMirrorListCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), repos, jsonFields)
 			}
-			printMirrorRepositoryList(cmd.OutOrStdout(), repos)
-			return nil
+			return printMirrorRepositoryList(cmd.OutOrStdout(), repos)
 		},
 	}
 	cmd.Flags().IntVar(&page, "page", 1, "Page number")
@@ -202,8 +199,7 @@ func newMirrorViewCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
 			}
-			printMirrorRepository(cmd.OutOrStdout(), status)
-			return nil
+			return printMirrorRepository(cmd.OutOrStdout(), status)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -233,8 +229,7 @@ func newMirrorStatusCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), status, jsonFields)
 			}
-			printMirrorRepositoryStatus(cmd.OutOrStdout(), status)
-			return nil
+			return printMirrorRepositoryStatus(cmd.OutOrStdout(), status)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -273,8 +268,7 @@ func newIssueListCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), issues, jsonFields)
 			}
-			printIssueList(cmd.OutOrStdout(), issues)
-			return nil
+			return printIssueList(cmd.OutOrStdout(), issues)
 		},
 	}
 	cmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
@@ -292,34 +286,11 @@ func newIssueViewCmd(opts *RootOptions) *cobra.Command {
 		Short: "View an issue",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, err := resolveRepo("", opts)
-			if err != nil {
-				return err
-			}
-			number, err := resolveNumberArg(args[0])
-			if err != nil {
-				return err
-			}
-			client := clientFor(opts)
-			issue, err := client.GetIssue(context.Background(), repo, number)
-			if err != nil {
-				return err
-			}
-			if openInBrowser {
-				return openURL(issue.HTMLURL)
-			}
-			if strings.TrimSpace(jsonFields) != "" {
-				return writeJSON(cmd.OutOrStdout(), issue, jsonFields)
-			}
-			printIssueView(cmd.OutOrStdout(), repo, issue)
-			if showComments {
-				comments, err := client.ListIssueComments(context.Background(), repo, number)
-				if err != nil {
-					return err
-				}
-				printIssueCommentsSection(cmd.OutOrStdout(), comments)
-			}
-			return nil
+			return runIssueView(cmd, opts, args[0], issueViewOptions{
+				jsonFields:    jsonFields,
+				showComments:  showComments,
+				openInBrowser: openInBrowser,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -351,8 +322,7 @@ func newIssueCommentsCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), comments, jsonFields)
 			}
-			printIssueComments(cmd.OutOrStdout(), comments)
-			return nil
+			return printIssueComments(cmd.OutOrStdout(), comments)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -392,8 +362,7 @@ func newPRListCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), pulls, jsonFields)
 			}
-			printPullList(cmd.OutOrStdout(), pulls)
-			return nil
+			return printPullList(cmd.OutOrStdout(), pulls)
 		},
 	}
 	cmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
@@ -411,40 +380,88 @@ func newPRViewCmd(opts *RootOptions) *cobra.Command {
 		Short: "View a pull request",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			repo, err := resolveRepo("", opts)
-			if err != nil {
-				return err
-			}
-			number, err := resolveNumberArg(args[0])
-			if err != nil {
-				return err
-			}
-			client := clientFor(opts)
-			pr, err := client.GetPullRequest(context.Background(), repo, number)
-			if err != nil {
-				return err
-			}
-			if openInBrowser {
-				return openURL(pr.HTMLURL)
-			}
-			if strings.TrimSpace(jsonFields) != "" {
-				return writeJSON(cmd.OutOrStdout(), pr, jsonFields)
-			}
-			printPullView(cmd.OutOrStdout(), repo, pr)
-			if showComments {
-				comments, err := client.ListIssueComments(context.Background(), repo, number)
-				if err != nil {
-					return err
-				}
-				printIssueCommentsSection(cmd.OutOrStdout(), comments)
-			}
-			return nil
+			return runPullRequestView(cmd, opts, args[0], issueViewOptions{
+				jsonFields:    jsonFields,
+				showComments:  showComments,
+				openInBrowser: openInBrowser,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
 	cmd.Flags().BoolVarP(&showComments, "comments", "c", false, "View pull request comments")
 	cmd.Flags().BoolVarP(&openInBrowser, "web", "w", false, "Open a pull request in the browser")
 	return cmd
+}
+
+type issueViewOptions struct {
+	jsonFields    string
+	showComments  bool
+	openInBrowser bool
+}
+
+func runIssueView(cmd *cobra.Command, opts *RootOptions, arg string, options issueViewOptions) error {
+	repo, number, client, err := resolveViewRequest(arg, opts)
+	if err != nil {
+		return err
+	}
+	issue, err := client.GetIssue(context.Background(), repo, number)
+	if err != nil {
+		return err
+	}
+	if options.openInBrowser {
+		return openURL(issue.HTMLURL)
+	}
+	if strings.TrimSpace(options.jsonFields) != "" {
+		return writeJSON(cmd.OutOrStdout(), issue, options.jsonFields)
+	}
+	if err := printIssueView(cmd.OutOrStdout(), repo, issue); err != nil {
+		return err
+	}
+	return printOptionalIssueComments(cmd, client, repo, number, options.showComments)
+}
+
+func runPullRequestView(cmd *cobra.Command, opts *RootOptions, arg string, options issueViewOptions) error {
+	repo, number, client, err := resolveViewRequest(arg, opts)
+	if err != nil {
+		return err
+	}
+	pr, err := client.GetPullRequest(context.Background(), repo, number)
+	if err != nil {
+		return err
+	}
+	if options.openInBrowser {
+		return openURL(pr.HTMLURL)
+	}
+	if strings.TrimSpace(options.jsonFields) != "" {
+		return writeJSON(cmd.OutOrStdout(), pr, options.jsonFields)
+	}
+	if err := printPullView(cmd.OutOrStdout(), repo, pr); err != nil {
+		return err
+	}
+	return printOptionalIssueComments(cmd, client, repo, number, options.showComments)
+}
+
+func resolveViewRequest(arg string, opts *RootOptions) (string, int, *Client, error) {
+	repo, err := resolveRepo("", opts)
+	if err != nil {
+		return "", 0, nil, err
+	}
+	number, err := resolveNumberArg(arg)
+	if err != nil {
+		return "", 0, nil, err
+	}
+	return repo, number, clientFor(opts), nil
+}
+
+func printOptionalIssueComments(cmd *cobra.Command, client *Client, repo string, number int, showComments bool) error {
+	if !showComments {
+		return nil
+	}
+	comments, err := client.ListIssueComments(context.Background(), repo, number)
+	if err != nil {
+		return err
+	}
+	return printIssueCommentsSection(cmd.OutOrStdout(), comments)
 }
 
 func newPRReviewsCmd(opts *RootOptions) *cobra.Command {
@@ -470,8 +487,7 @@ func newPRReviewsCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), reviews, jsonFields)
 			}
-			printReviews(cmd.OutOrStdout(), reviews)
-			return nil
+			return printReviews(cmd.OutOrStdout(), reviews)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")
@@ -501,8 +517,7 @@ func newPRCommentsCmd(opts *RootOptions) *cobra.Command {
 			if strings.TrimSpace(jsonFields) != "" {
 				return writeJSON(cmd.OutOrStdout(), comments, jsonFields)
 			}
-			printReviewComments(cmd.OutOrStdout(), comments)
-			return nil
+			return printReviewComments(cmd.OutOrStdout(), comments)
 		},
 	}
 	cmd.Flags().StringVar(&jsonFields, "json", "", "Output JSON with the specified fields")

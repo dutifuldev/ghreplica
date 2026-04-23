@@ -41,35 +41,56 @@ func (s *Service) ensureMirror(ctx context.Context, owner, repo, remoteURL strin
 	return path, nil
 }
 
-func (s *Service) withRepoLock(ctx context.Context, owner, repo string, fn func() error) error {
+func (s *Service) withRepoLock(ctx context.Context, owner, repo string, fn func() error) (err error) {
 	lockPath := s.lockPath(owner, repo)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return err
 	}
 
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	lockFile, err := openRepoLockFile(lockPath)
 	if err != nil {
 		return err
 	}
-	defer lockFile.Close()
+	defer func() {
+		err = firstRepoLockErr(err, lockFile.Close())
+	}()
+	if err := waitForRepoLock(ctx, lockFile); err != nil {
+		return err
+	}
+	defer func() {
+		err = firstRepoLockErr(err, unlockRepoFile(lockFile))
+	}()
 
+	return fn()
+}
+
+func openRepoLockFile(lockPath string) (*os.File, error) {
+	return os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+}
+
+func firstRepoLockErr(current, next error) error {
+	if current != nil || next == nil {
+		return current
+	}
+	return next
+}
+
+func waitForRepoLock(ctx context.Context, lockFile *os.File) error {
 	for {
 		err := lockRepoFile(lockFile)
-		if err == nil {
-			break
-		}
-		if !lockWouldBlock(err) {
+		switch {
+		case err == nil:
+			return nil
+		case !lockWouldBlock(err):
 			return err
 		}
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	defer unlockRepoFile(lockFile)
-
-	return fn()
 }
 
 func (s *Service) runGit(ctx context.Context, repoPath string, args ...string) ([]byte, error) {

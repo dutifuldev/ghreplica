@@ -13,82 +13,18 @@ import (
 )
 
 func (s *Service) RefreshOpenPullInventoryNow(ctx context.Context, owner, repo string, leaseTTL time.Duration) (RepoBackfillResult, error) {
-	owner = strings.TrimSpace(owner)
-	repo = strings.TrimSpace(repo)
-	if owner == "" || repo == "" {
-		return RepoBackfillResult{}, fmt.Errorf("repository must be in owner/repo form")
-	}
-
-	repository, err := findRepositoryByName(ctx, s.db, owner, repo)
+	owner, repo, err := normalizeRefreshInventoryRepo(owner, repo)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return RepoBackfillResult{}, fmt.Errorf("repository %s/%s is not tracked", owner, repo)
-		}
 		return RepoBackfillResult{}, err
 	}
-
-	var state database.RepoChangeSyncState
-
-	if leaseTTL <= 0 {
-		leaseTTL = 15 * time.Minute
+	repository, err := s.lookupRefreshInventoryRepository(ctx, owner, repo)
+	if err != nil {
+		return RepoBackfillResult{}, err
 	}
-	leases := newRepoLeaseManager(s.db, leaseTTL)
-	worker := &ChangeSyncWorker{
-		db:      s.db,
-		service: s,
-		leases:  leases,
-	}
+	worker, leaseTTL := s.newInventoryRefreshWorker(leaseTTL)
 
-	now := time.Now().UTC()
-	leasedUntil := now.Add(leaseTTL)
-	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		lockErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("repository_id = ?", repository.ID).
-			First(&state).Error
-		if lockErr != nil {
-			if !errors.Is(lockErr, gorm.ErrRecordNotFound) {
-				return lockErr
-			}
-			state = database.RepoChangeSyncState{
-				RepositoryID:             repository.ID,
-				BackfillMode:             changeBackfillModeOff,
-				RecentPRRepairCursorPage: 1,
-				FullHistoryCursorPage:    1,
-			}
-			if err := tx.Create(&state).Error; err != nil {
-				return err
-			}
-		}
-
-		if phase := inventoryRefreshBlockingPhaseFromState(now, state); phase != "" {
-			return fmt.Errorf("cannot refresh inventory while %s is running for %s/%s", phase, owner, repo)
-		}
-
-		nextGeneration := nextInventoryGeneration(state)
-		if state.InventoryGenerationBuilding != nil && *state.InventoryGenerationBuilding > 0 {
-			nextGeneration = *state.InventoryGenerationBuilding
-		}
-		if err := tx.Model(&database.RepoChangeSyncState{}).
-			Where("id = ?", state.ID).
-			Updates(map[string]any{
-				"fetch_lease_owner_id":          leases.owner(),
-				"fetch_lease_started_at":        now,
-				"fetch_lease_heartbeat_at":      now,
-				"fetch_lease_until":             leasedUntil,
-				"last_fetch_started_at":         now,
-				"inventory_generation_building": nextGeneration,
-				"updated_at":                    now,
-			}).Error; err != nil {
-			return err
-		}
-
-		state.FetchLeaseOwnerID = leases.owner()
-		state.FetchLeaseStartedAt = &now
-		state.FetchLeaseHeartbeatAt = &now
-		state.FetchLeaseUntil = &leasedUntil
-		state.InventoryGenerationBuilding = intPtr(nextGeneration)
-		return nil
-	}); err != nil {
+	state, err := s.beginInventoryRefresh(ctx, repository.ID, owner, repo, worker.leases, leaseTTL)
+	if err != nil {
 		return RepoBackfillResult{}, err
 	}
 
@@ -106,6 +42,97 @@ func (s *Service) RefreshOpenPullInventoryNow(ctx context.Context, owner, repo s
 	}
 
 	return result, nil
+}
+
+func normalizeRefreshInventoryRepo(owner, repo string) (string, string, error) {
+	owner = strings.TrimSpace(owner)
+	repo = strings.TrimSpace(repo)
+	if owner == "" || repo == "" {
+		return "", "", fmt.Errorf("repository must be in owner/repo form")
+	}
+	return owner, repo, nil
+}
+
+func (s *Service) lookupRefreshInventoryRepository(ctx context.Context, owner, repo string) (database.Repository, error) {
+	repository, err := findRepositoryByName(ctx, s.db, owner, repo)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return database.Repository{}, fmt.Errorf("repository %s/%s is not tracked", owner, repo)
+	}
+	return repository, err
+}
+
+func (s *Service) newInventoryRefreshWorker(leaseTTL time.Duration) (*ChangeSyncWorker, time.Duration) {
+	if leaseTTL <= 0 {
+		leaseTTL = 15 * time.Minute
+	}
+	leases := newRepoLeaseManager(s.db, leaseTTL)
+	return &ChangeSyncWorker{
+		db:      s.db,
+		service: s,
+		leases:  leases,
+	}, leaseTTL
+}
+
+func (s *Service) beginInventoryRefresh(ctx context.Context, repositoryID uint, owner, repo string, leases *repoLeaseManager, leaseTTL time.Duration) (database.RepoChangeSyncState, error) {
+	var state database.RepoChangeSyncState
+	now := time.Now().UTC()
+	leasedUntil := now.Add(leaseTTL)
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		state, err = loadOrCreateInventoryRefreshState(tx, repositoryID)
+		if err != nil {
+			return err
+		}
+		if phase := inventoryRefreshBlockingPhaseFromState(now, state); phase != "" {
+			return fmt.Errorf("cannot refresh inventory while %s is running for %s/%s", phase, owner, repo)
+		}
+		state, err = updateInventoryRefreshLease(tx, state, leases, now, leasedUntil)
+		return err
+	})
+	return state, err
+}
+
+func loadOrCreateInventoryRefreshState(tx *gorm.DB, repositoryID uint) (database.RepoChangeSyncState, error) {
+	var state database.RepoChangeSyncState
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("repository_id = ?", repositoryID).
+		First(&state).Error
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return state, err
+	}
+	state = database.RepoChangeSyncState{
+		RepositoryID:             repositoryID,
+		BackfillMode:             changeBackfillModeOff,
+		RecentPRRepairCursorPage: 1,
+		FullHistoryCursorPage:    1,
+	}
+	return state, tx.Create(&state).Error
+}
+
+func updateInventoryRefreshLease(tx *gorm.DB, state database.RepoChangeSyncState, leases *repoLeaseManager, now, leasedUntil time.Time) (database.RepoChangeSyncState, error) {
+	nextGeneration := nextInventoryGeneration(state)
+	if state.InventoryGenerationBuilding != nil && *state.InventoryGenerationBuilding > 0 {
+		nextGeneration = *state.InventoryGenerationBuilding
+	}
+	if err := tx.Model(&database.RepoChangeSyncState{}).
+		Where("id = ?", state.ID).
+		Updates(map[string]any{
+			"fetch_lease_owner_id":          leases.owner(),
+			"fetch_lease_started_at":        now,
+			"fetch_lease_heartbeat_at":      now,
+			"fetch_lease_until":             leasedUntil,
+			"last_fetch_started_at":         now,
+			"inventory_generation_building": nextGeneration,
+			"updated_at":                    now,
+		}).Error; err != nil {
+		return state, err
+	}
+	state.FetchLeaseOwnerID = leases.owner()
+	state.FetchLeaseStartedAt = &now
+	state.FetchLeaseHeartbeatAt = &now
+	state.FetchLeaseUntil = &leasedUntil
+	state.InventoryGenerationBuilding = intPtr(nextGeneration)
+	return state, nil
 }
 
 func inventoryRefreshBlockingPhaseFromState(now time.Time, state database.RepoChangeSyncState) string {

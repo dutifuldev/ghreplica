@@ -123,27 +123,36 @@ func (s *Server) handleSearchASTGrep(c echo.Context) error {
 	if s.structuralSearch == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"message": "Structural search is not configured"})
 	}
-	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	if err := ensureSearchRepositoryExists(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo")); err != nil {
+		return structuralSearchErrorResponse(c, err)
+	}
+
+	request, err := bindStructuralSearchRequest(c)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
-		}
 		return err
 	}
-	_ = repo
+	response, err := s.structuralSearch.SearchStructural(c.Request().Context(), c.Param("owner"), c.Param("repo"), request)
+	if err != nil {
+		return structuralSearchErrorResponse(c, err)
+	}
+	return c.JSON(http.StatusOK, response)
+}
 
+func ensureSearchRepositoryExists(ctx context.Context, db *gorm.DB, owner, repo string) error {
+	_, err := findRepository(ctx, db, owner, repo)
+	return err
+}
+
+func bindStructuralSearchRequest(c echo.Context) (gitindex.StructuralSearchRequest, error) {
 	var payload searchASTGrepRequest
 	if err := c.Bind(&payload); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
+		return gitindex.StructuralSearchRequest{}, c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid request body"})
 	}
-	var rule map[string]any
-	if len(payload.Rule) > 0 {
-		if err := json.Unmarshal(payload.Rule, &rule); err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid rule payload"})
-		}
+	rule, err := parseStructuralRule(payload.Rule)
+	if err != nil {
+		return gitindex.StructuralSearchRequest{}, c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid rule payload"})
 	}
-
-	response, err := s.structuralSearch.SearchStructural(c.Request().Context(), c.Param("owner"), c.Param("repo"), gitindex.StructuralSearchRequest{
+	return gitindex.StructuralSearchRequest{
 		CommitSHA:         strings.TrimSpace(payload.CommitSHA),
 		Ref:               strings.TrimSpace(payload.Ref),
 		PullRequestNumber: payload.PullRequestNumber,
@@ -152,18 +161,29 @@ func (s *Server) handleSearchASTGrep(c echo.Context) error {
 		Paths:             payload.Paths,
 		ChangedFilesOnly:  payload.ChangedFilesOnly,
 		Limit:             payload.Limit,
-	})
-	if err != nil {
-		switch {
-		case gitindex.IsInvalidStructuralSearchRequest(err):
-			return c.JSON(http.StatusBadRequest, map[string]string{"message": err.Error()})
-		case gitindex.IsStructuralSearchTargetNotFound(err), errors.Is(err, gorm.ErrRecordNotFound):
-			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
-		default:
-			return err
-		}
+	}, nil
+}
+
+func parseStructuralRule(raw json.RawMessage) (map[string]any, error) {
+	if len(raw) == 0 {
+		return nil, nil
 	}
-	return c.JSON(http.StatusOK, response)
+	var rule map[string]any
+	if err := json.Unmarshal(raw, &rule); err != nil {
+		return nil, err
+	}
+	return rule, nil
+}
+
+func structuralSearchErrorResponse(c echo.Context, err error) error {
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound), gitindex.IsStructuralSearchTargetNotFound(err):
+		return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+	case gitindex.IsInvalidStructuralSearchRequest(err):
+		return c.JSON(http.StatusBadRequest, map[string]string{"message": err.Error()})
+	default:
+		return err
+	}
 }
 
 func (s *Server) handleGetPullRequestChangeStatus(c echo.Context) error {
@@ -207,47 +227,20 @@ func (s *Server) handleListPullRequestChangeFiles(c echo.Context) error {
 }
 
 func (s *Server) handleCompareChanges(c echo.Context) error {
-	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	repo, err := s.compareRepository(c)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
-		}
 		return err
 	}
-
-	spec := strings.TrimSpace(c.Param("spec"))
-	if unescaped, err := url.PathUnescape(spec); err == nil {
-		spec = strings.TrimSpace(unescaped)
-	} else {
+	baseInput, headInput, err := parseCompareSpec(c.Param("spec"))
+	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid compare spec"})
 	}
-	parts := strings.SplitN(spec, "...", 2)
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"message": "Invalid compare spec"})
-	}
-	baseInput := strings.TrimSpace(parts[0])
-	headInput := strings.TrimSpace(parts[1])
-	baseResolved, err := s.resolveGitRefOrSHA(c.Request().Context(), repo.ID, baseInput)
+	baseResolved, headResolved, err := s.resolveCompareRefs(c.Request().Context(), repo.ID, baseInput, headInput)
 	if err != nil {
 		return err
 	}
-	headResolved, err := s.resolveGitRefOrSHA(c.Request().Context(), repo.ID, headInput)
+	snapshot, err := s.findCompareSnapshot(c.Request().Context(), repo.ID, baseInput, headInput, baseResolved, headResolved)
 	if err != nil {
-		return err
-	}
-
-	var snapshot database.PullRequestChangeSnapshot
-	query := s.db.WithContext(c.Request().Context()).
-		Where("repository_id = ?", repo.ID).
-		Where("head_sha = ? OR head_sha = ?", headInput, headResolved).
-		Where(
-			s.db.WithContext(c.Request().Context()).
-				Where("base_sha = ? OR merge_base_sha = ?", baseInput, baseInput).
-				Or("base_sha = ? OR merge_base_sha = ?", baseResolved, baseResolved).
-				Or("base_ref = ?", normalizeCompareRef(baseInput)),
-		).
-		Order("updated_at DESC")
-	if err := query.First(&snapshot).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
 		}
@@ -274,6 +267,60 @@ func (s *Server) handleCompareChanges(c echo.Context) error {
 	response.Resolved.Base = baseResolved
 	response.Resolved.Head = headResolved
 	return c.JSON(http.StatusOK, response)
+}
+
+func (s *Server) compareRepository(c echo.Context) (database.Repository, error) {
+	repo, err := findRepository(c.Request().Context(), s.db, c.Param("owner"), c.Param("repo"))
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return repo, err
+	}
+	return database.Repository{}, c.JSON(http.StatusNotFound, map[string]string{"message": "Not Found"})
+}
+
+func parseCompareSpec(spec string) (string, string, error) {
+	spec = strings.TrimSpace(spec)
+	unescaped, err := url.PathUnescape(spec)
+	if err != nil {
+		return "", "", err
+	}
+	parts := strings.SplitN(strings.TrimSpace(unescaped), "...", 2)
+	if len(parts) != 2 {
+		return "", "", errors.New("invalid compare spec")
+	}
+	baseInput := strings.TrimSpace(parts[0])
+	headInput := strings.TrimSpace(parts[1])
+	if baseInput == "" || headInput == "" {
+		return "", "", errors.New("invalid compare spec")
+	}
+	return baseInput, headInput, nil
+}
+
+func (s *Server) resolveCompareRefs(ctx context.Context, repositoryID uint, baseInput, headInput string) (string, string, error) {
+	baseResolved, err := s.resolveGitRefOrSHA(ctx, repositoryID, baseInput)
+	if err != nil {
+		return "", "", err
+	}
+	headResolved, err := s.resolveGitRefOrSHA(ctx, repositoryID, headInput)
+	if err != nil {
+		return "", "", err
+	}
+	return baseResolved, headResolved, nil
+}
+
+func (s *Server) findCompareSnapshot(ctx context.Context, repositoryID uint, baseInput, headInput, baseResolved, headResolved string) (database.PullRequestChangeSnapshot, error) {
+	var snapshot database.PullRequestChangeSnapshot
+	query := s.db.WithContext(ctx).
+		Where("repository_id = ?", repositoryID).
+		Where("head_sha = ? OR head_sha = ?", headInput, headResolved).
+		Where(
+			s.db.WithContext(ctx).
+				Where("base_sha = ? OR merge_base_sha = ?", baseInput, baseInput).
+				Or("base_sha = ? OR merge_base_sha = ?", baseResolved, baseResolved).
+				Or("base_ref = ?", normalizeCompareRef(baseInput)),
+		).
+		Order("updated_at DESC")
+	err := query.First(&snapshot).Error
+	return snapshot, err
 }
 
 func (s *Server) handleGetCommit(c echo.Context) error {
@@ -722,8 +769,37 @@ func noisyPath(path string) bool {
 }
 
 func (s *Server) searchRelated(ctx context.Context, repositoryID uint, source database.PullRequestChangeSnapshot, mode, state string, limit int) ([]gitindex.SearchMatch, error) {
+	paths, err := s.relatedSourcePaths(ctx, source.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return []gitindex.SearchMatch{}, nil
+	}
+	candidates, err := s.relatedPathCandidates(ctx, repositoryID, source.PullRequestNumber, paths, state, limit)
+	if err != nil {
+		return nil, err
+	}
+	if mode == "path_overlap" || source.IndexedAs == "paths_only" || source.IndexedAs == "oversized" {
+		return trimSearchMatches(candidates, limit), nil
+	}
+	sourceHunks, err := s.relatedSourceHunks(ctx, source.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(sourceHunks) == 0 {
+		return []gitindex.SearchMatch{}, nil
+	}
+	candidateHunks, err := s.relatedCandidateHunks(ctx, repositoryID, candidates, paths)
+	if err != nil {
+		return nil, err
+	}
+	return scoreRelatedHunkCandidates(candidates, sourceHunks, candidateHunks, limit), nil
+}
+
+func (s *Server) relatedSourcePaths(ctx context.Context, snapshotID uint) ([]string, error) {
 	var sourceFiles []database.PullRequestChangeFile
-	if err := s.db.WithContext(ctx).Where("snapshot_id = ?", source.ID).Find(&sourceFiles).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("snapshot_id = ?", snapshotID).Find(&sourceFiles).Error; err != nil {
 		return nil, err
 	}
 	paths := make([]string, 0, len(sourceFiles))
@@ -735,49 +811,43 @@ func (s *Server) searchRelated(ctx context.Context, repositoryID uint, source da
 			paths = append(paths, file.PreviousPath)
 		}
 	}
-	paths = normalizePaths(paths)
-	if len(paths) == 0 {
-		return []gitindex.SearchMatch{}, nil
-	}
+	return normalizePaths(paths), nil
+}
+
+func (s *Server) relatedPathCandidates(ctx context.Context, repositoryID uint, sourcePRNumber int, paths []string, state string, limit int) ([]gitindex.SearchMatch, error) {
 	candidates, err := s.searchByPaths(ctx, repositoryID, paths, state, max(limit*5, 50))
 	if err != nil {
 		return nil, err
 	}
 	filtered := make([]gitindex.SearchMatch, 0, len(candidates))
 	for _, candidate := range candidates {
-		if candidate.PullRequestNumber == source.PullRequestNumber {
-			continue
+		if candidate.PullRequestNumber != sourcePRNumber {
+			filtered = append(filtered, candidate)
 		}
-		filtered = append(filtered, candidate)
 	}
-	candidates = filtered
-	if mode == "path_overlap" || source.IndexedAs == "paths_only" || source.IndexedAs == "oversized" {
-		if len(candidates) > limit {
-			return candidates[:limit], nil
-		}
-		return candidates, nil
-	}
+	return filtered, nil
+}
 
+func (s *Server) relatedSourceHunks(ctx context.Context, snapshotID uint) ([]database.PullRequestChangeHunk, error) {
 	var sourceHunks []database.PullRequestChangeHunk
-	if err := s.db.WithContext(ctx).Where("snapshot_id = ?", source.ID).Find(&sourceHunks).Error; err != nil {
-		return nil, err
-	}
-	if len(sourceHunks) == 0 {
-		return []gitindex.SearchMatch{}, nil
-	}
+	err := s.db.WithContext(ctx).Where("snapshot_id = ?", snapshotID).Find(&sourceHunks).Error
+	return sourceHunks, err
+}
 
+func (s *Server) relatedCandidateHunks(ctx context.Context, repositoryID uint, candidates []gitindex.SearchMatch, paths []string) ([]database.PullRequestChangeHunk, error) {
 	candidateNums := make([]int, 0, len(candidates))
 	for _, candidate := range candidates {
 		candidateNums = append(candidateNums, candidate.PullRequestNumber)
 	}
 	var candidateHunks []database.PullRequestChangeHunk
-	if err := s.db.WithContext(ctx).
+	err := s.db.WithContext(ctx).
 		Where("repository_id = ? AND pull_request_number IN ?", repositoryID, candidateNums).
 		Where("path IN ?", paths).
-		Find(&candidateHunks).Error; err != nil {
-		return nil, err
-	}
+		Find(&candidateHunks).Error
+	return candidateHunks, err
+}
 
+func scoreRelatedHunkCandidates(candidates []gitindex.SearchMatch, sourceHunks, candidateHunks []database.PullRequestChangeHunk, limit int) []gitindex.SearchMatch {
 	sourceByPath := map[string][]database.PullRequestChangeHunk{}
 	for _, h := range sourceHunks {
 		sourceByPath[h.Path] = append(sourceByPath[h.Path], h)
@@ -791,50 +861,45 @@ func (s *Server) searchRelated(ctx context.Context, repositoryID uint, source da
 		matchByPR[match.PullRequestNumber] = match
 	}
 	for prNumber, hunks := range candidateByPR {
-		match := matchByPR[prNumber]
-		pathSet := map[string]struct{}{}
-		for _, candidateHunk := range hunks {
-			for _, sourceHunk := range sourceByPath[candidateHunk.Path] {
-				if hunksOverlap(sourceHunk, candidateHunk) {
-					match.OverlappingHunks++
-					pathSet[candidateHunk.Path] = struct{}{}
-					match.MatchedRanges = append(match.MatchedRanges, gitindex.MatchedPath{
-						Path:     candidateHunk.Path,
-						OldStart: max(sourceHunk.OldStart, candidateHunk.OldStart),
-						OldEnd:   minNonZero(sourceHunk.OldEnd, candidateHunk.OldEnd),
-						NewStart: max(sourceHunk.NewStart, candidateHunk.NewStart),
-						NewEnd:   minNonZero(sourceHunk.NewEnd, candidateHunk.NewEnd),
-					})
-				}
-			}
-		}
-		for path := range pathSet {
-			match.OverlappingPaths = append(match.OverlappingPaths, path)
-		}
-		sort.Strings(match.OverlappingPaths)
-		match.Score += float64(match.OverlappingHunks * 20)
-		if match.OverlappingHunks > 0 {
-			match.Reasons = append(match.Reasons, "overlapping_hunks")
-		}
-		matchByPR[prNumber] = match
+		matchByPR[prNumber] = applyRelatedHunkOverlap(matchByPR[prNumber], sourceByPath, hunks)
 	}
 	final := make([]gitindex.SearchMatch, 0, len(matchByPR))
 	for _, match := range matchByPR {
-		if match.OverlappingHunks == 0 {
-			continue
+		if match.OverlappingHunks > 0 {
+			final = append(final, match)
 		}
-		final = append(final, match)
 	}
-	sort.SliceStable(final, func(i, j int) bool {
-		if final[i].Score == final[j].Score {
-			return final[i].PullRequestNumber > final[j].PullRequestNumber
+	sortSearchMatches(final)
+	return trimSearchMatches(final, limit)
+}
+
+func applyRelatedHunkOverlap(match gitindex.SearchMatch, sourceByPath map[string][]database.PullRequestChangeHunk, hunks []database.PullRequestChangeHunk) gitindex.SearchMatch {
+	pathSet := map[string]struct{}{}
+	for _, candidateHunk := range hunks {
+		for _, sourceHunk := range sourceByPath[candidateHunk.Path] {
+			if !hunksOverlap(sourceHunk, candidateHunk) {
+				continue
+			}
+			match.OverlappingHunks++
+			pathSet[candidateHunk.Path] = struct{}{}
+			match.MatchedRanges = append(match.MatchedRanges, gitindex.MatchedPath{
+				Path:     candidateHunk.Path,
+				OldStart: max(sourceHunk.OldStart, candidateHunk.OldStart),
+				OldEnd:   minNonZero(sourceHunk.OldEnd, candidateHunk.OldEnd),
+				NewStart: max(sourceHunk.NewStart, candidateHunk.NewStart),
+				NewEnd:   minNonZero(sourceHunk.NewEnd, candidateHunk.NewEnd),
+			})
 		}
-		return final[i].Score > final[j].Score
-	})
-	if len(final) > limit {
-		final = final[:limit]
 	}
-	return final, nil
+	for path := range pathSet {
+		match.OverlappingPaths = append(match.OverlappingPaths, path)
+	}
+	sort.Strings(match.OverlappingPaths)
+	match.Score += float64(match.OverlappingHunks * 20)
+	if match.OverlappingHunks > 0 {
+		match.Reasons = append(match.Reasons, "overlapping_hunks")
+	}
+	return match
 }
 
 func (s *Server) searchByPaths(ctx context.Context, repositoryID uint, paths []string, state string, limit int) ([]gitindex.SearchMatch, error) {
@@ -842,21 +907,14 @@ func (s *Server) searchByPaths(ctx context.Context, repositoryID uint, paths []s
 		return []gitindex.SearchMatch{}, nil
 	}
 	paths = normalizePaths(paths)
-	var snapshots []database.PullRequestChangeSnapshot
-	query := s.db.WithContext(ctx).Where("repository_id = ?", repositoryID)
-	query = applySnapshotStateFilter(query, state)
-	if err := query.Find(&snapshots).Error; err != nil {
+	snapshots, err := s.searchSnapshots(ctx, repositoryID, state)
+	if err != nil {
 		return nil, err
 	}
 	if len(snapshots) == 0 {
 		return []gitindex.SearchMatch{}, nil
 	}
-	snapshotByPR := map[int]database.PullRequestChangeSnapshot{}
-	prNumbers := make([]int, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		snapshotByPR[snapshot.PullRequestNumber] = snapshot
-		prNumbers = append(prNumbers, snapshot.PullRequestNumber)
-	}
+	snapshotByPR, prNumbers := searchSnapshotIndex(snapshots)
 	var files []database.PullRequestChangeFile
 	if err := s.db.WithContext(ctx).
 		Where("repository_id = ? AND pull_request_number IN ?", repositoryID, prNumbers).
@@ -864,65 +922,9 @@ func (s *Server) searchByPaths(ctx context.Context, repositoryID uint, paths []s
 		Find(&files).Error; err != nil {
 		return nil, err
 	}
-	type aggregate struct {
-		shared map[string]struct{}
-		score  float64
-	}
-	agg := map[int]*aggregate{}
-	for _, file := range files {
-		if noisyPath(file.Path) {
-			continue
-		}
-		entry := agg[file.PullRequestNumber]
-		if entry == nil {
-			entry = &aggregate{shared: map[string]struct{}{}}
-			agg[file.PullRequestNumber] = entry
-		}
-		for _, path := range paths {
-			if file.Path == path || file.PreviousPath == path {
-				entry.shared[path] = struct{}{}
-			}
-		}
-		entry.score += 10
-		if file.PreviousPath != "" && containsPath(paths, file.PreviousPath) {
-			entry.score += 6
-		}
-	}
-	results := make([]gitindex.SearchMatch, 0, len(agg))
-	for prNumber, entry := range agg {
-		snapshot := snapshotByPR[prNumber]
-		shared := make([]string, 0, len(entry.shared))
-		for path := range entry.shared {
-			shared = append(shared, path)
-		}
-		sort.Strings(shared)
-		reasons := []string{}
-		if len(shared) > 0 {
-			reasons = append(reasons, "shared_paths")
-		}
-		results = append(results, gitindex.SearchMatch{
-			PullRequestNumber: prNumber,
-			State:             snapshot.State,
-			Draft:             snapshot.Draft,
-			HeadSHA:           snapshot.HeadSHA,
-			BaseRef:           snapshot.BaseRef,
-			IndexedAs:         snapshot.IndexedAs,
-			IndexFreshness:    snapshot.IndexFreshness,
-			Score:             entry.score + float64(len(shared))*2,
-			SharedPaths:       shared,
-			Reasons:           reasons,
-		})
-	}
-	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Score == results[j].Score {
-			return results[i].PullRequestNumber > results[j].PullRequestNumber
-		}
-		return results[i].Score > results[j].Score
-	})
-	if len(results) > limit {
-		results = results[:limit]
-	}
-	return results, nil
+	results := buildPathSearchMatches(files, paths, snapshotByPR)
+	sortSearchMatches(results)
+	return trimSearchMatches(results, limit), nil
 }
 
 func (s *Server) searchByRanges(ctx context.Context, repositoryID uint, ranges []searchRange, state string, limit int) ([]gitindex.SearchMatch, error) {
@@ -936,21 +938,14 @@ func (s *Server) searchByRanges(ctx context.Context, repositoryID uint, ranges [
 	if len(paths) == 0 {
 		return []gitindex.SearchMatch{}, nil
 	}
-	var snapshots []database.PullRequestChangeSnapshot
-	query := s.db.WithContext(ctx).Where("repository_id = ?", repositoryID)
-	query = applySnapshotStateFilter(query, state)
-	if err := query.Find(&snapshots).Error; err != nil {
+	snapshots, err := s.searchSnapshots(ctx, repositoryID, state)
+	if err != nil {
 		return nil, err
 	}
 	if len(snapshots) == 0 {
 		return []gitindex.SearchMatch{}, nil
 	}
-	prNumbers := make([]int, 0, len(snapshots))
-	snapshotByPR := map[int]database.PullRequestChangeSnapshot{}
-	for _, snapshot := range snapshots {
-		prNumbers = append(prNumbers, snapshot.PullRequestNumber)
-		snapshotByPR[snapshot.PullRequestNumber] = snapshot
-	}
+	snapshotByPR, prNumbers := searchSnapshotIndex(snapshots)
 	var hunks []database.PullRequestChangeHunk
 	if err := s.db.WithContext(ctx).
 		Where("repository_id = ? AND pull_request_number IN ?", repositoryID, prNumbers).
@@ -958,38 +953,108 @@ func (s *Server) searchByRanges(ctx context.Context, repositoryID uint, ranges [
 		Find(&hunks).Error; err != nil {
 		return nil, err
 	}
+	results := buildRangeSearchMatches(hunks, ranges, snapshotByPR)
+	sortSearchMatches(results)
+	return trimSearchMatches(results, limit), nil
+}
+
+func (s *Server) searchSnapshots(ctx context.Context, repositoryID uint, state string) ([]database.PullRequestChangeSnapshot, error) {
+	var snapshots []database.PullRequestChangeSnapshot
+	query := s.db.WithContext(ctx).Where("repository_id = ?", repositoryID)
+	query = applySnapshotStateFilter(query, state)
+	err := query.Find(&snapshots).Error
+	return snapshots, err
+}
+
+func searchSnapshotIndex(snapshots []database.PullRequestChangeSnapshot) (map[int]database.PullRequestChangeSnapshot, []int) {
+	snapshotByPR := map[int]database.PullRequestChangeSnapshot{}
+	prNumbers := make([]int, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		snapshotByPR[snapshot.PullRequestNumber] = snapshot
+		prNumbers = append(prNumbers, snapshot.PullRequestNumber)
+	}
+	return snapshotByPR, prNumbers
+}
+
+type pathAggregate struct {
+	shared map[string]struct{}
+	score  float64
+}
+
+func buildPathSearchMatches(files []database.PullRequestChangeFile, paths []string, snapshotByPR map[int]database.PullRequestChangeSnapshot) []gitindex.SearchMatch {
+	agg := map[int]*pathAggregate{}
+	for _, file := range files {
+		if noisyPath(file.Path) {
+			continue
+		}
+		entry := agg[file.PullRequestNumber]
+		if entry == nil {
+			entry = &pathAggregate{shared: map[string]struct{}{}}
+			agg[file.PullRequestNumber] = entry
+		}
+		updatePathAggregate(entry, file, paths)
+	}
+	results := make([]gitindex.SearchMatch, 0, len(agg))
+	for prNumber, entry := range agg {
+		results = append(results, newPathSearchMatch(prNumber, entry, snapshotByPR[prNumber]))
+	}
+	return results
+}
+
+func updatePathAggregate(entry *pathAggregate, file database.PullRequestChangeFile, paths []string) {
+	for _, path := range paths {
+		if file.Path == path || file.PreviousPath == path {
+			entry.shared[path] = struct{}{}
+		}
+	}
+	entry.score += 10
+	if file.PreviousPath != "" && containsPath(paths, file.PreviousPath) {
+		entry.score += 6
+	}
+}
+
+func newPathSearchMatch(prNumber int, entry *pathAggregate, snapshot database.PullRequestChangeSnapshot) gitindex.SearchMatch {
+	shared := make([]string, 0, len(entry.shared))
+	for path := range entry.shared {
+		shared = append(shared, path)
+	}
+	sort.Strings(shared)
+	reasons := []string{}
+	if len(shared) > 0 {
+		reasons = append(reasons, "shared_paths")
+	}
+	return gitindex.SearchMatch{
+		PullRequestNumber: prNumber,
+		State:             snapshot.State,
+		Draft:             snapshot.Draft,
+		HeadSHA:           snapshot.HeadSHA,
+		BaseRef:           snapshot.BaseRef,
+		IndexedAs:         snapshot.IndexedAs,
+		IndexFreshness:    snapshot.IndexFreshness,
+		Score:             entry.score + float64(len(shared))*2,
+		SharedPaths:       shared,
+		Reasons:           reasons,
+	}
+}
+
+func buildRangeSearchMatches(hunks []database.PullRequestChangeHunk, ranges []searchRange, snapshotByPR map[int]database.PullRequestChangeSnapshot) []gitindex.SearchMatch {
 	byPR := map[int]*gitindex.SearchMatch{}
 	for _, hunk := range hunks {
 		for _, r := range ranges {
-			if hunk.Path != r.Path {
+			if !rangeSearchMatch(hunk, r) {
 				continue
 			}
-			if rangeOverlap(hunk.NewStart, hunk.NewEnd, r.Start, r.End) || rangeOverlap(hunk.OldStart, hunk.OldEnd, r.Start, r.End) {
-				match := byPR[hunk.PullRequestNumber]
-				if match == nil {
-					snapshot := snapshotByPR[hunk.PullRequestNumber]
-					match = &gitindex.SearchMatch{
-						PullRequestNumber: hunk.PullRequestNumber,
-						State:             snapshot.State,
-						Draft:             snapshot.Draft,
-						HeadSHA:           snapshot.HeadSHA,
-						BaseRef:           snapshot.BaseRef,
-						IndexedAs:         snapshot.IndexedAs,
-						IndexFreshness:    snapshot.IndexFreshness,
-					}
-					byPR[hunk.PullRequestNumber] = match
-				}
-				match.OverlappingHunks++
-				match.Score += 20
-				match.OverlappingPaths = append(match.OverlappingPaths, hunk.Path)
-				match.MatchedRanges = append(match.MatchedRanges, gitindex.MatchedPath{
-					Path:     hunk.Path,
-					OldStart: hunk.OldStart,
-					OldEnd:   hunk.OldEnd,
-					NewStart: hunk.NewStart,
-					NewEnd:   hunk.NewEnd,
-				})
-			}
+			match := ensureRangeSearchMatch(byPR, hunk.PullRequestNumber, snapshotByPR[hunk.PullRequestNumber])
+			match.OverlappingHunks++
+			match.Score += 20
+			match.OverlappingPaths = append(match.OverlappingPaths, hunk.Path)
+			match.MatchedRanges = append(match.MatchedRanges, gitindex.MatchedPath{
+				Path:     hunk.Path,
+				OldStart: hunk.OldStart,
+				OldEnd:   hunk.OldEnd,
+				NewStart: hunk.NewStart,
+				NewEnd:   hunk.NewEnd,
+			})
 		}
 	}
 	results := make([]gitindex.SearchMatch, 0, len(byPR))
@@ -998,16 +1063,48 @@ func (s *Server) searchByRanges(ctx context.Context, repositoryID uint, ranges [
 		match.Reasons = append(match.Reasons, "overlapping_ranges")
 		results = append(results, *match)
 	}
-	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].Score == results[j].Score {
-			return results[i].PullRequestNumber > results[j].PullRequestNumber
-		}
-		return results[i].Score > results[j].Score
-	})
-	if len(results) > limit {
-		results = results[:limit]
+	return results
+}
+
+func rangeSearchMatch(hunk database.PullRequestChangeHunk, r searchRange) bool {
+	if hunk.Path != r.Path {
+		return false
 	}
-	return results, nil
+	return rangeOverlap(hunk.NewStart, hunk.NewEnd, r.Start, r.End) || rangeOverlap(hunk.OldStart, hunk.OldEnd, r.Start, r.End)
+}
+
+func ensureRangeSearchMatch(byPR map[int]*gitindex.SearchMatch, prNumber int, snapshot database.PullRequestChangeSnapshot) *gitindex.SearchMatch {
+	match := byPR[prNumber]
+	if match != nil {
+		return match
+	}
+	match = &gitindex.SearchMatch{
+		PullRequestNumber: prNumber,
+		State:             snapshot.State,
+		Draft:             snapshot.Draft,
+		HeadSHA:           snapshot.HeadSHA,
+		BaseRef:           snapshot.BaseRef,
+		IndexedAs:         snapshot.IndexedAs,
+		IndexFreshness:    snapshot.IndexFreshness,
+	}
+	byPR[prNumber] = match
+	return match
+}
+
+func sortSearchMatches(matches []gitindex.SearchMatch) {
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].Score == matches[j].Score {
+			return matches[i].PullRequestNumber > matches[j].PullRequestNumber
+		}
+		return matches[i].Score > matches[j].Score
+	})
+}
+
+func trimSearchMatches(matches []gitindex.SearchMatch, limit int) []gitindex.SearchMatch {
+	if len(matches) <= limit {
+		return matches
+	}
+	return matches[:limit]
 }
 
 func applySnapshotStateFilter(query *gorm.DB, state string) *gorm.DB {

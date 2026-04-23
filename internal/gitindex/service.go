@@ -109,76 +109,111 @@ func (s *Service) IndexPullRequest(ctx context.Context, owner, repo string, repo
 	if pull.IssueID == 0 {
 		return errors.New("pull request is required")
 	}
-
-	if timeout := s.indexTimeout; timeout > 0 {
-		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > timeout {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
-		}
-	}
-
+	ctx, cancel := s.withIndexTimeout(ctx)
+	defer cancel()
 	return s.withRepoLock(ctx, owner, repo, func() error {
-		if err := s.refreshAuthHeader(ctx); err != nil {
-			return s.markSnapshotFailed(ctx, repository.ID, pull, "", err)
-		}
-
-		remoteURL := repositoryGitURL(repository.HTMLURL)
-		mirrorPath, err := s.ensureMirror(ctx, owner, repo, remoteURL)
+		mirrorPath, mergeBase, err := s.preparePullRequestIndex(ctx, owner, repo, repository, pull)
 		if err != nil {
 			return s.markSnapshotFailed(ctx, repository.ID, pull, "", err)
 		}
-		if err := s.syncRefs(ctx, repository.ID, mirrorPath, pull.BaseRef, pull.Number); err != nil {
-			return s.markSnapshotFailed(ctx, repository.ID, pull, "", err)
-		}
-
-		mergeBase, err := s.mergeBase(ctx, mirrorPath, pull.BaseSHA, pull.HeadSHA)
-		if err != nil {
-			return s.markSnapshotFailed(ctx, repository.ID, pull, "", err)
-		}
-
-		snapshotRows, hunkRows, snapshot, commitRows, err := s.buildPullRequestIndex(ctx, mirrorPath, repository.ID, pull, mergeBase)
+		indexResult, err := s.buildPullRequestIndexResult(ctx, mirrorPath, repository.ID, pull, mergeBase)
 		if err != nil {
 			return s.markSnapshotFailed(ctx, repository.ID, pull, mergeBase, err)
 		}
-
-		return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			if err := upsertSnapshot(tx, snapshot); err != nil {
-				return err
-			}
-
-			var stored database.PullRequestChangeSnapshot
-			if err := tx.Where("repository_id = ? AND pull_request_number = ?", repository.ID, pull.Number).First(&stored).Error; err != nil {
-				return err
-			}
-
-			if err := tx.Where("snapshot_id = ?", stored.ID).Delete(&database.PullRequestChangeHunk{}).Error; err != nil {
-				return err
-			}
-			if err := tx.Where("snapshot_id = ?", stored.ID).Delete(&database.PullRequestChangeFile{}).Error; err != nil {
-				return err
-			}
-
-			for i := range snapshotRows {
-				snapshotRows[i].SnapshotID = stored.ID
-			}
-			for i := range hunkRows {
-				hunkRows[i].SnapshotID = stored.ID
-			}
-
-			if err := insertPullRequestChangeRows(tx, snapshotRows, hunkRows); err != nil {
-				return err
-			}
-
-			for _, commit := range commitRows {
-				if err := upsertCommitBundle(tx, commit); err != nil {
-					return err
-				}
-			}
-
-			return nil
-		})
+		return s.writePullRequestIndex(ctx, repository.ID, pull.Number, indexResult)
 	})
+}
+
+func (s *Service) withIndexTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if timeout := s.indexTimeout; timeout > 0 {
+		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > timeout {
+			return context.WithTimeout(ctx, timeout)
+		}
+	}
+	return ctx, func() {}
+}
+
+func (s *Service) preparePullRequestIndex(ctx context.Context, owner, repo string, repository database.Repository, pull database.PullRequest) (string, string, error) {
+	if err := s.refreshAuthHeader(ctx); err != nil {
+		return "", "", err
+	}
+	mirrorPath, err := s.ensureMirror(ctx, owner, repo, repositoryGitURL(repository.HTMLURL))
+	if err != nil {
+		return "", "", err
+	}
+	if err := s.syncRefs(ctx, repository.ID, mirrorPath, pull.BaseRef, pull.Number); err != nil {
+		return "", "", err
+	}
+	mergeBase, err := s.mergeBase(ctx, mirrorPath, pull.BaseSHA, pull.HeadSHA)
+	if err != nil {
+		return "", "", err
+	}
+	return mirrorPath, mergeBase, nil
+}
+
+type pullRequestIndexResult struct {
+	files       []database.PullRequestChangeFile
+	hunks       []database.PullRequestChangeHunk
+	snapshot    database.PullRequestChangeSnapshot
+	commitRows  []commitBundle
+}
+
+func (s *Service) buildPullRequestIndexResult(ctx context.Context, mirrorPath string, repositoryID uint, pull database.PullRequest, mergeBase string) (pullRequestIndexResult, error) {
+	files, hunks, snapshot, commitRows, err := s.buildPullRequestIndex(ctx, mirrorPath, repositoryID, pull, mergeBase)
+	if err != nil {
+		return pullRequestIndexResult{}, err
+	}
+	return pullRequestIndexResult{
+		files:      files,
+		hunks:      hunks,
+		snapshot:   snapshot,
+		commitRows: commitRows,
+	}, nil
+}
+
+func (s *Service) writePullRequestIndex(ctx context.Context, repositoryID uint, pullNumber int, result pullRequestIndexResult) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		storedID, err := replaceStoredPullRequestSnapshot(tx, repositoryID, pullNumber, result.snapshot)
+		if err != nil {
+			return err
+		}
+		assignSnapshotIDs(result.files, result.hunks, storedID)
+		if err := insertPullRequestChangeRows(tx, result.files, result.hunks); err != nil {
+			return err
+		}
+		for _, commit := range result.commitRows {
+			if err := upsertCommitBundle(tx, commit); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func replaceStoredPullRequestSnapshot(tx *gorm.DB, repositoryID uint, pullNumber int, snapshot database.PullRequestChangeSnapshot) (uint, error) {
+	if err := upsertSnapshot(tx, snapshot); err != nil {
+		return 0, err
+	}
+	var stored database.PullRequestChangeSnapshot
+	if err := tx.Where("repository_id = ? AND pull_request_number = ?", repositoryID, pullNumber).First(&stored).Error; err != nil {
+		return 0, err
+	}
+	if err := tx.Where("snapshot_id = ?", stored.ID).Delete(&database.PullRequestChangeHunk{}).Error; err != nil {
+		return 0, err
+	}
+	if err := tx.Where("snapshot_id = ?", stored.ID).Delete(&database.PullRequestChangeFile{}).Error; err != nil {
+		return 0, err
+	}
+	return stored.ID, nil
+}
+
+func assignSnapshotIDs(files []database.PullRequestChangeFile, hunks []database.PullRequestChangeHunk, snapshotID uint) {
+	for i := range files {
+		files[i].SnapshotID = snapshotID
+	}
+	for i := range hunks {
+		hunks[i].SnapshotID = snapshotID
+	}
 }
 
 func (s *Service) MarkBaseRefStale(ctx context.Context, repositoryID uint, baseRef string) error {
@@ -282,54 +317,73 @@ type commitParentBundle struct {
 }
 
 func (s *Service) buildPullRequestIndex(ctx context.Context, mirrorPath string, repositoryID uint, pull database.PullRequest, mergeBase string) ([]database.PullRequestChangeFile, []database.PullRequestChangeHunk, database.PullRequestChangeSnapshot, []commitBundle, error) {
-	rawOut, err := s.runGit(ctx, mirrorPath, "diff", "--raw", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", mergeBase+"..."+pull.HeadSHA)
+	files, indexedAs, err := s.loadPullRequestIndexFiles(ctx, mirrorPath, pull, mergeBase)
 	if err != nil {
 		return nil, nil, database.PullRequestChangeSnapshot{}, nil, err
+	}
+	fileRows, hunkRows, snapshot := buildPullRequestSnapshotRows(repositoryID, pull, mergeBase, indexedAs, files)
+	commitBundles, err := s.buildCommitBundles(ctx, mirrorPath, repositoryID, mergeBase, pull.HeadSHA)
+	if err != nil {
+		return nil, nil, database.PullRequestChangeSnapshot{}, nil, err
+	}
+	return fileRows, hunkRows, snapshot, commitBundles, nil
+}
+
+func (s *Service) loadPullRequestIndexFiles(ctx context.Context, mirrorPath string, pull database.PullRequest, mergeBase string) (map[string]*parsedFile, string, error) {
+	rawOut, err := s.runGit(ctx, mirrorPath, "diff", "--raw", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", mergeBase+"..."+pull.HeadSHA)
+	if err != nil {
+		return nil, "", err
 	}
 	numstatOut, err := s.runGit(ctx, mirrorPath, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", mergeBase+"..."+pull.HeadSHA)
 	if err != nil {
-		return nil, nil, database.PullRequestChangeSnapshot{}, nil, err
+		return nil, "", err
 	}
+	files := mergeFileMetadata(parseRawZ(rawOut), parseNumstatZ(numstatOut))
+	indexedAs := pullRequestIndexedAs(files)
+	if indexedAs != indexedAsFull {
+		setPullRequestFilesIndexMode(files, indexedAsPathOnly)
+		return files, indexedAs, nil
+	}
+	patchOut, err := s.runGit(ctx, mirrorPath, "diff", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", "--unified=0", mergeBase+"..."+pull.HeadSHA)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := applyPatchDetails(files, patchOut); err != nil {
+		return nil, "", err
+	}
+	if pullRequestFilesMixed(files) {
+		indexedAs = indexedAsMixed
+	}
+	return files, indexedAs, nil
+}
 
-	rawRecords := parseRawZ(rawOut)
-	numstatRecords := parseNumstatZ(numstatOut)
-	files := mergeFileMetadata(rawRecords, numstatRecords)
-
+func pullRequestIndexedAs(files map[string]*parsedFile) string {
 	totalLines := 0
 	for _, file := range files {
 		totalLines += file.Additions + file.Deletions
 	}
-
-	indexedAs := indexedAsFull
 	if len(files) > 5000 || totalLines > 200000 {
-		indexedAs = indexedAsOversized
+		return indexedAsOversized
 	}
+	return indexedAsFull
+}
 
-	if indexedAs == indexedAsFull {
-		patchOut, err := s.runGit(ctx, mirrorPath, "diff", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", "--unified=0", mergeBase+"..."+pull.HeadSHA)
-		if err != nil {
-			return nil, nil, database.PullRequestChangeSnapshot{}, nil, err
-		}
-		if err := applyPatchDetails(files, patchOut); err != nil {
-			return nil, nil, database.PullRequestChangeSnapshot{}, nil, err
-		}
+func setPullRequestFilesIndexMode(files map[string]*parsedFile, indexedAs string) {
+	for _, file := range files {
+		file.IndexedAs = indexedAs
+	}
+}
 
-		mixed := false
-		for _, file := range files {
-			if file.IndexedAs != "" && file.IndexedAs != indexedAsFull {
-				mixed = true
-				break
-			}
-		}
-		if mixed {
-			indexedAs = indexedAsMixed
-		}
-	} else {
-		for _, file := range files {
-			file.IndexedAs = indexedAsPathOnly
+func pullRequestFilesMixed(files map[string]*parsedFile) bool {
+	for _, file := range files {
+		if file.IndexedAs != "" && file.IndexedAs != indexedAsFull {
+			return true
 		}
 	}
+	return false
+}
 
+func buildPullRequestSnapshotRows(repositoryID uint, pull database.PullRequest, mergeBase, indexedAs string, files map[string]*parsedFile) ([]database.PullRequestChangeFile, []database.PullRequestChangeHunk, database.PullRequestChangeSnapshot) {
 	now := time.Now().UTC()
 	snapshot := database.PullRequestChangeSnapshot{
 		RepositoryID:      repositoryID,
@@ -346,66 +400,7 @@ func (s *Service) buildPullRequestIndex(ctx context.Context, mirrorPath string, 
 		PathCount:         len(files),
 		LastIndexedAt:     &now,
 	}
-
-	var fileRows []database.PullRequestChangeFile
-	var hunkRows []database.PullRequestChangeHunk
-	var indexedFiles int
-	var hunkCount int
-	var totalAdditions int
-	var totalDeletions int
-	var totalPatchBytes int
-	for _, file := range orderedFiles(files) {
-		if file.IndexedAs == "" {
-			file.IndexedAs = indexedAsFull
-		}
-		if file.IndexedAs == indexedAsFull {
-			indexedFiles++
-		}
-		totalAdditions += file.Additions
-		totalDeletions += file.Deletions
-		totalPatchBytes += len(file.PatchText)
-		fileRows = append(fileRows, database.PullRequestChangeFile{
-			RepositoryID:      repositoryID,
-			PullRequestNumber: pull.Number,
-			HeadSHA:           pull.HeadSHA,
-			BaseSHA:           pull.BaseSHA,
-			MergeBaseSHA:      mergeBase,
-			Path:              file.Path,
-			PreviousPath:      file.PreviousPath,
-			Status:            file.Status,
-			FileKind:          file.FileKind,
-			IndexedAs:         file.IndexedAs,
-			OldMode:           file.OldMode,
-			NewMode:           file.NewMode,
-			HeadBlobSHA:       file.HeadBlobSHA,
-			BaseBlobSHA:       file.BaseBlobSHA,
-			Additions:         file.Additions,
-			Deletions:         file.Deletions,
-			Changes:           file.Changes,
-			PatchText:         file.PatchText,
-		})
-		if file.IndexedAs == indexedAsFull {
-			for _, hunk := range file.Hunks {
-				hunkCount++
-				hunkRows = append(hunkRows, database.PullRequestChangeHunk{
-					RepositoryID:      repositoryID,
-					PullRequestNumber: pull.Number,
-					HeadSHA:           pull.HeadSHA,
-					BaseSHA:           pull.BaseSHA,
-					MergeBaseSHA:      mergeBase,
-					Path:              file.Path,
-					HunkIndex:         hunk.Index,
-					DiffHunk:          hunk.DiffHunk,
-					OldStart:          hunk.OldStart,
-					OldCount:          hunk.OldCount,
-					OldEnd:            hunk.OldEnd,
-					NewStart:          hunk.NewStart,
-					NewCount:          hunk.NewCount,
-					NewEnd:            hunk.NewEnd,
-				})
-			}
-		}
-	}
+	fileRows, hunkRows, indexedFiles, hunkCount, totalAdditions, totalDeletions, totalPatchBytes := pullRequestRows(files, repositoryID, pull, mergeBase)
 	snapshot.IndexedFileCount = indexedFiles
 	snapshot.HunkCount = hunkCount
 	snapshot.Additions = totalAdditions
@@ -414,13 +409,86 @@ func (s *Service) buildPullRequestIndex(ctx context.Context, mirrorPath string, 
 	if indexedAs == indexedAsFull && hunkCount == 0 && len(files) > 0 {
 		snapshot.IndexedAs = indexedAsPathOnly
 	}
+	return fileRows, hunkRows, snapshot
+}
 
-	commitBundles, err := s.buildCommitBundles(ctx, mirrorPath, repositoryID, mergeBase, pull.HeadSHA)
-	if err != nil {
-		return nil, nil, database.PullRequestChangeSnapshot{}, nil, err
+func pullRequestRows(files map[string]*parsedFile, repositoryID uint, pull database.PullRequest, mergeBase string) ([]database.PullRequestChangeFile, []database.PullRequestChangeHunk, int, int, int, int, int) {
+	fileRows := make([]database.PullRequestChangeFile, 0, len(files))
+	hunkRows := make([]database.PullRequestChangeHunk, 0)
+	var indexedFiles int
+	var hunkCount int
+	var totalAdditions int
+	var totalDeletions int
+	var totalPatchBytes int
+	for _, file := range orderedFiles(files) {
+		row, hunkSet, fullIndexed := pullRequestFileRows(repositoryID, pull, mergeBase, file)
+		if file.IndexedAs == "" {
+			file.IndexedAs = indexedAsFull
+		}
+		if fullIndexed {
+			indexedFiles++
+		}
+		hunkCount += len(hunkSet)
+		totalAdditions += file.Additions
+		totalDeletions += file.Deletions
+		totalPatchBytes += len(file.PatchText)
+		fileRows = append(fileRows, row)
+		hunkRows = append(hunkRows, hunkSet...)
 	}
+	return fileRows, hunkRows, indexedFiles, hunkCount, totalAdditions, totalDeletions, totalPatchBytes
+}
 
-	return fileRows, hunkRows, snapshot, commitBundles, nil
+func pullRequestFileRows(repositoryID uint, pull database.PullRequest, mergeBase string, file *parsedFile) (database.PullRequestChangeFile, []database.PullRequestChangeHunk, bool) {
+	if file.IndexedAs == "" {
+		file.IndexedAs = indexedAsFull
+	}
+	row := database.PullRequestChangeFile{
+		RepositoryID:      repositoryID,
+		PullRequestNumber: pull.Number,
+		HeadSHA:           pull.HeadSHA,
+		BaseSHA:           pull.BaseSHA,
+		MergeBaseSHA:      mergeBase,
+		Path:              file.Path,
+		PreviousPath:      file.PreviousPath,
+		Status:            file.Status,
+		FileKind:          file.FileKind,
+		IndexedAs:         file.IndexedAs,
+		OldMode:           file.OldMode,
+		NewMode:           file.NewMode,
+		HeadBlobSHA:       file.HeadBlobSHA,
+		BaseBlobSHA:       file.BaseBlobSHA,
+		Additions:         file.Additions,
+		Deletions:         file.Deletions,
+		Changes:           file.Changes,
+		PatchText:         file.PatchText,
+	}
+	if file.IndexedAs != indexedAsFull {
+		return row, nil, false
+	}
+	return row, pullRequestHunkRows(repositoryID, pull, mergeBase, file), true
+}
+
+func pullRequestHunkRows(repositoryID uint, pull database.PullRequest, mergeBase string, file *parsedFile) []database.PullRequestChangeHunk {
+	hunkRows := make([]database.PullRequestChangeHunk, 0, len(file.Hunks))
+	for _, hunk := range file.Hunks {
+		hunkRows = append(hunkRows, database.PullRequestChangeHunk{
+			RepositoryID:      repositoryID,
+			PullRequestNumber: pull.Number,
+			HeadSHA:           pull.HeadSHA,
+			BaseSHA:           pull.BaseSHA,
+			MergeBaseSHA:      mergeBase,
+			Path:              file.Path,
+			HunkIndex:         hunk.Index,
+			DiffHunk:          hunk.DiffHunk,
+			OldStart:          hunk.OldStart,
+			OldCount:          hunk.OldCount,
+			OldEnd:            hunk.OldEnd,
+			NewStart:          hunk.NewStart,
+			NewCount:          hunk.NewCount,
+			NewEnd:            hunk.NewEnd,
+		})
+	}
+	return hunkRows
 }
 
 func (s *Service) buildCommitBundles(ctx context.Context, mirrorPath string, repositoryID uint, mergeBase, headSHA string) ([]commitBundle, error) {
@@ -500,19 +568,11 @@ func (s *Service) readCommitMetadata(ctx context.Context, mirrorPath string, rep
 }
 
 func (s *Service) readCommitDiff(ctx context.Context, mirrorPath string, repositoryID uint, commitSHA string, parent database.GitCommitParent, isMergeCommit bool) (commitParentBundle, error) {
-	rawOut, err := s.runGit(ctx, mirrorPath, "diff", "--raw", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", parent.ParentSHA, commitSHA)
+	files, err := s.loadCommitFiles(ctx, mirrorPath, parent.ParentSHA, commitSHA)
 	if err != nil {
 		return commitParentBundle{}, err
 	}
-	numstatOut, err := s.runGit(ctx, mirrorPath, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", parent.ParentSHA, commitSHA)
-	if err != nil {
-		return commitParentBundle{}, err
-	}
-	files := mergeFileMetadata(parseRawZ(rawOut), parseNumstatZ(numstatOut))
-
-	totalAdditions, totalDeletions := summarizeFileCounts(files)
-	totalLines := totalAdditions + totalDeletions
-	indexedAs, indexReason := decideCommitDetailLevel(len(files), totalLines, isMergeCommit)
+	indexedAs, indexReason, totalAdditions, totalDeletions := summarizeCommitDetail(files, isMergeCommit)
 	now := time.Now().UTC()
 
 	parent.RepositoryID = repositoryID
@@ -529,27 +589,13 @@ func (s *Service) readCommitDiff(ctx context.Context, mirrorPath string, reposit
 	}
 
 	if indexedAs == indexedAsFull {
-		patchOut, err := s.runGit(ctx, mirrorPath, "diff", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", "--unified=0", parent.ParentSHA, commitSHA)
+		indexedAs, indexReason, patchBytes, err := s.applyCommitPatchDetails(ctx, mirrorPath, parent.ParentSHA, commitSHA, files, indexedAs, indexReason, isMergeCommit)
 		if err != nil {
 			return commitParentBundle{}, err
 		}
-		if err := applyPatchDetails(files, patchOut); err != nil {
-			return commitParentBundle{}, err
-		}
-
-		patchBytes := sumPatchBytes(files)
-		if commitPatchBytesExceedBudget(patchBytes, isMergeCommit) || commitFilesContainReducedDetail(files) {
-			indexedAs = indexedAsPathOnly
-			indexReason = commitIndexReasonBudgetExceeded
-			if isMergeCommit {
-				indexReason = commitIndexReasonOversizedMerge
-			}
-			downgradeCommitFilesToPathsOnly(files)
-			parent.IndexedAs = indexedAs
-			parent.IndexReason = indexReason
-		} else {
-			parent.PatchBytes = patchBytes
-		}
+		parent.IndexedAs = indexedAs
+		parent.IndexReason = indexReason
+		parent.PatchBytes = patchBytes
 	}
 
 	fileRows, hunkRows, indexedFileCount, hunkCount, patchBytes := buildCommitParentRows(repositoryID, commitSHA, parent, files)
@@ -565,6 +611,45 @@ func (s *Service) readCommitDiff(ctx context.Context, mirrorPath string, reposit
 		Files:  fileRows,
 		Hunks:  hunkRows,
 	}, nil
+}
+
+func (s *Service) loadCommitFiles(ctx context.Context, mirrorPath, parentSHA, commitSHA string) (map[string]*parsedFile, error) {
+	rawOut, err := s.runGit(ctx, mirrorPath, "diff", "--raw", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", parentSHA, commitSHA)
+	if err != nil {
+		return nil, err
+	}
+	numstatOut, err := s.runGit(ctx, mirrorPath, "diff", "--numstat", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", parentSHA, commitSHA)
+	if err != nil {
+		return nil, err
+	}
+	return mergeFileMetadata(parseRawZ(rawOut), parseNumstatZ(numstatOut)), nil
+}
+
+func summarizeCommitDetail(files map[string]*parsedFile, isMergeCommit bool) (string, string, int, int) {
+	totalAdditions, totalDeletions := summarizeFileCounts(files)
+	totalLines := totalAdditions + totalDeletions
+	indexedAs, indexReason := decideCommitDetailLevel(len(files), totalLines, isMergeCommit)
+	return indexedAs, indexReason, totalAdditions, totalDeletions
+}
+
+func (s *Service) applyCommitPatchDetails(ctx context.Context, mirrorPath, parentSHA, commitSHA string, files map[string]*parsedFile, indexedAs, indexReason string, isMergeCommit bool) (string, string, int, error) {
+	patchOut, err := s.runGit(ctx, mirrorPath, "diff", "-z", "--no-ext-diff", "--no-textconv", "--find-renames=50%", "-l1000", "--unified=0", parentSHA, commitSHA)
+	if err != nil {
+		return indexedAs, indexReason, 0, err
+	}
+	if err := applyPatchDetails(files, patchOut); err != nil {
+		return indexedAs, indexReason, 0, err
+	}
+	patchBytes := sumPatchBytes(files)
+	if !commitPatchBytesExceedBudget(patchBytes, isMergeCommit) && !commitFilesContainReducedDetail(files) {
+		return indexedAs, indexReason, patchBytes, nil
+	}
+	indexReason = commitIndexReasonBudgetExceeded
+	if isMergeCommit {
+		indexReason = commitIndexReasonOversizedMerge
+	}
+	downgradeCommitFilesToPathsOnly(files)
+	return indexedAsPathOnly, indexReason, 0, nil
 }
 
 func decideCommitDetailLevel(pathCount, totalLines int, isMergeCommit bool) (string, string) {
@@ -752,41 +837,52 @@ func applyPatchDetails(files map[string]*parsedFile, patchOut []byte) error {
 			file = &parsedFile{Path: path, Status: "modified"}
 			files[path] = file
 		}
-		printed, err := diff.PrintFileDiff(fileDiff)
-		if err != nil {
+		if err := applyFileDiffDetails(file, fileDiff); err != nil {
 			return err
-		}
-		file.PatchText = string(printed)
-		if file.FileKind == "" {
-			file.FileKind = "text"
-		}
-		if len(printed) > 1_000_000 || file.Changes > 20_000 {
-			file.IndexedAs = indexedAsPathOnly
-			continue
-		}
-		hunks := make([]Hunk, 0, len(fileDiff.Hunks))
-		for i, h := range fileDiff.Hunks {
-			oldStart := int(h.OrigStartLine)
-			oldCount := int(h.OrigLines)
-			newStart := int(h.NewStartLine)
-			newCount := int(h.NewLines)
-			hunks = append(hunks, Hunk{
-				Index:    i,
-				DiffHunk: string(h.Body),
-				OldStart: oldStart,
-				OldCount: oldCount,
-				OldEnd:   rangeEnd(oldStart, oldCount),
-				NewStart: newStart,
-				NewCount: newCount,
-				NewEnd:   rangeEnd(newStart, newCount),
-			})
-		}
-		file.Hunks = hunks
-		if file.IndexedAs == "" {
-			file.IndexedAs = indexedAsFull
 		}
 	}
 	return nil
+}
+
+func applyFileDiffDetails(file *parsedFile, fileDiff *diff.FileDiff) error {
+	printed, err := diff.PrintFileDiff(fileDiff)
+	if err != nil {
+		return err
+	}
+	file.PatchText = string(printed)
+	if file.FileKind == "" {
+		file.FileKind = "text"
+	}
+	if len(printed) > 1_000_000 || file.Changes > 20_000 {
+		file.IndexedAs = indexedAsPathOnly
+		return nil
+	}
+	file.Hunks = parseFileHunks(fileDiff)
+	if file.IndexedAs == "" {
+		file.IndexedAs = indexedAsFull
+	}
+	return nil
+}
+
+func parseFileHunks(fileDiff *diff.FileDiff) []Hunk {
+	hunks := make([]Hunk, 0, len(fileDiff.Hunks))
+	for i, h := range fileDiff.Hunks {
+		oldStart := int(h.OrigStartLine)
+		oldCount := int(h.OrigLines)
+		newStart := int(h.NewStartLine)
+		newCount := int(h.NewLines)
+		hunks = append(hunks, Hunk{
+			Index:    i,
+			DiffHunk: string(h.Body),
+			OldStart: oldStart,
+			OldCount: oldCount,
+			OldEnd:   rangeEnd(oldStart, oldCount),
+			NewStart: newStart,
+			NewCount: newCount,
+			NewEnd:   rangeEnd(newStart, newCount),
+		})
+	}
+	return hunks
 }
 
 func upsertSnapshot(tx *gorm.DB, snapshot database.PullRequestChangeSnapshot) error {
@@ -837,7 +933,17 @@ func upsertCommitBundle(tx *gorm.DB, bundle commitBundle) error {
 		return nil
 	}
 
-	if err := tx.Clauses(clause.OnConflict{
+	if err := upsertCommitRecord(tx, bundle.Commit); err != nil {
+		return err
+	}
+	if err := deleteCommitBundleRows(tx, bundle.Commit.RepositoryID, bundle.Commit.SHA); err != nil {
+		return err
+	}
+	return insertCommitBundleRows(tx, bundle)
+}
+
+func upsertCommitRecord(tx *gorm.DB, commit database.GitCommit) error {
+	return tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "repository_id"}, {Name: "sha"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"tree_sha",
@@ -853,22 +959,23 @@ func upsertCommitBundle(tx *gorm.DB, bundle commitBundle) error {
 			"message_encoding",
 			"updated_at",
 		}),
-	}).Create(&bundle.Commit).Error; err != nil {
-		return err
-	}
-	if err := tx.Where("repository_id = ? AND commit_sha = ?", bundle.Commit.RepositoryID, bundle.Commit.SHA).
+	}).Create(&commit).Error
+}
+
+func deleteCommitBundleRows(tx *gorm.DB, repositoryID uint, commitSHA string) error {
+	if err := tx.Where("repository_id = ? AND commit_sha = ?", repositoryID, commitSHA).
 		Delete(&database.GitCommitParentHunk{}).Error; err != nil {
 		return err
 	}
-	if err := tx.Where("repository_id = ? AND commit_sha = ?", bundle.Commit.RepositoryID, bundle.Commit.SHA).
+	if err := tx.Where("repository_id = ? AND commit_sha = ?", repositoryID, commitSHA).
 		Delete(&database.GitCommitParentFile{}).Error; err != nil {
 		return err
 	}
-	if err := tx.Where("repository_id = ? AND commit_sha = ?", bundle.Commit.RepositoryID, bundle.Commit.SHA).
-		Delete(&database.GitCommitParent{}).Error; err != nil {
-		return err
-	}
+	return tx.Where("repository_id = ? AND commit_sha = ?", repositoryID, commitSHA).
+		Delete(&database.GitCommitParent{}).Error
+}
 
+func insertCommitBundleRows(tx *gorm.DB, bundle commitBundle) error {
 	parentRows := make([]database.GitCommitParent, 0, len(bundle.Parents))
 	fileRows := make([]database.GitCommitParentFile, 0)
 	hunkRows := make([]database.GitCommitParentHunk, 0)
@@ -1105,20 +1212,30 @@ func parseNumstatCounts(additions, deletions string) (int, int, bool) {
 }
 
 func classifyFileKind(raw rawRecord, binary bool, additions, deletions int) string {
-	switch {
-	case raw.OldMode == "160000" || raw.NewMode == "160000":
+	if isMode(raw, "160000") {
 		return "submodule"
-	case raw.OldMode == "120000" || raw.NewMode == "120000":
-		return "symlink"
-	case binary:
-		return "binary"
-	case normalizeStatus(raw.Status) == "type_changed":
-		return "mode_only"
-	case raw.OldMode != "" && raw.NewMode != "" && raw.OldMode != raw.NewMode && additions == 0 && deletions == 0:
-		return "mode_only"
-	default:
-		return "text"
 	}
+	if isMode(raw, "120000") {
+		return "symlink"
+	}
+	if binary {
+		return "binary"
+	}
+	if isModeOnlyChange(raw, additions, deletions) {
+		return "mode_only"
+	}
+	return "text"
+}
+
+func isMode(raw rawRecord, want string) bool {
+	return raw.OldMode == want || raw.NewMode == want
+}
+
+func isModeOnlyChange(raw rawRecord, additions, deletions int) bool {
+	if normalizeStatus(raw.Status) == "type_changed" {
+		return true
+	}
+	return raw.OldMode != "" && raw.NewMode != "" && raw.OldMode != raw.NewMode && additions == 0 && deletions == 0
 }
 
 func normalizeStatus(status string) string {

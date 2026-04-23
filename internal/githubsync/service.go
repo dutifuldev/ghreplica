@@ -211,23 +211,44 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 	if err != nil {
 		return err
 	}
-
 	canonicalRepo, err := s.upsertRepository(ctx, repoResp)
 	if err != nil {
 		return err
 	}
-
-	now := time.Now().UTC()
-	syncMode, err := s.existingSyncMode(ctx, repoResp.FullName, &canonicalRepo.ID)
+	if err := s.bootstrapTrackedRepository(ctx, owner, repo, repoResp.FullName, canonicalRepo.ID); err != nil {
+		return err
+	}
+	issues, err := s.github.ListIssues(ctx, owner, repo, "all")
 	if err != nil {
 		return err
 	}
+	pulls, err := s.github.ListPullRequests(ctx, owner, repo, "all")
+	if err != nil {
+		return err
+	}
+	if err := s.bootstrapIssues(ctx, owner, repo, canonicalRepo.ID, issues); err != nil {
+		return err
+	}
+	if err := s.bootstrapPullRequests(ctx, owner, repo, canonicalRepo.ID, pulls); err != nil {
+		return err
+	}
+	if err := s.bootstrapIssueComments(ctx, owner, repo, canonicalRepo.ID); err != nil {
+		return err
+	}
+	return s.bootstrapPullRequestReviews(ctx, owner, repo, canonicalRepo.ID, pulls)
+}
 
-	tracked := database.TrackedRepository{
+func (s *Service) bootstrapTrackedRepository(ctx context.Context, owner, repo, fullName string, repositoryID uint) error {
+	now := time.Now().UTC()
+	syncMode, err := s.existingSyncMode(ctx, fullName, &repositoryID)
+	if err != nil {
+		return err
+	}
+	return s.upsertTrackedRepository(ctx, database.TrackedRepository{
 		Owner:                    owner,
 		Name:                     repo,
-		FullName:                 repoResp.FullName,
-		RepositoryID:             &canonicalRepo.ID,
+		FullName:                 fullName,
+		RepositoryID:             &repositoryID,
 		SyncMode:                 syncMode,
 		WebhookProjectionEnabled: true,
 		AllowManualBackfill:      true,
@@ -238,74 +259,79 @@ func (s *Service) BootstrapRepository(ctx context.Context, owner, repo string) e
 		Enabled:                  true,
 		LastBootstrapAt:          &now,
 		LastCrawlAt:              &now,
-	}
-	if err := s.upsertTrackedRepository(ctx, tracked); err != nil {
-		return err
-	}
+	})
+}
 
-	issues, err := s.github.ListIssues(ctx, owner, repo, "all")
-	if err != nil {
-		return err
-	}
+func (s *Service) bootstrapIssues(ctx context.Context, owner, repo string, repositoryID uint, issues []gh.IssueResponse) error {
 	for _, issue := range issues {
 		detail, err := s.github.GetIssue(ctx, owner, repo, issue.Number)
 		if err != nil {
 			return err
 		}
-		if _, err := s.upsertIssue(ctx, canonicalRepo.ID, detail); err != nil {
+		if _, err := s.upsertIssue(ctx, repositoryID, detail); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
-	pulls, err := s.github.ListPullRequests(ctx, owner, repo, "all")
-	if err != nil {
-		return err
-	}
+func (s *Service) bootstrapPullRequests(ctx context.Context, owner, repo string, repositoryID uint, pulls []gh.PullRequestResponse) error {
 	for _, pull := range pulls {
 		detail, err := s.github.GetPullRequest(ctx, owner, repo, pull.Number)
 		if err != nil {
 			return err
 		}
-		if err := s.upsertPullRequest(ctx, canonicalRepo.ID, detail); err != nil {
+		if err := s.upsertPullRequest(ctx, repositoryID, detail); err != nil {
 			return err
 		}
-		if err := s.SyncPullRequestIndex(ctx, owner, repo, canonicalRepo.ID, detail); err != nil {
+		if err := s.SyncPullRequestIndex(ctx, owner, repo, repositoryID, detail); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
+func (s *Service) bootstrapIssueComments(ctx context.Context, owner, repo string, repositoryID uint) error {
 	issueComments, err := s.github.ListIssueComments(ctx, owner, repo)
 	if err != nil {
 		return err
 	}
 	for _, comment := range issueComments {
-		if err := s.upsertIssueComment(ctx, canonicalRepo.ID, comment); err != nil {
+		if err := s.upsertIssueComment(ctx, repositoryID, comment); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
+func (s *Service) bootstrapPullRequestReviews(ctx context.Context, owner, repo string, repositoryID uint, pulls []gh.PullRequestResponse) error {
 	for _, pull := range pulls {
-		reviews, err := s.github.ListPullRequestReviews(ctx, owner, repo, pull.Number)
-		if err != nil {
+		if err := s.bootstrapPullRequestReviewSet(ctx, owner, repo, repositoryID, pull.Number); err != nil {
 			return err
-		}
-		for _, review := range reviews {
-			if err := s.upsertPullRequestReview(ctx, canonicalRepo.ID, pull.Number, review); err != nil {
-				return err
-			}
-		}
-
-		reviewComments, err := s.github.ListPullRequestReviewComments(ctx, owner, repo, pull.Number)
-		if err != nil {
-			return err
-		}
-		for _, reviewComment := range reviewComments {
-			if err := s.upsertPullRequestReviewComment(ctx, canonicalRepo.ID, pull.Number, reviewComment); err != nil {
-				return err
-			}
 		}
 	}
+	return nil
+}
 
+func (s *Service) bootstrapPullRequestReviewSet(ctx context.Context, owner, repo string, repositoryID uint, pullNumber int) error {
+	reviews, err := s.github.ListPullRequestReviews(ctx, owner, repo, pullNumber)
+	if err != nil {
+		return err
+	}
+	for _, review := range reviews {
+		if err := s.upsertPullRequestReview(ctx, repositoryID, pullNumber, review); err != nil {
+			return err
+		}
+	}
+	reviewComments, err := s.github.ListPullRequestReviewComments(ctx, owner, repo, pullNumber)
+	if err != nil {
+		return err
+	}
+	for _, reviewComment := range reviewComments {
+		if err := s.upsertPullRequestReviewComment(ctx, repositoryID, pullNumber, reviewComment); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -350,70 +376,19 @@ func (s *Service) SyncPullRequest(ctx context.Context, owner, repo string, numbe
 	if err != nil {
 		return err
 	}
-
 	canonicalRepo, err := s.upsertRepository(ctx, repoResp)
 	if err != nil {
 		return err
 	}
-
-	issue, err := s.github.GetIssue(ctx, owner, repo, number)
-	if err != nil {
+	if _, err := s.syncPullRequestCore(ctx, owner, repo, canonicalRepo, number); err != nil {
 		return err
 	}
-	if _, err := s.upsertIssue(ctx, canonicalRepo.ID, issue); err != nil {
+	if err := s.indexStoredPullRequestIfEnabled(ctx, owner, repo, canonicalRepo, number); err != nil {
 		return err
 	}
-
-	pull, err := s.github.GetPullRequest(ctx, owner, repo, number)
-	if err != nil {
+	if err := s.syncPullRequestRelatedObjects(ctx, owner, repo, canonicalRepo.ID, number); err != nil {
 		return err
 	}
-	if err := s.upsertPullRequest(ctx, canonicalRepo.ID, pull); err != nil {
-		return err
-	}
-	if s.git != nil {
-		var storedPull database.PullRequest
-		if err := s.db.WithContext(ctx).
-			Preload("Issue").
-			Where("repository_id = ? AND number = ?", canonicalRepo.ID, number).
-			First(&storedPull).Error; err != nil {
-			return err
-		}
-		if err := s.git.IndexPullRequest(ctx, owner, repo, canonicalRepo, storedPull); err != nil {
-			return err
-		}
-	}
-
-	issueComments, err := s.github.ListIssueCommentsForIssue(ctx, owner, repo, number)
-	if err != nil {
-		return err
-	}
-	for _, comment := range issueComments {
-		if err := s.upsertIssueComment(ctx, canonicalRepo.ID, comment); err != nil {
-			return err
-		}
-	}
-
-	reviews, err := s.github.ListPullRequestReviews(ctx, owner, repo, number)
-	if err != nil {
-		return err
-	}
-	for _, review := range reviews {
-		if err := s.upsertPullRequestReview(ctx, canonicalRepo.ID, number, review); err != nil {
-			return err
-		}
-	}
-
-	reviewComments, err := s.github.ListPullRequestReviewComments(ctx, owner, repo, number)
-	if err != nil {
-		return err
-	}
-	for _, reviewComment := range reviewComments {
-		if err := s.upsertPullRequestReviewComment(ctx, canonicalRepo.ID, number, reviewComment); err != nil {
-			return err
-		}
-	}
-
 	now := time.Now().UTC()
 	return s.updateTrackedRepositoryAfterTargetedSync(ctx, repoResp.FullName, canonicalRepo.ID, now, map[string]any{
 		"issues_completeness":   "sparse",
@@ -421,6 +396,33 @@ func (s *Service) SyncPullRequest(ctx context.Context, owner, repo string, numbe
 		"comments_completeness": "sparse",
 		"reviews_completeness":  "sparse",
 	})
+}
+
+func (s *Service) indexStoredPullRequestIfEnabled(ctx context.Context, owner, repo string, canonicalRepo database.Repository, number int) error {
+	if s.git == nil {
+		return nil
+	}
+	var storedPull database.PullRequest
+	if err := s.db.WithContext(ctx).
+		Preload("Issue").
+		Where("repository_id = ? AND number = ?", canonicalRepo.ID, number).
+		First(&storedPull).Error; err != nil {
+		return err
+	}
+	return s.git.IndexPullRequest(ctx, owner, repo, canonicalRepo, storedPull)
+}
+
+func (s *Service) syncPullRequestRelatedObjects(ctx context.Context, owner, repo string, repositoryID uint, number int) error {
+	issueComments, err := s.github.ListIssueCommentsForIssue(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	for _, comment := range issueComments {
+		if err := s.upsertIssueComment(ctx, repositoryID, comment); err != nil {
+			return err
+		}
+	}
+	return s.bootstrapPullRequestReviewSet(ctx, owner, repo, repositoryID, number)
 }
 
 func (s *Service) SyncPullRequestIndex(ctx context.Context, owner, repo string, repositoryID uint, pull gh.PullRequestResponse) error {
@@ -535,43 +537,7 @@ func (s *Service) updateTrackedRepositoryAfterTargetedSync(ctx context.Context, 
 }
 
 func (s *Service) upsertTrackedRepository(ctx context.Context, model database.TrackedRepository, extraUpdates ...map[string]any) error {
-	updates := map[string]any{
-		"owner":                      model.Owner,
-		"name":                       model.Name,
-		"full_name":                  model.FullName,
-		"repository_id":              model.RepositoryID,
-		"sync_mode":                  model.SyncMode,
-		"webhook_projection_enabled": model.WebhookProjectionEnabled,
-		"allow_manual_backfill":      model.AllowManualBackfill,
-		"enabled":                    model.Enabled,
-	}
-	if model.IssuesCompleteness != "" {
-		updates["issues_completeness"] = model.IssuesCompleteness
-	}
-	if model.PullsCompleteness != "" {
-		updates["pulls_completeness"] = model.PullsCompleteness
-	}
-	if model.CommentsCompleteness != "" {
-		updates["comments_completeness"] = model.CommentsCompleteness
-	}
-	if model.ReviewsCompleteness != "" {
-		updates["reviews_completeness"] = model.ReviewsCompleteness
-	}
-	if model.LastBootstrapAt != nil {
-		updates["last_bootstrap_at"] = model.LastBootstrapAt
-	}
-	if model.LastCrawlAt != nil {
-		updates["last_crawl_at"] = model.LastCrawlAt
-	}
-	if model.LastWebhookAt != nil {
-		updates["last_webhook_at"] = model.LastWebhookAt
-	}
-	for _, extra := range extraUpdates {
-		for key, value := range extra {
-			updates[key] = value
-		}
-	}
-
+	updates := trackedRepositoryUpdates(model, extraUpdates...)
 	existing, err := refresh.ResolveTrackedRepository(ctx, s.db, model.RepositoryID, model.FullName)
 	if err != nil {
 		return err
@@ -588,26 +554,76 @@ func (s *Service) upsertTrackedRepository(ctx context.Context, model database.Tr
 		Updates(updates).Error
 }
 
-func (s *Service) upsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
-	var ownerID *uint
-	if repo.Owner != nil {
-		user, err := s.upsertUser(ctx, *repo.Owner)
-		if err != nil {
-			return database.Repository{}, err
-		}
-		ownerID = &user.ID
+func trackedRepositoryUpdates(model database.TrackedRepository, extraUpdates ...map[string]any) map[string]any {
+	updates := map[string]any{
+		"owner":                      model.Owner,
+		"name":                       model.Name,
+		"full_name":                  model.FullName,
+		"repository_id":              model.RepositoryID,
+		"sync_mode":                  model.SyncMode,
+		"webhook_projection_enabled": model.WebhookProjectionEnabled,
+		"allow_manual_backfill":      model.AllowManualBackfill,
+		"enabled":                    model.Enabled,
 	}
-	ownerLogin := ""
-	if repo.Owner != nil {
-		ownerLogin = repo.Owner.Login
+	addOptionalTrackedRepositoryTextUpdates(updates, model)
+	addOptionalTrackedRepositoryTimeUpdates(updates, model)
+	for _, extra := range extraUpdates {
+		for key, value := range extra {
+			updates[key] = value
+		}
+	}
+	return updates
+}
+
+func addOptionalTrackedRepositoryTextUpdates(updates map[string]any, model database.TrackedRepository) {
+	addNonEmptyUpdate(updates, "issues_completeness", model.IssuesCompleteness)
+	addNonEmptyUpdate(updates, "pulls_completeness", model.PullsCompleteness)
+	addNonEmptyUpdate(updates, "comments_completeness", model.CommentsCompleteness)
+	addNonEmptyUpdate(updates, "reviews_completeness", model.ReviewsCompleteness)
+}
+
+func addOptionalTrackedRepositoryTimeUpdates(updates map[string]any, model database.TrackedRepository) {
+	addOptionalTimeUpdate(updates, "last_bootstrap_at", model.LastBootstrapAt)
+	addOptionalTimeUpdate(updates, "last_crawl_at", model.LastCrawlAt)
+	addOptionalTimeUpdate(updates, "last_webhook_at", model.LastWebhookAt)
+}
+
+func addNonEmptyUpdate(updates map[string]any, key, value string) {
+	if value != "" {
+		updates[key] = value
+	}
+}
+
+func addOptionalTimeUpdate(updates map[string]any, key string, value *time.Time) {
+	if value != nil {
+		updates[key] = value
+	}
+}
+
+func (s *Service) upsertRepository(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
+	model, err := s.newRepositoryModel(ctx, repo)
+	if err != nil {
+		return database.Repository{}, err
+	}
+	if err := s.upsertRepositoryModel(ctx, repo, model); err != nil {
+		return database.Repository{}, err
 	}
 
+	var stored database.Repository
+	err = s.db.WithContext(ctx).Preload("Owner").Where("github_id = ?", repo.ID).First(&stored).Error
+	return stored, err
+}
+
+func (s *Service) newRepositoryModel(ctx context.Context, repo gh.RepositoryResponse) (database.Repository, error) {
+	ownerID, ownerLogin, err := s.repositoryOwnerRef(ctx, repo.Owner)
+	if err != nil {
+		return database.Repository{}, err
+	}
 	raw, err := json.Marshal(repo)
 	if err != nil {
 		return database.Repository{}, err
 	}
-
-	model := database.Repository{
+	return database.Repository{
 		GitHubID:      repo.ID,
 		NodeID:        sanitizeProjectedText(repo.NodeID),
 		OwnerID:       ownerID,
@@ -626,47 +642,74 @@ func (s *Service) upsertRepository(ctx context.Context, repo gh.RepositoryRespon
 		RawJSON:       sanitizeRawJSON(raw),
 		CreatedAt:     repo.CreatedAt,
 		UpdatedAt:     repo.UpdatedAt,
-	}
+	}, nil
+}
 
-	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var existingByGitHubID database.Repository
-		err := tx.Where("github_id = ?", repo.ID).First(&existingByGitHubID).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+func (s *Service) repositoryOwnerRef(ctx context.Context, owner *gh.UserResponse) (*uint, string, error) {
+	if owner == nil {
+		return nil, "", nil
+	}
+	user, err := s.upsertUser(ctx, *owner)
+	if err != nil {
+		return nil, "", err
+	}
+	return &user.ID, owner.Login, nil
+}
+
+func (s *Service) upsertRepositoryModel(ctx context.Context, repo gh.RepositoryResponse, model database.Repository) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		existingByGitHubID, err := findRepositoryByGitHubID(tx, repo.ID)
+		if err != nil {
 			return err
 		}
-
-		var existingByFullName database.Repository
-		err = tx.Where("full_name = ?", repo.FullName).First(&existingByFullName).Error
-		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		existingByFullName, err := findRepositoryByFullName(tx, repo.FullName)
+		if err != nil {
 			return err
 		}
-
-		if existingByFullName.ID != 0 && existingByFullName.GitHubID != repo.ID {
-			if err := tx.Model(&database.Repository{}).
-				Where("id = ?", existingByFullName.ID).
-				Updates(map[string]any{
-					"full_name":  releasedRepositoryFullName(existingByFullName, repo.FullName),
-					"updated_at": time.Now().UTC(),
-				}).Error; err != nil {
-				return err
-			}
+		if err := releaseRepositoryFullNameClaim(tx, existingByFullName, repo.FullName, repo.ID); err != nil {
+			return err
 		}
+		return writeRepositoryModel(tx, existingByGitHubID, model)
+	})
+}
 
-		assignments := repositoryAssignments(model)
-		if existingByGitHubID.ID != 0 {
-			return tx.Model(&database.Repository{}).
-				Where("id = ?", existingByGitHubID.ID).
-				Updates(assignments).Error
-		}
+func findRepositoryByGitHubID(tx *gorm.DB, githubID int64) (database.Repository, error) {
+	return findRepositoryRecord(tx, "github_id = ?", githubID)
+}
 
-		return tx.Create(&model).Error
-	}); err != nil {
-		return database.Repository{}, err
+func findRepositoryByFullName(tx *gorm.DB, fullName string) (database.Repository, error) {
+	return findRepositoryRecord(tx, "full_name = ?", fullName)
+}
+
+func findRepositoryRecord(tx *gorm.DB, query string, args ...any) (database.Repository, error) {
+	var repository database.Repository
+	err := tx.Where(query, args...).First(&repository).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return database.Repository{}, nil
 	}
+	return repository, err
+}
 
-	var stored database.Repository
-	err = s.db.WithContext(ctx).Preload("Owner").Where("github_id = ?", repo.ID).First(&stored).Error
-	return stored, err
+func releaseRepositoryFullNameClaim(tx *gorm.DB, existing database.Repository, claimedFullName string, githubID int64) error {
+	if existing.ID == 0 || existing.GitHubID == githubID {
+		return nil
+	}
+	return tx.Model(&database.Repository{}).
+		Where("id = ?", existing.ID).
+		Updates(map[string]any{
+			"full_name":  releasedRepositoryFullName(existing, claimedFullName),
+			"updated_at": time.Now().UTC(),
+		}).Error
+}
+
+func writeRepositoryModel(tx *gorm.DB, existing database.Repository, model database.Repository) error {
+	assignments := repositoryAssignments(model)
+	if existing.ID != 0 {
+		return tx.Model(&database.Repository{}).
+			Where("id = ?", existing.ID).
+			Updates(assignments).Error
+	}
+	return tx.Create(&model).Error
 }
 
 func repositoryAssignments(model database.Repository) map[string]any {
@@ -809,32 +852,39 @@ func (s *Service) upsertPullRequest(ctx context.Context, repositoryID uint, pull
 	if err != nil {
 		return err
 	}
-
-	var mergedByID *uint
-	if pull.MergedBy != nil {
-		mergedBy, err := s.upsertUser(ctx, *pull.MergedBy)
-		if err != nil {
-			return err
-		}
-		mergedByID = &mergedBy.ID
-	}
-
-	headRepoID, err := s.ensureRepositoryRef(ctx, pull.Head.Repo)
-	if err != nil {
-		return err
-	}
-	baseRepoID, err := s.ensureRepositoryRef(ctx, pull.Base.Repo)
+	model, err := s.newPullRequestModel(ctx, repositoryID, issue.ID, pull)
 	if err != nil {
 		return err
 	}
 
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "issue_id"}},
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Expr{SQL: "excluded.github_updated_at > pull_requests.github_updated_at"},
+		}},
+		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "github_id", "node_id", "number", "state", "draft", "head_repo_id", "head_ref", "head_sha", "base_repo_id", "base_ref", "base_sha", "mergeable", "mergeable_state", "merged", "merged_at", "merged_by_id", "merge_commit_sha", "additions", "deletions", "changed_files", "commits_count", "html_url", "api_url", "diff_url", "patch_url", "github_created_at", "github_updated_at", "raw_json"}),
+	}).Create(&model).Error; err != nil {
+		return err
+	}
+	return s.indexStoredPullRequest(ctx, repositoryID, pull.Number)
+}
+
+func (s *Service) newPullRequestModel(ctx context.Context, repositoryID, issueID uint, pull gh.PullRequestResponse) (database.PullRequest, error) {
+	mergedByID, err := s.optionalUserID(ctx, pull.MergedBy)
+	if err != nil {
+		return database.PullRequest{}, err
+	}
+	headRepoID, baseRepoID, err := s.pullRequestRepositoryRefs(ctx, pull)
+	if err != nil {
+		return database.PullRequest{}, err
+	}
 	raw, err := json.Marshal(pull)
 	if err != nil {
-		return err
+		return database.PullRequest{}, err
 	}
 
 	model := database.PullRequest{
-		IssueID:         issue.ID,
+		IssueID:         issueID,
 		RepositoryID:    repositoryID,
 		GitHubID:        pull.ID,
 		NodeID:          sanitizeProjectedText(pull.NodeID),
@@ -868,31 +918,45 @@ func (s *Service) upsertPullRequest(ctx context.Context, repositoryID uint, pull
 		mergedAt := *pull.MergedAt
 		model.MergedAt = &mergedAt
 	}
+	return model, nil
+}
 
-	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "issue_id"}},
-		Where: clause.Where{Exprs: []clause.Expression{
-			clause.Expr{SQL: "excluded.github_updated_at > pull_requests.github_updated_at"},
-		}},
-		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "github_id", "node_id", "number", "state", "draft", "head_repo_id", "head_ref", "head_sha", "base_repo_id", "base_ref", "base_sha", "mergeable", "mergeable_state", "merged", "merged_at", "merged_by_id", "merge_commit_sha", "additions", "deletions", "changed_files", "commits_count", "html_url", "api_url", "diff_url", "patch_url", "github_created_at", "github_updated_at", "raw_json"}),
-	}).Create(&model).Error; err != nil {
+func (s *Service) optionalUserID(ctx context.Context, user *gh.UserResponse) (*uint, error) {
+	if user == nil {
+		return nil, nil
+	}
+	stored, err := s.upsertUser(ctx, *user)
+	if err != nil {
+		return nil, err
+	}
+	return &stored.ID, nil
+}
+
+func (s *Service) pullRequestRepositoryRefs(ctx context.Context, pull gh.PullRequestResponse) (*uint, *uint, error) {
+	headRepoID, err := s.ensureRepositoryRef(ctx, pull.Head.Repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	baseRepoID, err := s.ensureRepositoryRef(ctx, pull.Base.Repo)
+	if err != nil {
+		return nil, nil, err
+	}
+	return headRepoID, baseRepoID, nil
+}
+
+func (s *Service) indexStoredPullRequest(ctx context.Context, repositoryID uint, number int) error {
+	if s.search == nil {
+		return nil
+	}
+	var stored database.PullRequest
+	if err := s.db.WithContext(ctx).
+		Preload("Issue").
+		Preload("Issue.Author").
+		Where("repository_id = ? AND number = ?", repositoryID, number).
+		First(&stored).Error; err != nil {
 		return err
 	}
-
-	if s.search != nil {
-		var stored database.PullRequest
-		if err := s.db.WithContext(ctx).
-			Preload("Issue").
-			Preload("Issue.Author").
-			Where("repository_id = ? AND number = ?", repositoryID, pull.Number).
-			First(&stored).Error; err != nil {
-			return err
-		}
-		if err := s.search.UpsertPullRequest(ctx, stored); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.search.UpsertPullRequest(ctx, stored)
 }
 
 func (s *Service) deleteIssueComment(ctx context.Context, repositoryID uint, comment gh.IssueCommentResponse) error {
@@ -1051,30 +1115,34 @@ func (s *Service) upsertPullRequestReviewComment(ctx context.Context, repository
 	if err != nil {
 		return err
 	}
-
-	var authorID *uint
-	if comment.User != nil {
-		author, err := s.upsertUser(ctx, *comment.User)
-		if err != nil {
-			return err
-		}
-		authorID = &author.ID
-	}
-
-	var reviewID *uint
-	if comment.PullRequestReviewID != nil {
-		var review database.PullRequestReview
-		if err := s.db.WithContext(ctx).Where("github_id = ?", *comment.PullRequestReviewID).First(&review).Error; err == nil {
-			reviewID = &review.ID
-		}
-	}
-
-	raw, err := json.Marshal(comment)
+	model, err := s.newPullRequestReviewCommentModel(ctx, repositoryID, pullRequestID, comment)
 	if err != nil {
 		return err
 	}
 
-	model := database.PullRequestReviewComment{
+	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "github_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "pull_request_id", "review_id", "in_reply_to_github_id", "author_id", "path", "diff_hunk", "position", "original_position", "line", "original_line", "side", "body", "html_url", "api_url", "pull_request_url", "github_created_at", "github_updated_at", "raw_json"}),
+	}).Create(&model).Error; err != nil {
+		return err
+	}
+	return s.indexStoredPullRequestReviewComment(ctx, comment.ID)
+}
+
+func (s *Service) newPullRequestReviewCommentModel(ctx context.Context, repositoryID, pullRequestID uint, comment gh.PullRequestReviewCommentResponse) (database.PullRequestReviewComment, error) {
+	authorID, err := s.optionalUserID(ctx, comment.User)
+	if err != nil {
+		return database.PullRequestReviewComment{}, err
+	}
+	reviewID, err := s.optionalPullRequestReviewID(ctx, comment.PullRequestReviewID)
+	if err != nil {
+		return database.PullRequestReviewComment{}, err
+	}
+	raw, err := json.Marshal(comment)
+	if err != nil {
+		return database.PullRequestReviewComment{}, err
+	}
+	return database.PullRequestReviewComment{
 		GitHubID:          comment.ID,
 		NodeID:            sanitizeProjectedText(comment.NodeID),
 		RepositoryID:      repositoryID,
@@ -1096,30 +1164,38 @@ func (s *Service) upsertPullRequestReviewComment(ctx context.Context, repository
 		GitHubCreatedAt:   comment.CreatedAt,
 		GitHubUpdatedAt:   comment.UpdatedAt,
 		RawJSON:           sanitizeRawJSON(raw),
-	}
+	}, nil
+}
 
-	if err := s.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "github_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"repository_id", "pull_request_id", "review_id", "in_reply_to_github_id", "author_id", "path", "diff_hunk", "position", "original_position", "line", "original_line", "side", "body", "html_url", "api_url", "pull_request_url", "github_created_at", "github_updated_at", "raw_json"}),
-	}).Create(&model).Error; err != nil {
+func (s *Service) optionalPullRequestReviewID(ctx context.Context, reviewGitHubID *int64) (*uint, error) {
+	if reviewGitHubID == nil {
+		return nil, nil
+	}
+	var review database.PullRequestReview
+	err := s.db.WithContext(ctx).Where("github_id = ?", *reviewGitHubID).First(&review).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &review.ID, nil
+}
+
+func (s *Service) indexStoredPullRequestReviewComment(ctx context.Context, githubID int64) error {
+	if s.search == nil {
+		return nil
+	}
+	var stored database.PullRequestReviewComment
+	if err := s.db.WithContext(ctx).
+		Preload("Author").
+		Preload("PullRequest").
+		Preload("PullRequest.Issue").
+		Where("github_id = ?", githubID).
+		First(&stored).Error; err != nil {
 		return err
 	}
-
-	if s.search != nil {
-		var stored database.PullRequestReviewComment
-		if err := s.db.WithContext(ctx).
-			Preload("Author").
-			Preload("PullRequest").
-			Preload("PullRequest.Issue").
-			Where("github_id = ?", comment.ID).
-			First(&stored).Error; err != nil {
-			return err
-		}
-		if err := s.search.UpsertPullRequestReviewComment(ctx, stored); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.search.UpsertPullRequestReviewComment(ctx, stored)
 }
 
 func (s *Service) ensureIssueForPullRequest(ctx context.Context, repositoryID uint, pull gh.PullRequestResponse) (database.Issue, error) {

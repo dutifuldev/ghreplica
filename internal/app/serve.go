@@ -14,14 +14,8 @@ import (
 )
 
 func RunServe(cfg config.Config) error {
-	if err := cfg.ValidateDatabase(); err != nil {
+	if err := validateServeConfig(cfg); err != nil {
 		return err
-	}
-	if err := cfg.ValidateServeRuntime(); err != nil {
-		return err
-	}
-	if database.IsSQLiteURL(cfg.DatabaseURL) {
-		return errors.New("ghreplica serve requires PostgreSQL when background webhook jobs are enabled")
 	}
 
 	runtime, err := NewServeRuntime(cfg)
@@ -40,31 +34,46 @@ func RunServe(cfg config.Config) error {
 	if err := runtime.WebhookJobClient.Start(ctx); err != nil {
 		return err
 	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := runtime.WebhookJobClient.Stop(shutdownCtx); err != nil {
-			slog.Error("webhook job client stopped with error", "error", err)
-		}
-	}()
-
-	go func() {
-		if err := runtime.RefreshWorker.Start(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("refresh worker stopped", "error", err)
-			stop()
-		}
-	}()
-	go func() {
-		if err := runtime.WebhookCleanupWorker.Start(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("webhook cleanup worker stopped", "error", err)
-		}
-	}()
-	go func() {
-		if err := runtime.ChangeSyncWorker.Start(ctx); err != nil && ctx.Err() == nil {
-			slog.Error("change sync worker stopped", "error", err)
-			stop()
-		}
-	}()
+	defer stopWebhookJobClient(runtime)
+	startServeWorkers(ctx, stop, runtime)
 
 	return runtime.Server.Start(ctx, cfg.AppAddr)
+}
+
+func validateServeConfig(cfg config.Config) error {
+	if err := cfg.ValidateDatabase(); err != nil {
+		return err
+	}
+	if err := cfg.ValidateServeRuntime(); err != nil {
+		return err
+	}
+	if database.IsSQLiteURL(cfg.DatabaseURL) {
+		return errors.New("ghreplica serve requires PostgreSQL when background webhook jobs are enabled")
+	}
+	return nil
+}
+
+func stopWebhookJobClient(runtime *ServeRuntime) {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := runtime.WebhookJobClient.Stop(shutdownCtx); err != nil {
+		slog.Error("webhook job client stopped with error", "error", err)
+	}
+}
+
+func startServeWorkers(ctx context.Context, stop context.CancelFunc, runtime *ServeRuntime) {
+	startServeWorker(ctx, stop, "refresh worker", runtime.RefreshWorker.Start, true)
+	startServeWorker(ctx, stop, "webhook cleanup worker", runtime.WebhookCleanupWorker.Start, false)
+	startServeWorker(ctx, stop, "change sync worker", runtime.ChangeSyncWorker.Start, true)
+}
+
+func startServeWorker(ctx context.Context, stop context.CancelFunc, name string, run func(context.Context) error, stopOnFailure bool) {
+	go func() {
+		if err := run(ctx); err != nil && ctx.Err() == nil {
+			slog.Error(name+" stopped", "error", err)
+			if stopOnFailure {
+				stop()
+			}
+		}
+	}()
 }

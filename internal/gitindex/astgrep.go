@@ -64,24 +64,17 @@ func IsStructuralSearchTargetNotFound(err error) bool {
 }
 
 func (s *Service) SearchStructural(ctx context.Context, owner, repo string, request StructuralSearchRequest) (StructuralSearchResponse, error) {
-	if timeout := s.astGrepTimeout; timeout > 0 {
-		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > timeout {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
-		}
-	}
+	ctx, cancel := s.withStructuralSearchTimeout(ctx)
+	defer cancel()
 
 	request, err := normalizeStructuralSearchRequest(request)
 	if err != nil {
 		return StructuralSearchResponse{}, err
 	}
-
 	repository, err := s.findRepository(ctx, owner, repo)
 	if err != nil {
 		return StructuralSearchResponse{}, err
 	}
-
 	response := StructuralSearchResponse{
 		Repository: SearchRepository{
 			Owner:    repository.OwnerLogin,
@@ -102,33 +95,7 @@ func (s *Service) SearchStructural(ctx context.Context, owner, repo string, requ
 		}
 	}()
 
-	err = s.withRepoLock(ctx, owner, repo, func() error {
-		if err := s.refreshAuthHeader(ctx); err != nil {
-			return err
-		}
-
-		var err error
-		mirrorPath, err = s.ensureMirror(ctx, owner, repo, repositoryGitURL(repository.HTMLURL))
-		if err != nil {
-			return err
-		}
-
-		target, err = s.resolveStructuralSearchTarget(ctx, mirrorPath, repository, request)
-		if err != nil {
-			return err
-		}
-		response.ResolvedCommitSHA = target.CommitSHA
-		response.ResolvedRef = target.ResolvedRef
-		if target.PathFilterActive && len(target.CandidatePaths) == 0 {
-			return nil
-		}
-
-		tempDir, err = os.MkdirTemp("", "ghreplica-ast-grep-*")
-		if err != nil {
-			return err
-		}
-		return s.materializeCommitTree(ctx, mirrorPath, target.CommitSHA, target.CandidatePaths, tempDir)
-	})
+	err = s.prepareStructuralSearch(ctx, owner, repo, repository, request, &response, &mirrorPath, &target, &tempDir)
 	if err != nil {
 		return StructuralSearchResponse{}, err
 	}
@@ -150,122 +117,155 @@ func (s *Service) SearchStructural(ctx context.Context, owner, repo string, requ
 	return response, nil
 }
 
+func (s *Service) withStructuralSearchTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if timeout := s.astGrepTimeout; timeout > 0 {
+		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > timeout {
+			return context.WithTimeout(ctx, timeout)
+		}
+	}
+	return ctx, func() {}
+}
+
+func (s *Service) prepareStructuralSearch(ctx context.Context, owner, repo string, repository database.Repository, request StructuralSearchRequest, response *StructuralSearchResponse, mirrorPath *string, target *resolvedStructuralTarget, tempDir *string) error {
+	return s.withRepoLock(ctx, owner, repo, func() error {
+		if err := s.refreshAuthHeader(ctx); err != nil {
+			return err
+		}
+		var err error
+		*mirrorPath, err = s.ensureMirror(ctx, owner, repo, repositoryGitURL(repository.HTMLURL))
+		if err != nil {
+			return err
+		}
+		*target, err = s.resolveStructuralSearchTarget(ctx, *mirrorPath, repository, request)
+		if err != nil {
+			return err
+		}
+		response.ResolvedCommitSHA = target.CommitSHA
+		response.ResolvedRef = target.ResolvedRef
+		if target.PathFilterActive && len(target.CandidatePaths) == 0 {
+			return nil
+		}
+		*tempDir, err = os.MkdirTemp("", "ghreplica-ast-grep-*")
+		if err != nil {
+			return err
+		}
+		return s.materializeCommitTree(ctx, *mirrorPath, target.CommitSHA, target.CandidatePaths, *tempDir)
+	})
+}
+
 func (s *Service) resolveStructuralSearchTarget(ctx context.Context, mirrorPath string, repository database.Repository, request StructuralSearchRequest) (resolvedStructuralTarget, error) {
 	switch {
 	case request.PullRequestNumber > 0:
-		var pull database.PullRequest
-		if err := s.db.WithContext(ctx).
-			Where("repository_id = ? AND number = ?", repository.ID, request.PullRequestNumber).
-			First(&pull).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return resolvedStructuralTarget{}, fmt.Errorf("%w: pull request #%d", ErrStructuralSearchTargetNotFound, request.PullRequestNumber)
-			}
-			return resolvedStructuralTarget{}, err
-		}
-		if err := s.syncRefs(ctx, repository.ID, mirrorPath, pull.BaseRef, pull.Number); err != nil {
-			return resolvedStructuralTarget{}, err
-		}
-		target := resolvedStructuralTarget{
-			CommitSHA:   pull.HeadSHA,
-			ResolvedRef: fmt.Sprintf("refs/pull/%d/head", pull.Number),
-		}
-		if request.ChangedFilesOnly {
-			mergeBase, err := s.mergeBase(ctx, mirrorPath, pull.BaseSHA, pull.HeadSHA)
-			if err != nil {
-				return resolvedStructuralTarget{}, err
-			}
-			paths, err := s.listChangedPaths(ctx, mirrorPath, mergeBase, pull.HeadSHA)
-			if err != nil {
-				return resolvedStructuralTarget{}, err
-			}
-			target.CandidatePaths = paths
-			target.PathFilterActive = true
-		}
-		if len(request.Paths) > 0 {
-			if target.PathFilterActive {
-				target.CandidatePaths = intersectPaths(target.CandidatePaths, request.Paths)
-			} else {
-				target.CandidatePaths = append([]string(nil), request.Paths...)
-				target.PathFilterActive = true
-			}
-		}
-		if target.PathFilterActive {
-			existing, err := s.filterExistingPaths(ctx, mirrorPath, target.CommitSHA, target.CandidatePaths)
-			if err != nil {
-				return resolvedStructuralTarget{}, err
-			}
-			target.CandidatePaths = existing
-		}
-		return target, nil
+		return s.resolvePullRequestSearchTarget(ctx, mirrorPath, repository.ID, request)
 	case request.Ref != "":
-		resolvedRef, err := normalizeResolvedRef(request.Ref)
-		if err != nil {
-			return resolvedStructuralTarget{}, err
-		}
-		if err := s.syncResolvedRef(ctx, repository.ID, mirrorPath, resolvedRef); err != nil {
-			return resolvedStructuralTarget{}, err
-		}
-		commitSHA, err := s.resolveGitRefOrSHA(ctx, repository.ID, resolvedRef)
-		if err != nil {
-			return resolvedStructuralTarget{}, err
-		}
-		target := resolvedStructuralTarget{
-			CommitSHA:   commitSHA,
-			ResolvedRef: resolvedRef,
-		}
-		if len(request.Paths) > 0 {
-			existing, err := s.filterExistingPaths(ctx, mirrorPath, commitSHA, request.Paths)
-			if err != nil {
-				return resolvedStructuralTarget{}, err
-			}
-			target.CandidatePaths = existing
-			target.PathFilterActive = true
-		}
-		return target, nil
+		return s.resolveRefSearchTarget(ctx, mirrorPath, repository.ID, request)
 	default:
-		if repository.DefaultBranch != "" {
-			if err := s.syncRefs(ctx, repository.ID, mirrorPath, repository.DefaultBranch, 0); err != nil {
-				return resolvedStructuralTarget{}, err
-			}
-		}
-		if err := s.ensureCommitExists(ctx, mirrorPath, request.CommitSHA); err != nil {
-			return resolvedStructuralTarget{}, err
-		}
-		target := resolvedStructuralTarget{CommitSHA: request.CommitSHA}
-		if len(request.Paths) > 0 {
-			existing, err := s.filterExistingPaths(ctx, mirrorPath, request.CommitSHA, request.Paths)
-			if err != nil {
-				return resolvedStructuralTarget{}, err
-			}
-			target.CandidatePaths = existing
-			target.PathFilterActive = true
-		}
-		return target, nil
+		return s.resolveCommitSearchTarget(ctx, mirrorPath, repository, request)
 	}
 }
 
+func (s *Service) resolvePullRequestSearchTarget(ctx context.Context, mirrorPath string, repositoryID uint, request StructuralSearchRequest) (resolvedStructuralTarget, error) {
+	pull, err := s.lookupStructuralSearchPull(ctx, repositoryID, request.PullRequestNumber)
+	if err != nil {
+		return resolvedStructuralTarget{}, err
+	}
+	if err := s.syncRefs(ctx, repositoryID, mirrorPath, pull.BaseRef, pull.Number); err != nil {
+		return resolvedStructuralTarget{}, err
+	}
+	target := resolvedStructuralTarget{
+		CommitSHA:   pull.HeadSHA,
+		ResolvedRef: fmt.Sprintf("refs/pull/%d/head", pull.Number),
+	}
+	paths, active, err := s.structuralSearchPRPaths(ctx, mirrorPath, pull, request)
+	if err != nil {
+		return resolvedStructuralTarget{}, err
+	}
+	target.CandidatePaths = paths
+	target.PathFilterActive = active
+	return s.finalizeStructuralSearchTarget(ctx, mirrorPath, target, request.Paths)
+}
+
+func (s *Service) lookupStructuralSearchPull(ctx context.Context, repositoryID uint, pullNumber int) (database.PullRequest, error) {
+	var pull database.PullRequest
+	if err := s.db.WithContext(ctx).
+		Where("repository_id = ? AND number = ?", repositoryID, pullNumber).
+		First(&pull).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return database.PullRequest{}, fmt.Errorf("%w: pull request #%d", ErrStructuralSearchTargetNotFound, pullNumber)
+		}
+		return database.PullRequest{}, err
+	}
+	return pull, nil
+}
+
+func (s *Service) structuralSearchPRPaths(ctx context.Context, mirrorPath string, pull database.PullRequest, request StructuralSearchRequest) ([]string, bool, error) {
+	if !request.ChangedFilesOnly {
+		return nil, false, nil
+	}
+	mergeBase, err := s.mergeBase(ctx, mirrorPath, pull.BaseSHA, pull.HeadSHA)
+	if err != nil {
+		return nil, false, err
+	}
+	paths, err := s.listChangedPaths(ctx, mirrorPath, mergeBase, pull.HeadSHA)
+	if err != nil {
+		return nil, false, err
+	}
+	return paths, true, nil
+}
+
+func (s *Service) resolveRefSearchTarget(ctx context.Context, mirrorPath string, repositoryID uint, request StructuralSearchRequest) (resolvedStructuralTarget, error) {
+	resolvedRef, err := normalizeResolvedRef(request.Ref)
+	if err != nil {
+		return resolvedStructuralTarget{}, err
+	}
+	if err := s.syncResolvedRef(ctx, repositoryID, mirrorPath, resolvedRef); err != nil {
+		return resolvedStructuralTarget{}, err
+	}
+	commitSHA, err := s.resolveGitRefOrSHA(ctx, repositoryID, resolvedRef)
+	if err != nil {
+		return resolvedStructuralTarget{}, err
+	}
+	return s.finalizeStructuralSearchTarget(ctx, mirrorPath, resolvedStructuralTarget{
+		CommitSHA:   commitSHA,
+		ResolvedRef: resolvedRef,
+	}, request.Paths)
+}
+
+func (s *Service) resolveCommitSearchTarget(ctx context.Context, mirrorPath string, repository database.Repository, request StructuralSearchRequest) (resolvedStructuralTarget, error) {
+	if repository.DefaultBranch != "" {
+		if err := s.syncRefs(ctx, repository.ID, mirrorPath, repository.DefaultBranch, 0); err != nil {
+			return resolvedStructuralTarget{}, err
+		}
+	}
+	if err := s.ensureCommitExists(ctx, mirrorPath, request.CommitSHA); err != nil {
+		return resolvedStructuralTarget{}, err
+	}
+	return s.finalizeStructuralSearchTarget(ctx, mirrorPath, resolvedStructuralTarget{CommitSHA: request.CommitSHA}, request.Paths)
+}
+
+func (s *Service) finalizeStructuralSearchTarget(ctx context.Context, mirrorPath string, target resolvedStructuralTarget, requestedPaths []string) (resolvedStructuralTarget, error) {
+	if len(requestedPaths) > 0 {
+		if target.PathFilterActive {
+			target.CandidatePaths = intersectPaths(target.CandidatePaths, requestedPaths)
+		} else {
+			target.CandidatePaths = append([]string(nil), requestedPaths...)
+			target.PathFilterActive = true
+		}
+	}
+	if !target.PathFilterActive {
+		return target, nil
+	}
+	existing, err := s.filterExistingPaths(ctx, mirrorPath, target.CommitSHA, target.CandidatePaths)
+	if err != nil {
+		return resolvedStructuralTarget{}, err
+	}
+	target.CandidatePaths = existing
+	return target, nil
+}
+
 func normalizeStructuralSearchRequest(request StructuralSearchRequest) (StructuralSearchRequest, error) {
-	request.CommitSHA = strings.TrimSpace(request.CommitSHA)
-	request.Ref = strings.TrimSpace(request.Ref)
-	request.Language = strings.TrimSpace(request.Language)
-	request.Paths = normalizeStructuralPaths(request.Paths)
-	if request.Limit <= 0 {
-		request.Limit = 100
-	}
-	if request.Limit > 1000 {
-		request.Limit = 1000
-	}
-	targets := 0
-	if request.CommitSHA != "" {
-		targets++
-	}
-	if request.Ref != "" {
-		targets++
-	}
-	if request.PullRequestNumber > 0 {
-		targets++
-	}
-	if targets != 1 {
+	request = normalizeStructuralRequestFields(request)
+	if structuralTargetCount(request) != 1 {
 		return StructuralSearchRequest{}, fmt.Errorf("%w: exactly one of commit_sha, ref, or pull_request_number is required", ErrInvalidStructuralSearchRequest)
 	}
 	if request.ChangedFilesOnly && request.PullRequestNumber <= 0 {
@@ -278,6 +278,34 @@ func normalizeStructuralSearchRequest(request StructuralSearchRequest) (Structur
 		return StructuralSearchRequest{}, fmt.Errorf("%w: rule is required", ErrInvalidStructuralSearchRequest)
 	}
 	return request, nil
+}
+
+func normalizeStructuralRequestFields(request StructuralSearchRequest) StructuralSearchRequest {
+	request.CommitSHA = strings.TrimSpace(request.CommitSHA)
+	request.Ref = strings.TrimSpace(request.Ref)
+	request.Language = strings.TrimSpace(request.Language)
+	request.Paths = normalizeStructuralPaths(request.Paths)
+	switch {
+	case request.Limit <= 0:
+		request.Limit = 100
+	case request.Limit > 1000:
+		request.Limit = 1000
+	}
+	return request
+}
+
+func structuralTargetCount(request StructuralSearchRequest) int {
+	targets := 0
+	for _, present := range []bool{
+		request.CommitSHA != "",
+		request.Ref != "",
+		request.PullRequestNumber > 0,
+	} {
+		if present {
+			targets++
+		}
+	}
+	return targets
 }
 
 func normalizeStructuralPaths(paths []string) []string {
@@ -461,6 +489,27 @@ func (s *Service) materializeCommitTree(ctx context.Context, mirrorPath, commitS
 }
 
 func (s *Service) runASTGrep(ctx context.Context, root string, request StructuralSearchRequest, searchPaths []string) ([]StructuralMatch, bool, error) {
+	rulePath, err := writeASTGrepRule(root, request)
+	if err != nil {
+		return nil, false, err
+	}
+	stdout, err := s.executeASTGrep(ctx, root, rulePath, request, searchPaths)
+	if err != nil {
+		return nil, false, err
+	}
+	var rawMatches []astGrepJSONMatch
+	if err := json.Unmarshal([]byte(stdout), &rawMatches); err != nil {
+		return nil, false, err
+	}
+	truncated := false
+	if len(rawMatches) > request.Limit {
+		truncated = true
+		rawMatches = rawMatches[:request.Limit]
+	}
+	return buildStructuralMatches(root, rawMatches), truncated, nil
+}
+
+func writeASTGrepRule(root string, request StructuralSearchRequest) (string, error) {
 	rulePayload := map[string]any{
 		"id":       "ghreplica-structural-search",
 		"language": request.Language,
@@ -468,13 +517,16 @@ func (s *Service) runASTGrep(ctx context.Context, root string, request Structura
 	}
 	ruleData, err := yaml.Marshal(rulePayload)
 	if err != nil {
-		return nil, false, fmt.Errorf("%w: invalid rule payload", ErrInvalidStructuralSearchRequest)
+		return "", fmt.Errorf("%w: invalid rule payload", ErrInvalidStructuralSearchRequest)
 	}
 	rulePath := filepath.Join(root, ".ghreplica-ast-grep-rule.yml")
 	if err := os.WriteFile(rulePath, ruleData, 0o600); err != nil {
-		return nil, false, err
+		return "", err
 	}
+	return rulePath, nil
+}
 
+func (s *Service) executeASTGrep(ctx context.Context, root, rulePath string, request StructuralSearchRequest, searchPaths []string) (string, error) {
 	args := []string{
 		"scan",
 		"--rule", rulePath,
@@ -487,7 +539,6 @@ func (s *Service) runASTGrep(ctx context.Context, root string, request Structura
 	} else {
 		args = append(args, ".")
 	}
-
 	cmd := exec.CommandContext(ctx, s.astGrepBin, args...)
 	cmd.Dir = root
 	var stdout strings.Builder
@@ -495,39 +546,31 @@ func (s *Service) runASTGrep(ctx context.Context, root string, request Structura
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		message := strings.TrimSpace(stderr.String())
-		var execErr *exec.Error
-		if errors.As(err, &execErr) && execErr.Err != nil {
-			return nil, false, fmt.Errorf("ast-grep is not available: %w", err)
-		}
-		if looksLikeInvalidASTGrepRequest(message) {
-			return nil, false, fmt.Errorf("%w: %s", ErrInvalidStructuralSearchRequest, message)
-		}
-		if message == "" {
-			message = err.Error()
-		}
-		return nil, false, fmt.Errorf("ast-grep search failed: %s", message)
+		return "", classifyASTGrepExecError(err, stderr.String())
 	}
+	return stdout.String(), nil
+}
 
-	var rawMatches []astGrepJSONMatch
-	if err := json.Unmarshal([]byte(stdout.String()), &rawMatches); err != nil {
-		return nil, false, err
+func classifyASTGrepExecError(err error, stderr string) error {
+	message := strings.TrimSpace(stderr)
+	var execErr *exec.Error
+	if errors.As(err, &execErr) && execErr.Err != nil {
+		return fmt.Errorf("ast-grep is not available: %w", err)
 	}
-	truncated := false
-	if len(rawMatches) > request.Limit {
-		truncated = true
-		rawMatches = rawMatches[:request.Limit]
+	if looksLikeInvalidASTGrepRequest(message) {
+		return fmt.Errorf("%w: %s", ErrInvalidStructuralSearchRequest, message)
 	}
+	if message == "" {
+		message = err.Error()
+	}
+	return fmt.Errorf("ast-grep search failed: %s", message)
+}
+
+func buildStructuralMatches(root string, rawMatches []astGrepJSONMatch) []StructuralMatch {
 	matches := make([]StructuralMatch, 0, len(rawMatches))
 	for _, match := range rawMatches {
-		path := strings.TrimPrefix(filepath.ToSlash(match.File), "./")
-		if filepath.IsAbs(match.File) {
-			if rel, err := filepath.Rel(root, match.File); err == nil {
-				path = filepath.ToSlash(rel)
-			}
-		}
 		matches = append(matches, StructuralMatch{
-			Path:        path,
+			Path:        structuralMatchPath(root, match.File),
 			StartLine:   match.Range.Start.Line + 1,
 			StartColumn: match.Range.Start.Column + 1,
 			EndLine:     match.Range.End.Line + 1,
@@ -540,7 +583,18 @@ func (s *Service) runASTGrep(ctx context.Context, root string, request Structura
 			},
 		})
 	}
-	return matches, truncated, nil
+	return matches
+}
+
+func structuralMatchPath(root, file string) string {
+	path := strings.TrimPrefix(filepath.ToSlash(file), "./")
+	if !filepath.IsAbs(file) {
+		return path
+	}
+	if rel, err := filepath.Rel(root, file); err == nil {
+		return filepath.ToSlash(rel)
+	}
+	return path
 }
 
 func extractSingleMetaVariables(values map[string]astGrepJSONNode) map[string]string {

@@ -79,7 +79,7 @@ func fetchJSON(t *testing.T, client *http.Client, target, token string) (int, ht
 
 	resp, err := client.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	var payload any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&payload))
@@ -117,37 +117,48 @@ func normalizeTimeString(value string) string {
 func projectJSON(source, shape any) any {
 	switch shapeTyped := shape.(type) {
 	case map[string]any:
-		sourceMap, ok := source.(map[string]any)
-		if !ok {
-			return source
-		}
-		out := make(map[string]any, len(shapeTyped))
-		for key, childShape := range shapeTyped {
-			out[key] = projectJSON(sourceMap[key], childShape)
-		}
-		return out
+		return projectJSONObject(source, shapeTyped)
 	case []any:
-		sourceSlice, ok := source.([]any)
-		if !ok {
-			return source
-		}
-		out := make([]any, 0, len(shapeTyped))
-		for i, childShape := range shapeTyped {
-			if i >= len(sourceSlice) {
-				break
-			}
-			out = append(out, projectJSON(sourceSlice[i], childShape))
-		}
-		return out
+		return projectJSONArray(source, shapeTyped)
 	default:
-		if source == nil {
-			switch shape.(type) {
-			case string:
-				return ""
-			}
-		}
+		return projectJSONScalar(source, shape)
+	}
+}
+
+func projectJSONObject(source any, shape map[string]any) any {
+	sourceMap, ok := source.(map[string]any)
+	if !ok {
 		return source
 	}
+	out := make(map[string]any, len(shape))
+	for key, childShape := range shape {
+		out[key] = projectJSON(sourceMap[key], childShape)
+	}
+	return out
+}
+
+func projectJSONArray(source any, shape []any) any {
+	sourceSlice, ok := source.([]any)
+	if !ok {
+		return source
+	}
+	out := make([]any, 0, len(shape))
+	for i, childShape := range shape {
+		if i >= len(sourceSlice) {
+			break
+		}
+		out = append(out, projectJSON(sourceSlice[i], childShape))
+	}
+	return out
+}
+
+func projectJSONScalar(source, shape any) any {
+	if source == nil {
+		if _, ok := shape.(string); ok {
+			return ""
+		}
+	}
+	return source
 }
 
 func contractShape(path string, fallback any) any {

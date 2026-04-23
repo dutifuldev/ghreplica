@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"github.com/dutifuldev/ghreplica/internal/refresh"
 	"github.com/dutifuldev/ghreplica/internal/searchindex"
 	"github.com/dutifuldev/ghreplica/internal/webhooks"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -31,27 +33,7 @@ func run(args []string) error {
 	}
 
 	cfg := config.Load()
-
-	switch args[0] {
-	case "serve":
-		return runServe(cfg)
-	case "migrate":
-		return runMigrate(cfg, args[1:])
-	case "backfill":
-		return runBackfill(cfg, args[1:])
-	case "refresh":
-		return runRefresh(cfg, args[1:])
-	case "repair":
-		return runRepair(cfg, args[1:])
-	case "cleanup":
-		return runCleanup(cfg, args[1:])
-	case "sync":
-		return runSync(cfg, args[1:])
-	case "search-index":
-		return runSearchIndex(cfg, args[1:])
-	default:
-		return usageError()
-	}
+	return runCommand(cfg, args[0], args[1:])
 }
 
 func runServe(cfg config.Config) error {
@@ -67,10 +49,9 @@ func runSync(cfg config.Config, args []string) error {
 	if err := syncFlags.Parse(args); err != nil {
 		return err
 	}
-
-	rest := syncFlags.Args()
-	if len(rest) < 2 {
-		return errors.New("usage: ghreplica sync {repo <owner>/<repo> | issue <owner>/<repo> <number> | pr <owner>/<repo> <number>}")
+	request, err := parseSyncRequest(syncFlags.Args())
+	if err != nil {
+		return err
 	}
 	if err := cfg.ValidateDatabase(); err != nil {
 		return err
@@ -86,46 +67,7 @@ func runSync(cfg config.Config, args []string) error {
 	client := app.NewGitHubClient(cfg)
 	service := githubsync.NewService(db, client, app.NewGitIndexService(db, client, cfg)).
 		WithOpenPRInventoryMaxAge(cfg.OpenPRInventoryMaxAge)
-
-	switch rest[0] {
-	case "repo":
-		if len(rest) != 2 {
-			return errors.New("usage: ghreplica sync repo <owner>/<repo>")
-		}
-		owner, repo, err := config.ParseFullName(rest[1])
-		if err != nil {
-			return err
-		}
-		return service.BootstrapRepository(context.Background(), owner, repo)
-	case "issue":
-		if len(rest) != 3 {
-			return errors.New("usage: ghreplica sync issue <owner>/<repo> <number>")
-		}
-		owner, repo, err := config.ParseFullName(rest[1])
-		if err != nil {
-			return err
-		}
-		number, err := parseNumberArg(rest[2])
-		if err != nil {
-			return err
-		}
-		return service.SyncIssue(context.Background(), owner, repo, number)
-	case "pr":
-		if len(rest) != 3 {
-			return errors.New("usage: ghreplica sync pr <owner>/<repo> <number>")
-		}
-		owner, repo, err := config.ParseFullName(rest[1])
-		if err != nil {
-			return err
-		}
-		number, err := parseNumberArg(rest[2])
-		if err != nil {
-			return err
-		}
-		return service.SyncPullRequest(context.Background(), owner, repo, number)
-	default:
-		return errors.New("usage: ghreplica sync {repo <owner>/<repo> | issue <owner>/<repo> <number> | pr <owner>/<repo> <number>}")
-	}
+	return executeSyncRequest(context.Background(), service, request)
 }
 
 func runRefresh(cfg config.Config, args []string) error {
@@ -193,7 +135,7 @@ func runRefreshInventory(cfg config.Config, fullName string) error {
 		return err
 	}
 
-	fmt.Fprintf(
+	_, err = fmt.Fprintf(
 		os.Stdout,
 		"refresh inventory repo=%s total=%d current=%d stale=%d missing=%d generation=%d committed_at=%s\n",
 		fullName,
@@ -204,7 +146,7 @@ func runRefreshInventory(cfg config.Config, fullName string) error {
 		status.InventoryGenerationCurrent,
 		formatTimePtr(status.InventoryLastCommittedAt),
 	)
-	return nil
+	return err
 }
 
 func runBackfill(cfg config.Config, args []string) error {
@@ -282,22 +224,12 @@ func runRepair(cfg config.Config, args []string) error {
 }
 
 func runCleanup(cfg config.Config, args []string) error {
-	var targetArgs, flagArgs []string
-	if len(args) >= 1 && args[0] == "webhook-deliveries" {
-		targetArgs = args[:1]
-		flagArgs = args[1:]
-	} else {
-		flagArgs = args
-	}
-
 	cleanupFlags := flag.NewFlagSet("cleanup", flag.ContinueOnError)
 	untilEmpty := cleanupFlags.Bool("until-empty", false, "repeat cleanup passes until no more eligible webhook deliveries remain")
-	if err := cleanupFlags.Parse(flagArgs); err != nil {
+	if err := cleanupFlags.Parse(trimCleanupTarget(args)); err != nil {
 		return err
 	}
-
-	rest := append(targetArgs, cleanupFlags.Args()...)
-	if len(rest) != 1 || rest[0] != "webhook-deliveries" {
+	if !validCleanupArgs(args, cleanupFlags.Args()) {
 		return errors.New("usage: ghreplica cleanup webhook-deliveries [--until-empty]")
 	}
 	if err := cfg.ValidateDatabase(); err != nil {
@@ -313,25 +245,12 @@ func runCleanup(cfg config.Config, args []string) error {
 	}
 	defer func() { _ = dbHandle.Close() }()
 
-	worker := webhooks.NewDeliveryCleanupWorker(
-		dbHandle.DB,
-		cfg.WebhookDeliveryRetention,
-		cfg.WebhookDeliveryCleanupInterval,
-		cfg.WebhookDeliveryCleanupBatchSize,
-	)
-
-	passes := 0
-	for {
-		processed, err := worker.RunOnce(context.Background())
-		if err != nil {
-			return err
-		}
-		passes++
-		if !processed || !*untilEmpty {
-			fmt.Fprintf(os.Stdout, "cleanup webhook-deliveries passes=%d processed=%t\n", passes, processed)
-			return nil
-		}
+	passes, processed, err := runDeliveryCleanup(context.Background(), newDeliveryCleanupWorker(dbHandle.DB, cfg), *untilEmpty)
+	if err != nil {
+		return err
 	}
+	_, err = fmt.Fprintf(os.Stdout, "cleanup webhook-deliveries passes=%d processed=%t\n", passes, processed)
+	return err
 }
 
 func runSearchIndex(cfg config.Config, args []string) error {
@@ -363,18 +282,24 @@ func runSearchIndex(cfg config.Config, args []string) error {
 }
 
 func usageError() error {
-	fmt.Fprintf(os.Stderr, "usage:\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica serve\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica migrate up\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica backfill repo <owner>/<repo> [--mode open_only|open_and_recent|full_history] [--priority N]\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica cleanup webhook-deliveries [--until-empty]\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica repair recent repo <owner>/<repo>\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica refresh repo <owner>/<repo>\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica refresh inventory repo <owner>/<repo>\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica search-index repo <owner>/<repo>\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica sync repo <owner>/<repo>\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica sync issue <owner>/<repo> <number>\n")
-	fmt.Fprintf(os.Stderr, "  ghreplica sync pr <owner>/<repo> <number>\n")
+	for _, line := range []string{
+		"usage:\n",
+		"  ghreplica serve\n",
+		"  ghreplica migrate up\n",
+		"  ghreplica backfill repo <owner>/<repo> [--mode open_only|open_and_recent|full_history] [--priority N]\n",
+		"  ghreplica cleanup webhook-deliveries [--until-empty]\n",
+		"  ghreplica repair recent repo <owner>/<repo>\n",
+		"  ghreplica refresh repo <owner>/<repo>\n",
+		"  ghreplica refresh inventory repo <owner>/<repo>\n",
+		"  ghreplica search-index repo <owner>/<repo>\n",
+		"  ghreplica sync repo <owner>/<repo>\n",
+		"  ghreplica sync issue <owner>/<repo> <number>\n",
+		"  ghreplica sync pr <owner>/<repo> <number>\n",
+	} {
+		if _, err := io.WriteString(os.Stderr, line); err != nil {
+			return err
+		}
+	}
 	return errors.New("invalid command")
 }
 
@@ -391,4 +316,113 @@ func formatTimePtr(at *time.Time) string {
 		return ""
 	}
 	return at.UTC().Format(time.RFC3339)
+}
+
+type syncRequest struct {
+	target   string
+	fullName string
+	number   int
+}
+
+func runCommand(cfg config.Config, name string, args []string) error {
+	handlers := map[string]func(config.Config, []string) error{
+		"serve":        func(cfg config.Config, _ []string) error { return runServe(cfg) },
+		"migrate":      runMigrate,
+		"backfill":     runBackfill,
+		"refresh":      runRefresh,
+		"repair":       runRepair,
+		"cleanup":      runCleanup,
+		"sync":         runSync,
+		"search-index": runSearchIndex,
+	}
+	handler, ok := handlers[name]
+	if !ok {
+		return usageError()
+	}
+	return handler(cfg, args)
+}
+
+func parseSyncRequest(args []string) (syncRequest, error) {
+	if len(args) < 2 {
+		return syncRequest{}, syncUsageError()
+	}
+
+	switch args[0] {
+	case "repo":
+		if len(args) != 2 {
+			return syncRequest{}, errors.New("usage: ghreplica sync repo <owner>/<repo>")
+		}
+		return syncRequest{target: "repo", fullName: args[1]}, nil
+	case "issue", "pr":
+		if len(args) != 3 {
+			return syncRequest{}, fmt.Errorf("usage: ghreplica sync %s <owner>/<repo> <number>", args[0])
+		}
+		number, err := parseNumberArg(args[2])
+		if err != nil {
+			return syncRequest{}, err
+		}
+		return syncRequest{target: args[0], fullName: args[1], number: number}, nil
+	default:
+		return syncRequest{}, syncUsageError()
+	}
+}
+
+func executeSyncRequest(ctx context.Context, service *githubsync.Service, request syncRequest) error {
+	owner, repo, err := config.ParseFullName(request.fullName)
+	if err != nil {
+		return err
+	}
+
+	switch request.target {
+	case "repo":
+		return service.BootstrapRepository(ctx, owner, repo)
+	case "issue":
+		return service.SyncIssue(ctx, owner, repo, request.number)
+	case "pr":
+		return service.SyncPullRequest(ctx, owner, repo, request.number)
+	default:
+		return syncUsageError()
+	}
+}
+
+func syncUsageError() error {
+	return errors.New("usage: ghreplica sync {repo <owner>/<repo> | issue <owner>/<repo> <number> | pr <owner>/<repo> <number>}")
+}
+
+func trimCleanupTarget(args []string) []string {
+	if len(args) >= 1 && args[0] == "webhook-deliveries" {
+		return args[1:]
+	}
+	return args
+}
+
+func validCleanupArgs(args, parsedArgs []string) bool {
+	rest := append([]string(nil), parsedArgs...)
+	if len(args) >= 1 && args[0] == "webhook-deliveries" {
+		rest = append([]string{"webhook-deliveries"}, rest...)
+	}
+	return len(rest) == 1 && rest[0] == "webhook-deliveries"
+}
+
+func newDeliveryCleanupWorker(db *gorm.DB, cfg config.Config) *webhooks.DeliveryCleanupWorker {
+	return webhooks.NewDeliveryCleanupWorker(
+		db,
+		cfg.WebhookDeliveryRetention,
+		cfg.WebhookDeliveryCleanupInterval,
+		cfg.WebhookDeliveryCleanupBatchSize,
+	)
+}
+
+func runDeliveryCleanup(ctx context.Context, worker *webhooks.DeliveryCleanupWorker, untilEmpty bool) (int, bool, error) {
+	passes := 0
+	for {
+		processed, err := worker.RunOnce(ctx)
+		if err != nil {
+			return 0, false, err
+		}
+		passes++
+		if !processed || !untilEmpty {
+			return passes, processed, nil
+		}
+	}
 }

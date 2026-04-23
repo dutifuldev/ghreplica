@@ -70,49 +70,10 @@ func NewConnector(cfg ConnectConfig) (*Connector, error) {
 }
 
 func (c *Connector) Open(poolConfig PoolConfig) (*Handle, error) {
-	gormConfig := newGormConfig()
-
-	var (
-		db    *gorm.DB
-		sqlDB *sql.DB
-		err   error
-	)
-
-	switch {
-	case IsSQLiteURL(c.cfg.DatabaseURL):
-		db, err = gorm.Open(sqliteDialector(c.cfg.DatabaseURL), gormConfig)
-		if err != nil {
-			return nil, err
-		}
-		sqlDB, err = db.DB()
-		if err != nil {
-			return nil, err
-		}
-	case normalizedDialer(c.cfg.Dialer) == DialerCloudSQL:
-		dsn, err := buildCloudSQLDSN(c.cfg.DatabaseURL, c.cfg.CloudSQLInstanceConnectionName)
-		if err != nil {
-			return nil, err
-		}
-		sqlDB, err = sql.Open(c.driverName, dsn)
-		if err != nil {
-			return nil, err
-		}
-		db, err = gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), gormConfig)
-		if err != nil {
-			_ = sqlDB.Close()
-			return nil, err
-		}
-	default:
-		db, err = gorm.Open(postgresDialector(c.cfg.DatabaseURL), gormConfig)
-		if err != nil {
-			return nil, err
-		}
-		sqlDB, err = db.DB()
-		if err != nil {
-			return nil, err
-		}
+	db, sqlDB, err := c.openDB()
+	if err != nil {
+		return nil, err
 	}
-
 	poolConfig = poolConfig.withDefaults()
 	sqlDB.SetMaxOpenConns(poolConfig.MaxOpenConns)
 	sqlDB.SetMaxIdleConns(poolConfig.MaxIdleConns)
@@ -123,6 +84,58 @@ func (c *Connector) Open(poolConfig PoolConfig) (*Handle, error) {
 		GormDB: db,
 		SQLDB:  sqlDB,
 	}, nil
+}
+
+func (c *Connector) openDB() (*gorm.DB, *sql.DB, error) {
+	switch {
+	case IsSQLiteURL(c.cfg.DatabaseURL):
+		return openSQLiteDB(c.cfg.DatabaseURL)
+	case normalizedDialer(c.cfg.Dialer) == DialerCloudSQL:
+		return c.openCloudSQLDB()
+	default:
+		return openPostgresDB(c.cfg.DatabaseURL)
+	}
+}
+
+func openSQLiteDB(databaseURL string) (*gorm.DB, *sql.DB, error) {
+	db, err := gorm.Open(sqliteDialector(databaseURL), newGormConfig())
+	if err != nil {
+		return nil, nil, err
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, nil, err
+	}
+	return db, sqlDB, nil
+}
+
+func openPostgresDB(databaseURL string) (*gorm.DB, *sql.DB, error) {
+	db, err := gorm.Open(postgresDialector(databaseURL), newGormConfig())
+	if err != nil {
+		return nil, nil, err
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, nil, err
+	}
+	return db, sqlDB, nil
+}
+
+func (c *Connector) openCloudSQLDB() (*gorm.DB, *sql.DB, error) {
+	dsn, err := buildCloudSQLDSN(c.cfg.DatabaseURL, c.cfg.CloudSQLInstanceConnectionName)
+	if err != nil {
+		return nil, nil, err
+	}
+	sqlDB, err := sql.Open(c.driverName, dsn)
+	if err != nil {
+		return nil, nil, err
+	}
+	db, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), newGormConfig())
+	if err != nil {
+		_ = sqlDB.Close()
+		return nil, nil, err
+	}
+	return db, sqlDB, nil
 }
 
 func (c *Connector) Close() error {

@@ -32,9 +32,9 @@ func TestIndexPullRequestTimesOutWaitingForRepoLock(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(lockPath), 0o755))
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	require.NoError(t, err)
-	defer lockFile.Close()
+	defer func() { require.NoError(t, lockFile.Close()) }()
 	require.NoError(t, syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB))
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer func() { require.NoError(t, syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)) }()
 
 	start := time.Now()
 	err = indexer.IndexPullRequest(ctx, "acme", "widgets", repo, pull)

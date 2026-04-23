@@ -35,7 +35,13 @@ func (s *Service) GetRepoStatus(ctx context.Context, owner, repo string) (RepoSt
 		return RepoStatus{}, err
 	}
 
-	status := RepoStatus{
+	status := newRepoStatus(repository, stats)
+	status = applyRepoTextSearchState(status, state)
+	return finalizeRepoStatus(status, state, stats), nil
+}
+
+func newRepoStatus(repository database.Repository, stats repoDocumentStats) RepoStatus {
+	return RepoStatus{
 		Repository: RepoStatusResource{
 			Owner:    repository.OwnerLogin,
 			Name:     repository.Name,
@@ -48,50 +54,52 @@ func (s *Service) GetRepoStatus(ctx context.Context, owner, repo string) (RepoSt
 		Freshness:          TextIndexFreshnessUnknown,
 		Coverage:           TextIndexCoverageEmpty,
 	}
+}
 
-	if state != nil {
-		status.TextIndexStatus = normalizeTextIndexStatus(state.Status)
-		status.Freshness = normalizeTextIndexFreshness(state.Freshness)
-		status.Coverage = normalizeTextIndexCoverage(state.Coverage)
-		status.LastError = strings.TrimSpace(state.LastError)
-		if state.LastIndexedAt != nil {
-			status.LastIndexedAt = state.LastIndexedAt
-		}
-		if state.LastSourceUpdateAt != nil {
-			status.LastSourceUpdateAt = state.LastSourceUpdateAt
-		}
+func applyRepoTextSearchState(status RepoStatus, state *database.RepoTextSearchState) RepoStatus {
+	if state == nil {
+		return status
 	}
+	status.TextIndexStatus = normalizeTextIndexStatus(state.Status)
+	status.Freshness = normalizeTextIndexFreshness(state.Freshness)
+	status.Coverage = normalizeTextIndexCoverage(state.Coverage)
+	status.LastError = strings.TrimSpace(state.LastError)
+	if state.LastIndexedAt != nil {
+		status.LastIndexedAt = state.LastIndexedAt
+	}
+	if state.LastSourceUpdateAt != nil {
+		status.LastSourceUpdateAt = state.LastSourceUpdateAt
+	}
+	return status
+}
 
+func finalizeRepoStatus(status RepoStatus, state *database.RepoTextSearchState, stats repoDocumentStats) RepoStatus {
 	if status.DocumentCount == 0 {
 		status.Coverage = TextIndexCoverageEmpty
 		if status.TextIndexStatus == "" {
 			status.TextIndexStatus = TextIndexStatusMissing
 		}
+		return status
 	}
-
-	if state == nil && stats.DocumentCount > 0 {
+	if state == nil {
 		status.TextIndexStatus = TextIndexStatusReady
 		status.Freshness = deriveFreshness(stats.LastIndexedAt, stats.LastSourceUpdateAt)
 		status.Coverage = TextIndexCoveragePartial
+		return status
 	}
-
-	if state != nil && status.Freshness == TextIndexFreshnessUnknown {
+	if status.Freshness == TextIndexFreshnessUnknown {
 		status.Freshness = deriveFreshness(status.LastIndexedAt, status.LastSourceUpdateAt)
 	}
-
-	if state != nil && status.TextIndexStatus == TextIndexStatusReady && status.Freshness == TextIndexFreshnessStale {
+	if status.TextIndexStatus == TextIndexStatusReady && status.Freshness == TextIndexFreshnessStale {
 		status.TextIndexStatus = TextIndexStatusStale
 	}
-
-	if state != nil && status.TextIndexStatus == TextIndexStatusStale && status.Freshness == TextIndexFreshnessCurrent {
+	if status.TextIndexStatus == TextIndexStatusStale && status.Freshness == TextIndexFreshnessCurrent {
 		status.TextIndexStatus = TextIndexStatusReady
 	}
-
-	return status, nil
+	return status
 }
 
 func (s *Service) markRebuildStarted(ctx context.Context, repositoryID uint, startedAt time.Time) error {
-	startedAt = startedAt.UTC()
 	return s.upsertRepoTextSearchState(ctx, repositoryID, func(state database.RepoTextSearchState) database.RepoTextSearchState {
 		state.Status = TextIndexStatusBuilding
 		state.LastError = ""
@@ -115,7 +123,6 @@ func (s *Service) markRebuildSucceeded(ctx context.Context, repositoryID uint, i
 }
 
 func (s *Service) markRebuildFailed(ctx context.Context, repositoryID uint, failedAt time.Time, failure error) error {
-	failedAt = failedAt.UTC()
 	return s.upsertRepoTextSearchState(ctx, repositoryID, func(state database.RepoTextSearchState) database.RepoTextSearchState {
 		state.Status = TextIndexStatusFailed
 		state.Freshness = deriveFreshness(state.LastIndexedAt, state.LastSourceUpdateAt)

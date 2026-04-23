@@ -23,10 +23,6 @@ type WebhookProjector interface {
 	DeletePullRequestReviewComment(ctx context.Context, repositoryID uint, comment gh.PullRequestReviewCommentResponse) error
 }
 
-type pullRequestIndexer interface {
-	SyncPullRequestIndex(ctx context.Context, owner, repo string, repositoryID uint, pull gh.PullRequestResponse) error
-}
-
 type BaseRefStaler interface {
 	MarkBaseRefStale(ctx context.Context, repositoryID uint, ref string) error
 }

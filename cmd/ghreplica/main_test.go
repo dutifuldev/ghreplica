@@ -16,6 +16,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func captureStandardStream(t *testing.T, current **os.File) (*os.File, func() string) {
+	t.Helper()
+
+	original := *current
+	readPipe, writePipe, err := os.Pipe()
+	require.NoError(t, err)
+	*current = writePipe
+
+	return original, func() string {
+		require.NoError(t, writePipe.Close())
+		*current = original
+		body, err := io.ReadAll(readPipe)
+		require.NoError(t, err)
+		return string(body)
+	}
+}
+
 func TestRunServeRejectsSQLiteWithBackgroundWebhookJobs(t *testing.T) {
 	err := runServe(config.Config{
 		DatabaseURL:   "sqlite://" + t.TempDir() + "/ghreplica.db",
@@ -169,4 +186,113 @@ func TestRunCleanupAcceptsFlagsBeforeTarget(t *testing.T) {
 	err := runCleanup(config.Config{}, []string{"--until-empty", "webhook-deliveries"})
 	require.Error(t, err)
 	require.EqualError(t, err, "DATABASE_URL is required")
+}
+
+func TestRunUsageHelpersAndValidation(t *testing.T) {
+	err := run(nil)
+	require.EqualError(t, err, "invalid command")
+
+	require.EqualError(t, run([]string{"bogus"}), "invalid command")
+	require.EqualError(t, runMigrate(config.Config{}, nil), "DATABASE_URL is required")
+	require.EqualError(t, runSync(config.Config{}, nil), "usage: ghreplica sync {repo <owner>/<repo> | issue <owner>/<repo> <number> | pr <owner>/<repo> <number>}")
+	require.EqualError(t, runRefresh(config.Config{}, nil), "usage: ghreplica refresh {repo <owner>/<repo> | inventory repo <owner>/<repo>}")
+	require.EqualError(t, runRepair(config.Config{}, nil), "usage: ghreplica repair recent repo <owner>/<repo>")
+	require.EqualError(t, runSearchIndex(config.Config{}, nil), "usage: ghreplica search-index repo <owner>/<repo>")
+
+	number, err := parseNumberArg("42")
+	require.NoError(t, err)
+	require.Equal(t, 42, number)
+	_, err = parseNumberArg("0")
+	require.EqualError(t, err, `invalid number: "0"`)
+	require.Equal(t, "", formatTimePtr(nil))
+
+	originalStderr, restore := captureStandardStream(t, &os.Stderr)
+	defer func() { os.Stderr = originalStderr }()
+	err = usageError()
+	require.EqualError(t, err, "invalid command")
+	output := restore()
+	require.Contains(t, output, "ghreplica serve")
+	require.Contains(t, output, "ghreplica sync pr <owner>/<repo> <number>")
+}
+
+func TestRunCleanupAndSearchIndexExecuteWithSQLite(t *testing.T) {
+	ctx := context.Background()
+	dbURL := "sqlite://" + filepath.Join(t.TempDir(), "cleanup.db")
+	db, err := database.Open(dbURL)
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	receivedAt := time.Now().UTC().Add(-2 * time.Hour)
+	processedAt := receivedAt.Add(time.Minute)
+	require.NoError(t, db.WithContext(ctx).Create(&database.WebhookDelivery{
+		DeliveryID:  "cleanup-1",
+		Event:       "ping",
+		ReceivedAt:  receivedAt,
+		ProcessedAt: &processedAt,
+	}).Error)
+
+	cfg := config.Config{
+		DatabaseURL:                     dbURL,
+		WebhookDeliveryRetention:        time.Hour,
+		WebhookDeliveryCleanupInterval:  time.Second,
+		WebhookDeliveryCleanupBatchSize: 10,
+	}
+
+	originalStdout, restoreStdout := captureStandardStream(t, &os.Stdout)
+	defer func() { os.Stdout = originalStdout }()
+	require.NoError(t, runCleanup(cfg, []string{"webhook-deliveries", "--until-empty"}))
+	output := restoreStdout()
+	require.Contains(t, output, "cleanup webhook-deliveries")
+
+	var deliveries int64
+	require.NoError(t, db.WithContext(ctx).Model(&database.WebhookDelivery{}).Count(&deliveries).Error)
+	require.Zero(t, deliveries)
+
+	repo := database.Repository{
+		GitHubID:   100,
+		OwnerLogin: "acme",
+		Name:       "widgets",
+		FullName:   "acme/widgets",
+	}
+	require.NoError(t, db.WithContext(ctx).Create(&repo).Error)
+	require.NoError(t, runSearchIndex(config.Config{DatabaseURL: dbURL}, []string{"repo", "acme/widgets"}))
+}
+
+func TestRunRefreshEnqueuesManualJob(t *testing.T) {
+	ctx := context.Background()
+	dbURL := "sqlite://" + filepath.Join(t.TempDir(), "refresh.db")
+	db, err := database.Open(dbURL)
+	require.NoError(t, err)
+	require.NoError(t, database.ApplyTestSchema(db))
+
+	cfg := config.Config{DatabaseURL: dbURL}
+	require.NoError(t, runRefresh(cfg, []string{"repo", "acme/widgets"}))
+
+	var job database.RepositoryRefreshJob
+	require.NoError(t, db.WithContext(ctx).First(&job).Error)
+	require.Equal(t, "manual", job.Source)
+	require.Equal(t, "acme/widgets", job.FullName)
+}
+
+func TestRunSyncSubcommandsValidateArguments(t *testing.T) {
+	dbURL := "sqlite://" + filepath.Join(t.TempDir(), "sync.db")
+	cfg := config.Config{
+		DatabaseURL:          dbURL,
+		DatabaseMaxOpenConns: 1,
+		DatabaseMaxIdleConns: 1,
+		GitMirrorRoot:        t.TempDir(),
+		ASTGrepBin:           "/bin/true",
+	}
+
+	err := runSync(cfg, []string{"repo", "bad-format"})
+	require.EqualError(t, err, "repository must be in owner/repo form")
+
+	err = runSync(cfg, []string{"issue", "acme/widgets", "nope"})
+	require.EqualError(t, err, `invalid number: "nope"`)
+
+	err = runSync(cfg, []string{"pr", "acme/widgets", "0"})
+	require.EqualError(t, err, `invalid number: "0"`)
+
+	err = runSync(cfg, []string{"wat", "acme/widgets"})
+	require.EqualError(t, err, "usage: ghreplica sync {repo <owner>/<repo> | issue <owner>/<repo> <number> | pr <owner>/<repo> <number>}")
 }

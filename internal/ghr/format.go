@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	gh "github.com/dutifuldev/ghreplica/internal/github"
@@ -76,202 +75,192 @@ func filterValue(value any, fields map[string]struct{}) any {
 	}
 }
 
-func printRepoView(out io.Writer, repo gh.RepositoryResponse) {
-	fmt.Fprintf(out, "%s\n", repo.FullName)
+func printRepoView(out io.Writer, repo gh.RepositoryResponse) error {
+	r := newRenderer()
+	r.Printf("%s\n", repo.FullName)
 	if strings.TrimSpace(repo.Description) != "" {
-		fmt.Fprintf(out, "%s\n\n", repo.Description)
+		r.Printf("%s\n\n", repo.Description)
 	} else {
-		fmt.Fprintln(out)
+		r.Println()
 	}
 
-	tw := newTabWriter(out)
-	fmt.Fprintf(tw, "URL:\t%s\n", repo.HTMLURL)
-	fmt.Fprintf(tw, "Visibility:\t%s\n", coalesce(repo.Visibility, boolVisibility(repo.Private)))
-	fmt.Fprintf(tw, "Default branch:\t%s\n", repo.DefaultBranch)
-	fmt.Fprintf(tw, "Archived:\t%t\n", repo.Archived)
-	fmt.Fprintf(tw, "Updated:\t%s\n", humanTime(repo.UpdatedAt))
-	_ = tw.Flush()
+	tw := r.Tab()
+	tw.Printf("URL:\t%s\n", repo.HTMLURL)
+	tw.Printf("Visibility:\t%s\n", coalesce(repo.Visibility, boolVisibility(repo.Private)))
+	tw.Printf("Default branch:\t%s\n", repo.DefaultBranch)
+	tw.Printf("Archived:\t%t\n", repo.Archived)
+	tw.Printf("Updated:\t%s\n", humanTime(repo.UpdatedAt))
+	tw.Flush()
+	return r.FlushTo(out)
 }
 
-func printRepoStatus(out io.Writer, status MirrorStatusResponse) {
-	fmt.Fprintf(out, "%s\n\n", status.FullName)
-
-	tw := newTabWriter(out)
-	fmt.Fprintf(tw, "Repository present:\t%t\n", status.RepositoryPresent)
-	fmt.Fprintf(tw, "Tracked repo present:\t%t\n", status.TrackedRepositoryPresent)
-	fmt.Fprintf(tw, "Enabled:\t%t\n", status.Enabled)
-	fmt.Fprintf(tw, "Sync mode:\t%s\n", status.SyncMode)
-	fmt.Fprintf(tw, "Webhook projection:\t%t\n", status.WebhookProjectionEnabled)
-	fmt.Fprintf(tw, "Allow manual backfill:\t%t\n", status.AllowManualBackfill)
-	fmt.Fprintf(tw, "Issues completeness:\t%s\n", status.IssuesCompleteness)
-	fmt.Fprintf(tw, "Pulls completeness:\t%s\n", status.PullsCompleteness)
-	fmt.Fprintf(tw, "Comments completeness:\t%s\n", status.CommentsCompleteness)
-	fmt.Fprintf(tw, "Reviews completeness:\t%s\n", status.ReviewsCompleteness)
-	fmt.Fprintf(tw, "Last bootstrap:\t%s\n", humanTimePtr(status.LastBootstrapAt))
-	fmt.Fprintf(tw, "Last crawl:\t%s\n", humanTimePtr(status.LastCrawlAt))
-	fmt.Fprintf(tw, "Last webhook:\t%s\n", humanTimePtr(status.LastWebhookAt))
-	fmt.Fprintf(tw, "Issue count:\t%d\n", status.Counts.Issues)
-	fmt.Fprintf(tw, "Pull count:\t%d\n", status.Counts.Pulls)
-	fmt.Fprintf(tw, "Issue comments:\t%d\n", status.Counts.IssueComments)
-	fmt.Fprintf(tw, "PR reviews:\t%d\n", status.Counts.PullRequestReviews)
-	fmt.Fprintf(tw, "PR review comments:\t%d\n", status.Counts.PullRequestReviewComments)
-	_ = tw.Flush()
-}
-
-func printMirrorRepositoryList(out io.Writer, repos []MirrorRepositoryResponse) {
+func printMirrorRepositoryList(out io.Writer, repos []MirrorRepositoryResponse) error {
+	r := newRenderer()
 	if len(repos) == 0 {
-		fmt.Fprintln(out, "no mirrored repositories found")
-		return
+		r.Println("no mirrored repositories found")
+		return r.FlushTo(out)
 	}
 
-	tw := newTabWriter(out)
-	fmt.Fprintln(tw, "FULL NAME\tENABLED\tSYNC MODE\tLAST WEBHOOK")
+	tw := r.Tab()
+	tw.Println("FULL NAME\tENABLED\tSYNC MODE\tLAST WEBHOOK")
 	for _, repo := range repos {
-		fmt.Fprintf(tw, "%s\t%t\t%s\t%s\n",
+		tw.Printf("%s\t%t\t%s\t%s\n",
 			repo.FullName,
 			repo.Enabled,
 			repo.SyncMode,
 			humanTimePtr(repo.Timestamps.LastWebhookAt),
 		)
 	}
-	_ = tw.Flush()
+	tw.Flush()
+	return r.FlushTo(out)
 }
 
-func printMirrorRepository(out io.Writer, repo MirrorRepositoryResponse) {
-	fmt.Fprintf(out, "%s\n\n", repo.FullName)
+func printMirrorRepository(out io.Writer, repo MirrorRepositoryResponse) error {
+	r := newRenderer()
+	r.Printf("%s\n\n", repo.FullName)
 
-	tw := newTabWriter(out)
+	tw := r.Tab()
 	if repo.GitHubID != nil {
-		fmt.Fprintf(tw, "GitHub ID:\t%d\n", *repo.GitHubID)
+		tw.Printf("GitHub ID:\t%d\n", *repo.GitHubID)
 	}
 	if strings.TrimSpace(repo.NodeID) != "" {
-		fmt.Fprintf(tw, "Node ID:\t%s\n", repo.NodeID)
+		tw.Printf("Node ID:\t%s\n", repo.NodeID)
 	}
 	if repo.Fork != nil {
-		fmt.Fprintf(tw, "Fork:\t%t\n", *repo.Fork)
+		tw.Printf("Fork:\t%t\n", *repo.Fork)
 	}
-	fmt.Fprintf(tw, "Enabled:\t%t\n", repo.Enabled)
-	fmt.Fprintf(tw, "Sync mode:\t%s\n", repo.SyncMode)
-	fmt.Fprintf(tw, "Issues completeness:\t%s\n", repo.Completeness.Issues)
-	fmt.Fprintf(tw, "Pulls completeness:\t%s\n", repo.Completeness.Pulls)
-	fmt.Fprintf(tw, "Comments completeness:\t%s\n", repo.Completeness.Comments)
-	fmt.Fprintf(tw, "Reviews completeness:\t%s\n", repo.Completeness.Reviews)
-	fmt.Fprintf(tw, "Last bootstrap:\t%s\n", humanTimePtr(repo.Timestamps.LastBootstrapAt))
-	fmt.Fprintf(tw, "Last crawl:\t%s\n", humanTimePtr(repo.Timestamps.LastCrawlAt))
-	fmt.Fprintf(tw, "Last webhook:\t%s\n", humanTimePtr(repo.Timestamps.LastWebhookAt))
-	_ = tw.Flush()
+	tw.Printf("Enabled:\t%t\n", repo.Enabled)
+	tw.Printf("Sync mode:\t%s\n", repo.SyncMode)
+	tw.Printf("Issues completeness:\t%s\n", repo.Completeness.Issues)
+	tw.Printf("Pulls completeness:\t%s\n", repo.Completeness.Pulls)
+	tw.Printf("Comments completeness:\t%s\n", repo.Completeness.Comments)
+	tw.Printf("Reviews completeness:\t%s\n", repo.Completeness.Reviews)
+	tw.Printf("Last bootstrap:\t%s\n", humanTimePtr(repo.Timestamps.LastBootstrapAt))
+	tw.Printf("Last crawl:\t%s\n", humanTimePtr(repo.Timestamps.LastCrawlAt))
+	tw.Printf("Last webhook:\t%s\n", humanTimePtr(repo.Timestamps.LastWebhookAt))
+	tw.Flush()
+	return r.FlushTo(out)
 }
 
-func printMirrorRepositoryStatus(out io.Writer, status MirrorRepositoryStatusResponse) {
-	fmt.Fprintf(out, "%s mirror status\n\n", status.Repository.FullName)
+func printMirrorRepositoryStatus(out io.Writer, status MirrorRepositoryStatusResponse) error {
+	r := newRenderer()
+	r.Printf("%s mirror status\n\n", status.Repository.FullName)
 
-	tw := newTabWriter(out)
-	fmt.Fprintf(tw, "State:\t%s\n", status.Sync.State)
-	fmt.Fprintf(tw, "Last error:\t%s\n", coalesce(status.Sync.LastError, "-"))
-	fmt.Fprintf(tw, "Open PR total:\t%d\n", status.PullRequestChanges.Total)
-	fmt.Fprintf(tw, "Open PR current:\t%d\n", status.PullRequestChanges.Current)
-	fmt.Fprintf(tw, "Open PR stale:\t%d\n", status.PullRequestChanges.Stale)
-	fmt.Fprintf(tw, "Open PR missing:\t%s\n", missingCountString(status.PullRequestChanges.Missing, status.PullRequestChanges.MissingStale))
-	fmt.Fprintf(tw, "Inventory scan running:\t%t\n", status.Activity.InventoryScanRunning)
-	fmt.Fprintf(tw, "Backfill running:\t%t\n", status.Activity.BackfillRunning)
-	fmt.Fprintf(tw, "Targeted refresh pending:\t%t\n", status.Activity.TargetedRefreshPending)
-	fmt.Fprintf(tw, "Targeted refresh running:\t%t\n", status.Activity.TargetedRefreshRunning)
-	fmt.Fprintf(tw, "Recent PR repair pending:\t%t\n", status.Activity.RecentPRRepairPending)
-	fmt.Fprintf(tw, "Recent PR repair running:\t%t\n", status.Activity.RecentPRRepairRunning)
-	fmt.Fprintf(tw, "Full history repair running:\t%t\n", status.Activity.FullHistoryRepairRunning)
-	fmt.Fprintf(tw, "Inventory refresh requested:\t%t\n", status.Activity.InventoryRefreshRequested)
-	fmt.Fprintf(tw, "Last inventory scan started:\t%s\n", humanTimePtr(status.Timestamps.LastInventoryScanStartedAt))
-	fmt.Fprintf(tw, "Last inventory scan finished:\t%s\n", humanTimePtr(status.Timestamps.LastInventoryScanFinishedAt))
-	fmt.Fprintf(tw, "Last backfill started:\t%s\n", humanTimePtr(status.Timestamps.LastBackfillStartedAt))
-	fmt.Fprintf(tw, "Last backfill finished:\t%s\n", humanTimePtr(status.Timestamps.LastBackfillFinishedAt))
-	fmt.Fprintf(tw, "Last recent PR repair requested:\t%s\n", humanTimePtr(status.Timestamps.LastRecentPRRepairRequestedAt))
-	fmt.Fprintf(tw, "Last recent PR repair started:\t%s\n", humanTimePtr(status.Timestamps.LastRecentPRRepairStartedAt))
-	fmt.Fprintf(tw, "Last recent PR repair finished:\t%s\n", humanTimePtr(status.Timestamps.LastRecentPRRepairFinishedAt))
-	fmt.Fprintf(tw, "Last full history repair started:\t%s\n", humanTimePtr(status.Timestamps.LastFullHistoryRepairStartedAt))
-	fmt.Fprintf(tw, "Last full history repair finished:\t%s\n", humanTimePtr(status.Timestamps.LastFullHistoryRepairFinishedAt))
-	_ = tw.Flush()
+	tw := r.Tab()
+	tw.Printf("State:\t%s\n", status.Sync.State)
+	tw.Printf("Last error:\t%s\n", coalesce(status.Sync.LastError, "-"))
+	tw.Printf("Open PR total:\t%d\n", status.PullRequestChanges.Total)
+	tw.Printf("Open PR current:\t%d\n", status.PullRequestChanges.Current)
+	tw.Printf("Open PR stale:\t%d\n", status.PullRequestChanges.Stale)
+	tw.Printf("Open PR missing:\t%s\n", missingCountString(status.PullRequestChanges.Missing, status.PullRequestChanges.MissingStale))
+	tw.Printf("Inventory scan running:\t%t\n", status.Activity.InventoryScanRunning)
+	tw.Printf("Backfill running:\t%t\n", status.Activity.BackfillRunning)
+	tw.Printf("Targeted refresh pending:\t%t\n", status.Activity.TargetedRefreshPending)
+	tw.Printf("Targeted refresh running:\t%t\n", status.Activity.TargetedRefreshRunning)
+	tw.Printf("Recent PR repair pending:\t%t\n", status.Activity.RecentPRRepairPending)
+	tw.Printf("Recent PR repair running:\t%t\n", status.Activity.RecentPRRepairRunning)
+	tw.Printf("Full history repair running:\t%t\n", status.Activity.FullHistoryRepairRunning)
+	tw.Printf("Inventory refresh requested:\t%t\n", status.Activity.InventoryRefreshRequested)
+	tw.Printf("Last inventory scan started:\t%s\n", humanTimePtr(status.Timestamps.LastInventoryScanStartedAt))
+	tw.Printf("Last inventory scan finished:\t%s\n", humanTimePtr(status.Timestamps.LastInventoryScanFinishedAt))
+	tw.Printf("Last backfill started:\t%s\n", humanTimePtr(status.Timestamps.LastBackfillStartedAt))
+	tw.Printf("Last backfill finished:\t%s\n", humanTimePtr(status.Timestamps.LastBackfillFinishedAt))
+	tw.Printf("Last recent PR repair requested:\t%s\n", humanTimePtr(status.Timestamps.LastRecentPRRepairRequestedAt))
+	tw.Printf("Last recent PR repair started:\t%s\n", humanTimePtr(status.Timestamps.LastRecentPRRepairStartedAt))
+	tw.Printf("Last recent PR repair finished:\t%s\n", humanTimePtr(status.Timestamps.LastRecentPRRepairFinishedAt))
+	tw.Printf("Last full history repair started:\t%s\n", humanTimePtr(status.Timestamps.LastFullHistoryRepairStartedAt))
+	tw.Printf("Last full history repair finished:\t%s\n", humanTimePtr(status.Timestamps.LastFullHistoryRepairFinishedAt))
+	tw.Flush()
+	return r.FlushTo(out)
 }
 
-func printIssueList(out io.Writer, issues []gh.IssueResponse) {
+func printIssueList(out io.Writer, issues []gh.IssueResponse) error {
+	r := newRenderer()
 	if len(issues) == 0 {
-		fmt.Fprintln(out, "no issues found")
-		return
+		r.Println("no issues found")
+		return r.FlushTo(out)
 	}
 
-	tw := newTabWriter(out)
-	fmt.Fprintln(tw, "NUMBER\tTITLE\tSTATE\tUPDATED")
+	tw := r.Tab()
+	tw.Println("NUMBER\tTITLE\tSTATE\tUPDATED")
 	for _, issue := range issues {
-		fmt.Fprintf(tw, "#%d\t%s\t%s\t%s\n",
+		tw.Printf("#%d\t%s\t%s\t%s\n",
 			issue.Number,
 			truncate(issue.Title, 72),
 			issue.State,
 			humanTime(issue.UpdatedAt),
 		)
 	}
-	_ = tw.Flush()
+	tw.Flush()
+	return r.FlushTo(out)
 }
 
-func printIssueView(out io.Writer, repo string, issue gh.IssueResponse) {
-	fmt.Fprintf(out, "%s\n", issue.Title)
-	fmt.Fprintf(out, "%s#%d · %s · updated %s\n\n", repo, issue.Number, issue.State, humanTime(issue.UpdatedAt))
+func printIssueView(out io.Writer, repo string, issue gh.IssueResponse) error {
+	r := newRenderer()
+	r.Printf("%s\n", issue.Title)
+	r.Printf("%s#%d · %s · updated %s\n\n", repo, issue.Number, issue.State, humanTime(issue.UpdatedAt))
 	if strings.TrimSpace(issue.Body) != "" {
-		fmt.Fprintln(out, issue.Body)
-		fmt.Fprintln(out)
+		r.Println(issue.Body)
+		r.Println()
 	}
-	tw := newTabWriter(out)
+	tw := r.Tab()
 	if issue.User != nil {
-		fmt.Fprintf(tw, "Author:\t%s\n", issue.User.Login)
+		tw.Printf("Author:\t%s\n", issue.User.Login)
 	}
-	fmt.Fprintf(tw, "Comments:\t%d\n", issue.Comments)
-	fmt.Fprintf(tw, "URL:\t%s\n", issue.HTMLURL)
-	_ = tw.Flush()
+	tw.Printf("Comments:\t%d\n", issue.Comments)
+	tw.Printf("URL:\t%s\n", issue.HTMLURL)
+	tw.Flush()
+	return r.FlushTo(out)
 }
 
-func printIssueComments(out io.Writer, comments []gh.IssueCommentResponse) {
+func printIssueComments(out io.Writer, comments []gh.IssueCommentResponse) error {
+	r := newRenderer()
 	if len(comments) == 0 {
-		fmt.Fprintln(out, "no issue comments found")
-		return
+		r.Println("no issue comments found")
+		return r.FlushTo(out)
 	}
 	for i, comment := range comments {
 		if i > 0 {
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, "---")
-			fmt.Fprintln(out)
+			r.Println()
+			r.Println("---")
+			r.Println()
 		}
 		author := ""
 		if comment.User != nil {
 			author = comment.User.Login
 		}
-		fmt.Fprintf(out, "%s commented %s\n\n", author, humanTime(comment.CreatedAt))
-		fmt.Fprintln(out, strings.TrimSpace(comment.Body))
+		r.Printf("%s commented %s\n\n", author, humanTime(comment.CreatedAt))
+		r.Println(strings.TrimSpace(comment.Body))
 	}
+	return r.FlushTo(out)
 }
 
-func printIssueCommentsSection(out io.Writer, comments []gh.IssueCommentResponse) {
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Comments")
-	fmt.Fprintln(out)
-	if len(comments) == 0 {
-		fmt.Fprintln(out, "no issue comments found")
-		return
+func printIssueCommentsSection(out io.Writer, comments []gh.IssueCommentResponse) error {
+	r := newRenderer()
+	r.Println()
+	r.Println("Comments")
+	r.Println()
+	if err := r.FlushTo(out); err != nil {
+		return err
 	}
-	printIssueComments(out, comments)
+	return printIssueComments(out, comments)
 }
 
-func printPullList(out io.Writer, pulls []gh.PullRequestResponse) {
+func printPullList(out io.Writer, pulls []gh.PullRequestResponse) error {
+	r := newRenderer()
 	if len(pulls) == 0 {
-		fmt.Fprintln(out, "no pull requests found")
-		return
+		r.Println("no pull requests found")
+		return r.FlushTo(out)
 	}
 
-	tw := newTabWriter(out)
-	fmt.Fprintln(tw, "NUMBER\tTITLE\tSTATE\tBRANCH\tUPDATED")
+	tw := r.Tab()
+	tw.Println("NUMBER\tTITLE\tSTATE\tBRANCH\tUPDATED")
 	for _, pull := range pulls {
 		state := pull.State
 		if pull.Draft {
 			state = "draft"
 		}
-		fmt.Fprintf(tw, "#%d\t%s\t%s\t%s\t%s\n",
+		tw.Printf("#%d\t%s\t%s\t%s\t%s\n",
 			pull.Number,
 			truncate(pull.Title, 72),
 			state,
@@ -279,45 +268,49 @@ func printPullList(out io.Writer, pulls []gh.PullRequestResponse) {
 			humanTime(pull.UpdatedAt),
 		)
 	}
-	_ = tw.Flush()
+	tw.Flush()
+	return r.FlushTo(out)
 }
 
-func printPullView(out io.Writer, repo string, pr gh.PullRequestResponse) {
-	fmt.Fprintf(out, "%s\n", pr.Title)
-	fmt.Fprintf(out, "%s#%d · %s · %s → %s · updated %s\n\n",
+func printPullView(out io.Writer, repo string, pr gh.PullRequestResponse) error {
+	r := newRenderer()
+	r.Printf("%s\n", pr.Title)
+	r.Printf("%s#%d · %s · %s → %s · updated %s\n\n",
 		repo, pr.Number, pullState(pr), pr.Head.Ref, pr.Base.Ref, humanTime(pr.UpdatedAt))
 	if strings.TrimSpace(pr.Body) != "" {
-		fmt.Fprintln(out, pr.Body)
-		fmt.Fprintln(out)
+		r.Println(pr.Body)
+		r.Println()
 	}
-	tw := newTabWriter(out)
+	tw := r.Tab()
 	if pr.User != nil {
-		fmt.Fprintf(tw, "Author:\t%s\n", pr.User.Login)
+		tw.Printf("Author:\t%s\n", pr.User.Login)
 	}
-	fmt.Fprintf(tw, "URL:\t%s\n", pr.HTMLURL)
-	fmt.Fprintf(tw, "Commits:\t%d\n", pr.Commits)
-	fmt.Fprintf(tw, "Changed files:\t%d\n", pr.ChangedFiles)
-	fmt.Fprintf(tw, "Additions:\t%d\n", pr.Additions)
-	fmt.Fprintf(tw, "Deletions:\t%d\n", pr.Deletions)
+	tw.Printf("URL:\t%s\n", pr.HTMLURL)
+	tw.Printf("Commits:\t%d\n", pr.Commits)
+	tw.Printf("Changed files:\t%d\n", pr.ChangedFiles)
+	tw.Printf("Additions:\t%d\n", pr.Additions)
+	tw.Printf("Deletions:\t%d\n", pr.Deletions)
 	if pr.Mergeable != nil {
-		fmt.Fprintf(tw, "Mergeable:\t%t\n", *pr.Mergeable)
+		tw.Printf("Mergeable:\t%t\n", *pr.Mergeable)
 	}
 	if strings.TrimSpace(pr.MergeableState) != "" {
-		fmt.Fprintf(tw, "Merge state:\t%s\n", pr.MergeableState)
+		tw.Printf("Merge state:\t%s\n", pr.MergeableState)
 	}
-	_ = tw.Flush()
+	tw.Flush()
+	return r.FlushTo(out)
 }
 
-func printReviews(out io.Writer, reviews []gh.PullRequestReviewResponse) {
+func printReviews(out io.Writer, reviews []gh.PullRequestReviewResponse) error {
+	r := newRenderer()
 	if len(reviews) == 0 {
-		fmt.Fprintln(out, "no reviews found")
-		return
+		r.Println("no reviews found")
+		return r.FlushTo(out)
 	}
 	for i, review := range reviews {
 		if i > 0 {
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, "---")
-			fmt.Fprintln(out)
+			r.Println()
+			r.Println("---")
+			r.Println()
 		}
 		author := ""
 		if review.User != nil {
@@ -327,25 +320,27 @@ func printReviews(out io.Writer, reviews []gh.PullRequestReviewResponse) {
 		if review.SubmittedAt != nil {
 			when = *review.SubmittedAt
 		}
-		fmt.Fprintf(out, "%s reviewed %s [%s]\n\n", author, humanTime(when), strings.ToLower(review.State))
+		r.Printf("%s reviewed %s [%s]\n\n", author, humanTime(when), strings.ToLower(review.State))
 		if strings.TrimSpace(review.Body) != "" {
-			fmt.Fprintln(out, strings.TrimSpace(review.Body))
+			r.Println(strings.TrimSpace(review.Body))
 		} else {
-			fmt.Fprintln(out, "(no review body)")
+			r.Println("(no review body)")
 		}
 	}
+	return r.FlushTo(out)
 }
 
-func printReviewComments(out io.Writer, comments []gh.PullRequestReviewCommentResponse) {
+func printReviewComments(out io.Writer, comments []gh.PullRequestReviewCommentResponse) error {
+	r := newRenderer()
 	if len(comments) == 0 {
-		fmt.Fprintln(out, "no review comments found")
-		return
+		r.Println("no review comments found")
+		return r.FlushTo(out)
 	}
 	for i, comment := range comments {
 		if i > 0 {
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, "---")
-			fmt.Fprintln(out)
+			r.Println()
+			r.Println("---")
+			r.Println()
 		}
 		author := ""
 		if comment.User != nil {
@@ -355,13 +350,10 @@ func printReviewComments(out io.Writer, comments []gh.PullRequestReviewCommentRe
 		if comment.Line != nil {
 			location = fmt.Sprintf("%s:%d", comment.Path, *comment.Line)
 		}
-		fmt.Fprintf(out, "%s commented on %s %s\n\n", author, location, humanTime(comment.CreatedAt))
-		fmt.Fprintln(out, strings.TrimSpace(comment.Body))
+		r.Printf("%s commented on %s %s\n\n", author, location, humanTime(comment.CreatedAt))
+		r.Println(strings.TrimSpace(comment.Body))
 	}
-}
-
-func newTabWriter(out io.Writer) *tabwriter.Writer {
-	return tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	return r.FlushTo(out)
 }
 
 func humanTime(t time.Time) string {
