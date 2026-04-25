@@ -49,18 +49,18 @@ type ObjectRef struct {
 }
 
 type ObjectSummary struct {
-	Title       string
-	State       string
-	HTMLURL     string
-	AuthorLogin string
-	UpdatedAt   time.Time
+	Title       string    `json:"title"`
+	State       string    `json:"state"`
+	HTMLURL     string    `json:"html_url"`
+	AuthorLogin string    `json:"author_login"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type ObjectResult struct {
-	Type    string
-	Number  int
-	Found   bool
-	Summary *ObjectSummary
+	Type    string         `json:"type"`
+	Number  int            `json:"number"`
+	Found   bool           `json:"found"`
+	Summary *ObjectSummary `json:"summary,omitempty"`
 }
 
 func RepositoryObjectFromRow(repository Repository) RepositoryObject {

@@ -56,6 +56,8 @@ type User struct {
 	UpdatedAt time.Time
 }
 
+// TableName returns the deployed ghreplica table name. Consumers that run
+// against a schema-qualified mirror should use NewSchemaReader or WithTables.
 func (User) TableName() string { return UsersTable }
 
 type Repository struct {
@@ -81,6 +83,8 @@ type Repository struct {
 	UpdatedAt     time.Time
 }
 
+// TableName returns the deployed ghreplica table name. Consumers that run
+// against a schema-qualified mirror should use NewSchemaReader or WithTables.
 func (Repository) TableName() string { return RepositoriesTable }
 
 type Issue struct {
@@ -110,6 +114,8 @@ type Issue struct {
 	UpdatedAt         time.Time
 }
 
+// TableName returns the deployed ghreplica table name. Consumers that run
+// against a schema-qualified mirror should use NewSchemaReader or WithTables.
 func (Issue) TableName() string { return IssuesTable }
 
 type PullRequest struct {
@@ -152,4 +158,6 @@ type PullRequest struct {
 	UpdatedAt       time.Time
 }
 
+// TableName returns the deployed ghreplica table name. Consumers that run
+// against a schema-qualified mirror should use NewSchemaReader or WithTables.
 func (PullRequest) TableName() string { return PullRequestsTable }
