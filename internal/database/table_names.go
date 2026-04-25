@@ -1,10 +1,6 @@
 package database
 
 func (TrackedRepository) TableName() string         { return "tracked_repositories" }
-func (User) TableName() string                      { return "users" }
-func (Repository) TableName() string                { return "repositories" }
-func (Issue) TableName() string                     { return "issues" }
-func (PullRequest) TableName() string               { return "pull_requests" }
 func (IssueComment) TableName() string              { return "issue_comments" }
 func (PullRequestReview) TableName() string         { return "pull_request_reviews" }
 func (PullRequestReviewComment) TableName() string  { return "pull_request_review_comments" }
