@@ -7,11 +7,38 @@ import (
 )
 
 const (
+	DefaultSchema = "ghreplica"
+
 	UsersTable        = "users"
 	RepositoriesTable = "repositories"
 	IssuesTable       = "issues"
 	PullRequestsTable = "pull_requests"
 )
+
+type TableNames struct {
+	Users        string
+	Repositories string
+	Issues       string
+	PullRequests string
+}
+
+func DefaultTableNames() TableNames {
+	return TableNames{
+		Users:        UsersTable,
+		Repositories: RepositoriesTable,
+		Issues:       IssuesTable,
+		PullRequests: PullRequestsTable,
+	}
+}
+
+func SchemaTableNames(schema string) TableNames {
+	return TableNames{
+		Users:        schema + "." + UsersTable,
+		Repositories: schema + "." + RepositoriesTable,
+		Issues:       schema + "." + IssuesTable,
+		PullRequests: schema + "." + PullRequestsTable,
+	}
+}
 
 type User struct {
 	ID        uint  `gorm:"primaryKey"`

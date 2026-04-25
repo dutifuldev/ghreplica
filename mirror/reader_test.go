@@ -96,6 +96,31 @@ func TestReaderReturnsEmptySlicesForEmptyNumberLists(t *testing.T) {
 	require.Empty(t, pulls)
 }
 
+func TestSchemaReaderUsesQualifiedTables(t *testing.T) {
+	db := openSchemaTestDB(t, DefaultSchema)
+	reader := NewSchemaReader(db, DefaultSchema)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, db.Exec(
+		"INSERT INTO "+DefaultSchema+"."+UsersTable+" (id, github_id, login, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		1, 501, "alice", now, now,
+	).Error)
+	require.NoError(t, db.Exec(
+		"INSERT INTO "+DefaultSchema+"."+RepositoriesTable+" (id, github_id, owner_id, owner_login, name, full_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		1, 101, 1, "acme", "widgets", "acme/widgets", now, now,
+	).Error)
+	require.NoError(t, db.Exec(
+		"INSERT INTO "+DefaultSchema+"."+IssuesTable+" (id, repository_id, github_id, number, title, state, author_id, github_created_at, github_updated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		1, 1, 1101, 11, "issue title", "open", 1, now, now, now, now,
+	).Error)
+
+	readIssue, err := reader.IssueByGitHubRepositoryID(ctx, 101, 11)
+	require.NoError(t, err)
+	require.Equal(t, "issue title", readIssue.Title)
+	require.Equal(t, "alice", readIssue.Author.Login)
+}
+
 func TestObjectConversions(t *testing.T) {
 	author := User{Login: "alice"}
 	repository := Repository{GitHubID: 101, OwnerLogin: "acme", Name: "widgets", FullName: "acme/widgets", Owner: &author}
@@ -120,5 +145,16 @@ func openTestDB(t *testing.T) *gorm.DB {
 	})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&User{}, &Repository{}, &Issue{}, &PullRequest{}))
+	return db
+}
+
+func openSchemaTestDB(t *testing.T, schema string) *gorm.DB {
+	t.Helper()
+	db := openTestDB(t)
+	require.NoError(t, db.Exec("ATTACH DATABASE ':memory:' AS "+schema).Error)
+	require.NoError(t, db.Exec("CREATE TABLE "+schema+"."+UsersTable+" (id integer, github_id integer, login text, created_at datetime, updated_at datetime)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE "+schema+"."+RepositoriesTable+" (id integer, github_id integer, owner_id integer, owner_login text, name text, full_name text, created_at datetime, updated_at datetime)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE "+schema+"."+IssuesTable+" (id integer, repository_id integer, github_id integer, number integer, title text, state text, author_id integer, github_created_at datetime, github_updated_at datetime, created_at datetime, updated_at datetime)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE "+schema+"."+PullRequestsTable+" (issue_id integer, repository_id integer, github_id integer, number integer, state text, created_at datetime, updated_at datetime)").Error)
 	return db
 }
