@@ -49,19 +49,21 @@ func TestAcceptorHandleWebhookConfigurationAndDeduplication(t *testing.T) {
 	ctx := context.Background()
 	payload := []byte(`{"repository":{"id":101,"full_name":"acme/widgets"}}`)
 
-	err := (&Acceptor{}).HandleWebhook(ctx, "delivery-1", "workflow_job", http.Header{}, payload)
+	require.NoError(t, (&Acceptor{}).HandleWebhook(ctx, "ignored-unsupported", "workflow_job", http.Header{}, payload))
+
+	err := (&Acceptor{}).HandleWebhook(ctx, "delivery-1", "ping", http.Header{}, payload)
 	require.ErrorContains(t, err, "SQL database handle is not configured")
 
 	db := openWebhooksInternalTestDB(t)
 	acceptor := NewAcceptor(db, nil)
-	err = acceptor.HandleWebhook(ctx, "delivery-2", "workflow_job", http.Header{}, payload)
+	err = acceptor.HandleWebhook(ctx, "delivery-2", "ping", http.Header{}, payload)
 	require.ErrorContains(t, err, "dispatcher is not configured")
 
 	dispatcher := &recordingDeliveryDispatcher{}
 	acceptor.SetDispatcher(dispatcher)
 
-	require.NoError(t, acceptor.HandleWebhook(ctx, "delivery-3", "workflow_job", http.Header{}, payload))
-	require.NoError(t, acceptor.HandleWebhook(ctx, "delivery-3", "workflow_job", http.Header{}, payload))
+	require.NoError(t, acceptor.HandleWebhook(ctx, "delivery-3", "ping", http.Header{}, payload))
+	require.NoError(t, acceptor.HandleWebhook(ctx, "delivery-3", "ping", http.Header{}, payload))
 	require.Equal(t, []string{"delivery-3"}, dispatcher.deliveryIDs)
 
 	var count int64

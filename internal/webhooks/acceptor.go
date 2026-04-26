@@ -37,6 +37,10 @@ func (a *Acceptor) SetDispatcher(dispatcher DeliveryDispatcher) {
 }
 
 func (a *Acceptor) HandleWebhook(ctx context.Context, deliveryID, event string, headers http.Header, payload []byte) error {
+	if _, ok := webhookEventPolicyFor(event); !ok {
+		return nil
+	}
+
 	now := time.Now().UTC()
 	if err := a.validateWebhookDependencies(); err != nil {
 		return err

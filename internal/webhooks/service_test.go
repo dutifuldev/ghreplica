@@ -299,21 +299,17 @@ func TestWebhookIngestionIgnoresUnsupportedEventsForRefreshScheduling(t *testing
 
 	projector := githubsync.NewService(db, github.NewClient("https://api.github.com", github.AuthConfig{}))
 	ingestor, dispatcher := newWebhookService(t, db, projector)
-	handleAndProcessWebhook(
-		t,
+	require.NoError(t, ingestor.HandleWebhook(
 		ctx,
-		ingestor,
-		dispatcher,
 		"delivery-unsupported",
 		"workflow_job",
 		http.Header{"X-GitHub-Event": []string{"workflow_job"}},
 		[]byte(`{"repository":{"name":"widgets","full_name":"acme/widgets","owner":{"login":"acme"}}}`),
-	)
+	))
 
 	var delivery database.WebhookDelivery
-	require.NoError(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-unsupported").First(&delivery).Error)
-	require.Equal(t, "workflow_job", delivery.Event)
-	require.NotNil(t, delivery.ProcessedAt)
+	require.ErrorIs(t, db.WithContext(ctx).Where("delivery_id = ?", "delivery-unsupported").First(&delivery).Error, gorm.ErrRecordNotFound)
+	require.Empty(t, dispatcher.deliveryIDs)
 
 	var jobs int64
 	require.NoError(t, db.WithContext(ctx).Model(&database.RepositoryRefreshJob{}).Count(&jobs).Error)
@@ -321,7 +317,7 @@ func TestWebhookIngestionIgnoresUnsupportedEventsForRefreshScheduling(t *testing
 
 	var tracked int64
 	require.NoError(t, db.WithContext(ctx).Model(&database.TrackedRepository{}).Count(&tracked).Error)
-	require.EqualValues(t, 1, tracked)
+	require.Zero(t, tracked)
 }
 
 func TestWebhookIngestionReusesTrackedRepositoryAcrossRenameByRepositoryID(t *testing.T) {
@@ -350,23 +346,21 @@ func TestWebhookIngestionReusesTrackedRepositoryAcrossRenameByRepositoryID(t *te
 	require.NoError(t, db.WithContext(ctx).Create(tracked).Error)
 
 	ingestor, dispatcher := newWebhookService(t, db, nil)
-	handleAndProcessWebhook(
-		t,
+	require.NoError(t, ingestor.HandleWebhook(
 		ctx,
-		ingestor,
-		dispatcher,
 		"delivery-rename-unsupported",
 		"workflow_job",
 		http.Header{"X-GitHub-Event": []string{"workflow_job"}},
 		[]byte(`{"repository":{"id":101,"name":"widgets-renamed","full_name":"acme/widgets-renamed","owner":{"login":"acme"}}}`),
-	)
+	))
+	require.Empty(t, dispatcher.deliveryIDs)
 
 	var trackedRows []database.TrackedRepository
 	require.NoError(t, db.WithContext(ctx).Order("id ASC").Find(&trackedRows).Error)
 	require.Len(t, trackedRows, 1)
 	require.Equal(t, tracked.ID, trackedRows[0].ID)
-	require.Equal(t, "widgets-renamed", trackedRows[0].Name)
-	require.Equal(t, "acme/widgets-renamed", trackedRows[0].FullName)
+	require.Equal(t, "widgets", trackedRows[0].Name)
+	require.Equal(t, "acme/widgets", trackedRows[0].FullName)
 	require.NotNil(t, trackedRows[0].RepositoryID)
 	require.Equal(t, repo.ID, *trackedRows[0].RepositoryID)
 }
