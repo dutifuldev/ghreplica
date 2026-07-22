@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="dutifuldev/ghreplica"
+REPO="osolmaz/ghreplica"
 BINARY="ghr"
 
 usage() {

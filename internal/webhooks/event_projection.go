@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	gh "github.com/dutifuldev/ghreplica/internal/github"
+	gh "github.com/osolmaz/ghreplica/internal/github"
 )
 
 type repositoryIDLookupFunc func(context.Context, *repositoryRef) (uint, error)

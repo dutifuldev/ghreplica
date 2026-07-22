@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	gh "github.com/dutifuldev/ghreplica/internal/github"
+	gh "github.com/osolmaz/ghreplica/internal/github"
 )
 
 func writeJSON(out io.Writer, value any, fields string) error {

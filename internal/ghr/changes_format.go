@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dutifuldev/ghreplica/internal/gitindex"
-	"github.com/dutifuldev/ghreplica/internal/searchindex"
+	"github.com/osolmaz/ghreplica/internal/gitindex"
+	"github.com/osolmaz/ghreplica/internal/searchindex"
 )
 
 func printRepoChangeStatus(out io.Writer, status RepoChangeStatusResponse) error {

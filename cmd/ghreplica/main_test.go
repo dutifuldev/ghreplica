@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/config"
-	"github.com/dutifuldev/ghreplica/internal/database"
+	"github.com/osolmaz/ghreplica/internal/config"
+	"github.com/osolmaz/ghreplica/internal/database"
 	"github.com/stretchr/testify/require"
 )
 

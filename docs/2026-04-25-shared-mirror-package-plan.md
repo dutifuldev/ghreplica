@@ -32,7 +32,7 @@ The pinned end state is:
 - `ghreplica` writes only `ghreplica.*`
 - `prtags` writes only `prtags.*`
 - `prtags` may read `ghreplica.*` directly
-- `prtags` imports `github.com/dutifuldev/ghreplica/mirror` for shared read models and read helpers
+- `prtags` imports `github.com/osolmaz/ghreplica/mirror` for shared read models and read helpers
 
 There is no third `_ext` schema in this plan.
 
@@ -79,7 +79,7 @@ It is better than importing all of `ghreplica`, which would couple `prtags` to t
 
 The intended import path is:
 
-`github.com/dutifuldev/ghreplica/mirror`
+`github.com/osolmaz/ghreplica/mirror`
 
 # Scope Of The `mirror` Package
 
@@ -194,13 +194,13 @@ It should avoid:
 For local development, a `replace` is acceptable:
 
 ```go
-replace github.com/dutifuldev/ghreplica => ../ghreplica
+replace github.com/osolmaz/ghreplica => ../ghreplica
 ```
 
 For normal use, `prtags` should import:
 
 ```go
-import "github.com/dutifuldev/ghreplica/mirror"
+import "github.com/osolmaz/ghreplica/mirror"
 ```
 
 This is intentionally stronger coupling than a fully isolated downstream integration.
@@ -237,7 +237,7 @@ Do not rely on automigration.
 
 ## 4. Import `mirror` In `prtags`
 
-Update `prtags` to import `github.com/dutifuldev/ghreplica/mirror`.
+Update `prtags` to import `github.com/osolmaz/ghreplica/mirror`.
 
 Use those models and helpers for mirror reads and joins.
 

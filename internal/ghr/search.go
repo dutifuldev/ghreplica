@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/dutifuldev/ghreplica/internal/searchindex"
+	"github.com/osolmaz/ghreplica/internal/searchindex"
 	"github.com/spf13/cobra"
 )
 

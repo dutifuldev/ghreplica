@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/dutifuldev/ghreplica/internal/ghr"
+	"github.com/osolmaz/ghreplica/internal/ghr"
 )
 
 func main() {

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/database"
-	gh "github.com/dutifuldev/ghreplica/internal/github"
+	"github.com/osolmaz/ghreplica/internal/database"
+	gh "github.com/osolmaz/ghreplica/internal/github"
 	"gorm.io/gorm"
 )
 

@@ -118,9 +118,9 @@ Examples:
 
 ```bash
 ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
-ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)'
-ghr search ast-grep -R dutifuldev/ghreplica --commit 5a2a2aa2ed2db8ed3097697f10dc9a6ced9164a0 --language go --pattern 'errors.Is($ERR, $TARGET)'
-ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'exec.CommandContext($CTX, $BIN, $$$ARGS)' --path internal/gitindex/astgrep.go
+ghr search ast-grep -R osolmaz/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)'
+ghr search ast-grep -R osolmaz/ghreplica --commit 5a2a2aa2ed2db8ed3097697f10dc9a6ced9164a0 --language go --pattern 'errors.Is($ERR, $TARGET)'
+ghr search ast-grep -R osolmaz/ghreplica --ref main --language go --pattern 'exec.CommandContext($CTX, $BIN, $$$ARGS)' --path internal/gitindex/astgrep.go
 ```
 
 Useful flags:
@@ -266,7 +266,7 @@ Examples:
 ghr changes pr view -R openclaw/openclaw 59883 --json pull_request_number,head_sha,indexed_as,index_freshness
 ghr search prs-by-paths -R openclaw/openclaw --path src/acp/control-plane/manager.core.ts --state all --json pull_request_number,score,shared_paths
 ghr search mentions -R openclaw/openclaw --query "heartbeat watchdog" --mode fts --scope pull_requests --json resource,matched_field,excerpt,score
-ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)' --json resolved_commit_sha,matches
+ghr search ast-grep -R osolmaz/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)' --json resolved_commit_sha,matches
 ```
 
 For text and structural search, `--json` is the preferred output mode for scripts.

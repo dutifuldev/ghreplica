@@ -85,7 +85,7 @@ Recommended use:
 
 Suggested repo:
 
-- `dutifuldev/ghreplica-fixtures`
+- `osolmaz/ghreplica-fixtures`
 
 ### Dogfood Repository
 
@@ -105,7 +105,7 @@ Recommended use:
 
 Suggested repo:
 
-- `dutifuldev/ghreplica`
+- `osolmaz/ghreplica`
 
 ### Optional Busy Public Repository
 
@@ -395,7 +395,7 @@ Goal:
 
 Work:
 
-- enable mirroring for `dutifuldev/ghreplica`
+- enable mirroring for `osolmaz/ghreplica`
 - compare local mirror against GitHub regularly
 - fix mismatches
 

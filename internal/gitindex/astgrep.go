@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/database"
+	"github.com/osolmaz/ghreplica/internal/database"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 )

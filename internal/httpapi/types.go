@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/database"
+	"github.com/osolmaz/ghreplica/internal/database"
 )
 
 type userResponse struct {

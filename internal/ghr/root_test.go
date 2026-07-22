@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	gh "github.com/dutifuldev/ghreplica/internal/github"
-	"github.com/dutifuldev/ghreplica/internal/gitindex"
-	"github.com/dutifuldev/ghreplica/internal/searchindex"
-	"github.com/dutifuldev/ghreplica/internal/testfixtures"
+	gh "github.com/osolmaz/ghreplica/internal/github"
+	"github.com/osolmaz/ghreplica/internal/gitindex"
+	"github.com/osolmaz/ghreplica/internal/searchindex"
+	"github.com/osolmaz/ghreplica/internal/testfixtures"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )

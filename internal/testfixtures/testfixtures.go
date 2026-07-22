@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"testing"
 
-	gh "github.com/dutifuldev/ghreplica/internal/github"
+	gh "github.com/osolmaz/ghreplica/internal/github"
 )
 
 func LoadJSON[T any](t *testing.T, relativePath string) T {

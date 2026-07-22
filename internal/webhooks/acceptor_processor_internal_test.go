@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/database"
-	gh "github.com/dutifuldev/ghreplica/internal/github"
+	"github.com/osolmaz/ghreplica/internal/database"
+	gh "github.com/osolmaz/ghreplica/internal/github"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )

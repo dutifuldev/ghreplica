@@ -40,25 +40,25 @@ Current public instance:
 The easiest install path is:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dutifuldev/ghreplica/main/scripts/install-ghr.sh | bash
+curl -fsSL https://raw.githubusercontent.com/osolmaz/ghreplica/main/scripts/install-ghr.sh | bash
 ```
 
 That script detects Linux versus macOS, picks the right release archive, and installs `ghr` into `/usr/local/bin` when possible or `~/.local/bin` otherwise.
 
 Release page:
 
-- https://github.com/dutifuldev/ghreplica/releases
+- https://github.com/osolmaz/ghreplica/releases
 
 If you want to install a specific version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dutifuldev/ghreplica/main/scripts/install-ghr.sh | bash -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/osolmaz/ghreplica/main/scripts/install-ghr.sh | bash -s -- --version v0.1.0
 ```
 
 If you want to install into a custom directory:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dutifuldev/ghreplica/main/scripts/install-ghr.sh | bash -s -- --bin-dir "$HOME/.local/bin"
+curl -fsSL https://raw.githubusercontent.com/osolmaz/ghreplica/main/scripts/install-ghr.sh | bash -s -- --bin-dir "$HOME/.local/bin"
 ```
 
 ## Why
@@ -131,7 +131,7 @@ The `github-ext` surface is for explicit tooling extensions that still return mi
 From the API:
 
 ```bash
-curl -fsS https://ghreplica.dutiful.dev/v1/github-ext/repos/dutifuldev/ghreplica/objects/batch \
+curl -fsS https://ghreplica.dutiful.dev/v1/github-ext/repos/osolmaz/ghreplica/objects/batch \
   -H 'Content-Type: application/json' \
   -d '{
     "objects": [
@@ -213,7 +213,7 @@ make serve
 Once the server is up, these are the most useful manual operations:
 
 ```bash
-go run ./cmd/ghreplica sync repo dutifuldev/ghreplica
+go run ./cmd/ghreplica sync repo osolmaz/ghreplica
 go run ./cmd/ghreplica sync issue openclaw/openclaw 66797
 go run ./cmd/ghreplica sync pr openclaw/openclaw 66863
 go run ./cmd/ghreplica backfill repo openclaw/openclaw --mode open_only
@@ -236,8 +236,8 @@ That gives you a local `ghr` binary without needing to deploy the whole service.
 If you want to sanity-check a local instance quickly, these endpoints are usually enough:
 
 - `GET http://127.0.0.1:8080/healthz`
-- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica`
-- `GET http://127.0.0.1:8080/v1/mirror/repos/dutifuldev/ghreplica`
+- `GET http://127.0.0.1:8080/v1/github/repos/osolmaz/ghreplica`
+- `GET http://127.0.0.1:8080/v1/mirror/repos/osolmaz/ghreplica`
 
 ## Self-Hosting Notes
 

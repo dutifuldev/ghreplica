@@ -62,7 +62,7 @@ Suggested completeness states:
 Examples:
 
 - `openclaw/openclaw` pulls can be `sparse` if only webhook-observed PRs exist locally
-- `dutifuldev/ghreplica` pulls can be `backfilled` after an explicit full sync
+- `osolmaz/ghreplica` pulls can be `backfilled` after an explicit full sync
 
 ## Job Model
 

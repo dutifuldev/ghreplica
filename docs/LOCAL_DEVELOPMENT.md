@@ -11,7 +11,7 @@
 - Go 1.25+
 - Docker and Docker Compose, or another local Postgres instance
 - `ngrok` if you want live GitHub webhook delivery
-- a GitHub repository you control, such as `dutifuldev/ghreplica`
+- a GitHub repository you control, such as `osolmaz/ghreplica`
 
 ## Step 1: Create Environment Variables
 
@@ -67,7 +67,7 @@ postgres://ghreplica:ghreplica@127.0.0.1:54329/ghreplica?sslmode=disable
 Pull the initial snapshot for a repo you want to mirror:
 
 ```bash
-make sync REPO=dutifuldev/ghreplica
+make sync REPO=osolmaz/ghreplica
 ```
 
 You can repeat that for any other test repo that your token can read:
@@ -85,21 +85,21 @@ make serve
 Important local endpoints:
 
 - `GET http://127.0.0.1:8080/healthz`
-- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica`
-- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/issues?state=all`
-- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/issues/1`
-- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/issues/1/comments`
-- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/pulls?state=all`
-- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/pulls/1`
-- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/pulls/1/reviews`
-- `GET http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica/pulls/1/comments`
+- `GET http://127.0.0.1:8080/v1/github/repos/osolmaz/ghreplica`
+- `GET http://127.0.0.1:8080/v1/github/repos/osolmaz/ghreplica/issues?state=all`
+- `GET http://127.0.0.1:8080/v1/github/repos/osolmaz/ghreplica/issues/1`
+- `GET http://127.0.0.1:8080/v1/github/repos/osolmaz/ghreplica/issues/1/comments`
+- `GET http://127.0.0.1:8080/v1/github/repos/osolmaz/ghreplica/pulls?state=all`
+- `GET http://127.0.0.1:8080/v1/github/repos/osolmaz/ghreplica/pulls/1`
+- `GET http://127.0.0.1:8080/v1/github/repos/osolmaz/ghreplica/pulls/1/reviews`
+- `GET http://127.0.0.1:8080/v1/github/repos/osolmaz/ghreplica/pulls/1/comments`
 - `GET http://127.0.0.1:8080/readyz`
 - `GET http://127.0.0.1:8080/metrics`
 
 If you want to enqueue a manual repair crawl instead of doing a direct sync:
 
 ```bash
-make refresh REPO=dutifuldev/ghreplica
+make refresh REPO=osolmaz/ghreplica
 ```
 
 ## Step 5: Enable Live GitHub Webhook Delivery
@@ -158,10 +158,10 @@ The defaults above match the current production baseline and are a good local st
 1. `make db-up`
 2. `make migrate`
 3. export the variables from `.env.example`
-4. `make sync REPO=dutifuldev/ghreplica`
+4. `make sync REPO=osolmaz/ghreplica`
 5. `make serve`
 6. `curl http://127.0.0.1:8080/healthz`
-7. `curl http://127.0.0.1:8080/v1/github/repos/dutifuldev/ghreplica`
+7. `curl http://127.0.0.1:8080/v1/github/repos/osolmaz/ghreplica`
 8. start `ngrok`
 9. point a controlled repo webhook at `/webhooks/github`
 10. trigger a `ping` or open a test issue or PR

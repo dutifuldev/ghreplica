@@ -6,7 +6,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/dutifuldev/ghreplica/internal/database"
+	"github.com/osolmaz/ghreplica/internal/database"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )

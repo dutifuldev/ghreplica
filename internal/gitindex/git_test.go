@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/database"
-	"github.com/dutifuldev/ghreplica/internal/github"
-	"github.com/dutifuldev/ghreplica/internal/testfixtures"
+	"github.com/osolmaz/ghreplica/internal/database"
+	"github.com/osolmaz/ghreplica/internal/github"
+	"github.com/osolmaz/ghreplica/internal/testfixtures"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )

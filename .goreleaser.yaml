@@ -56,5 +56,5 @@ changelog:
 
 release:
   github:
-    owner: dutifuldev
+    owner: osolmaz
     name: ghreplica

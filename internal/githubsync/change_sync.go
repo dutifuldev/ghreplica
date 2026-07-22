@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/database"
-	gh "github.com/dutifuldev/ghreplica/internal/github"
-	"github.com/dutifuldev/ghreplica/internal/gitindex"
+	"github.com/osolmaz/ghreplica/internal/database"
+	gh "github.com/osolmaz/ghreplica/internal/github"
+	"github.com/osolmaz/ghreplica/internal/gitindex"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )

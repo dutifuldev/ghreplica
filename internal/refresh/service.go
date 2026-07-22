@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/database"
-	"github.com/dutifuldev/ghreplica/internal/github"
+	"github.com/osolmaz/ghreplica/internal/database"
+	"github.com/osolmaz/ghreplica/internal/github"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )

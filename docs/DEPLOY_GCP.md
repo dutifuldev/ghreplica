@@ -107,7 +107,7 @@ SSH to the VM and install Docker plus the Compose plugin.
 Then clone the repo:
 
 ```bash
-git clone https://github.com/dutifuldev/ghreplica.git
+git clone https://github.com/osolmaz/ghreplica.git
 cd ghreplica
 ```
 
@@ -188,7 +188,7 @@ Once DNS and TLS settle, these should succeed:
 ```bash
 curl https://ghreplica.dutiful.dev/healthz
 curl https://ghreplica.dutiful.dev/readyz
-curl https://ghreplica.dutiful.dev/v1/github/repos/dutifuldev/ghreplica
+curl https://ghreplica.dutiful.dev/v1/github/repos/osolmaz/ghreplica
 ```
 
 If you want to verify the two permission-sensitive runtime dependencies inside the container, these should also work:

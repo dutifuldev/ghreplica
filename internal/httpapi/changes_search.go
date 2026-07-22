@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/database"
-	"github.com/dutifuldev/ghreplica/internal/gitindex"
-	"github.com/dutifuldev/ghreplica/internal/searchindex"
+	"github.com/osolmaz/ghreplica/internal/database"
+	"github.com/osolmaz/ghreplica/internal/gitindex"
+	"github.com/osolmaz/ghreplica/internal/searchindex"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )

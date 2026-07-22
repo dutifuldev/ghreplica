@@ -1,4 +1,4 @@
-module github.com/dutifuldev/ghreplica
+module github.com/osolmaz/ghreplica
 
 go 1.25.7
 

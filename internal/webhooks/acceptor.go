@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/database"
+	"github.com/osolmaz/ghreplica/internal/database"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )

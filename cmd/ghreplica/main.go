@@ -11,12 +11,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/dutifuldev/ghreplica/internal/app"
-	"github.com/dutifuldev/ghreplica/internal/config"
-	"github.com/dutifuldev/ghreplica/internal/githubsync"
-	"github.com/dutifuldev/ghreplica/internal/refresh"
-	"github.com/dutifuldev/ghreplica/internal/searchindex"
-	"github.com/dutifuldev/ghreplica/internal/webhooks"
+	"github.com/osolmaz/ghreplica/internal/app"
+	"github.com/osolmaz/ghreplica/internal/config"
+	"github.com/osolmaz/ghreplica/internal/githubsync"
+	"github.com/osolmaz/ghreplica/internal/refresh"
+	"github.com/osolmaz/ghreplica/internal/searchindex"
+	"github.com/osolmaz/ghreplica/internal/webhooks"
 	"gorm.io/gorm"
 )
 

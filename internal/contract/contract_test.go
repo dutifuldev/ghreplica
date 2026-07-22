@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dutifuldev/ghreplica/internal/config"
-	"github.com/dutifuldev/ghreplica/internal/database"
-	"github.com/dutifuldev/ghreplica/internal/github"
-	"github.com/dutifuldev/ghreplica/internal/githubsync"
-	"github.com/dutifuldev/ghreplica/internal/httpapi"
+	"github.com/osolmaz/ghreplica/internal/config"
+	"github.com/osolmaz/ghreplica/internal/database"
+	"github.com/osolmaz/ghreplica/internal/github"
+	"github.com/osolmaz/ghreplica/internal/githubsync"
+	"github.com/osolmaz/ghreplica/internal/httpapi"
 	"github.com/stretchr/testify/require"
 )
 

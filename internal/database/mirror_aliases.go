@@ -1,6 +1,6 @@
 package database
 
-import "github.com/dutifuldev/ghreplica/mirror"
+import "github.com/osolmaz/ghreplica/mirror"
 
 type User = mirror.User
 type Repository = mirror.Repository

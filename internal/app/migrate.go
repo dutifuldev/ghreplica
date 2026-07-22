@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/dutifuldev/ghreplica/internal/config"
-	"github.com/dutifuldev/ghreplica/internal/database"
+	"github.com/osolmaz/ghreplica/internal/config"
+	"github.com/osolmaz/ghreplica/internal/database"
 	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
 	"github.com/riverqueue/river/rivermigrate"
 )

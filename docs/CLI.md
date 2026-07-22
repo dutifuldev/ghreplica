@@ -304,9 +304,9 @@ ghr search mentions -R openclaw/openclaw --query "auth.*state" --mode regex --sc
 ghr search mentions -R openclaw/openclaw --query "greptile" --mode fts --scope pull_request_reviews --scope pull_request_review_comments
 ghr search mentions -R openclaw/openclaw --query "acp" --mode fts --scope pull_requests --state all --json resource,matched_field,score
 ghr search ast-grep -R openclaw/openclaw --pr 59883 --language typescript --pattern 'ctx.reply($MSG)' --changed-files-only
-ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)' --json resolved_commit_sha,matches
-ghr search ast-grep -R dutifuldev/ghreplica --commit 979463a0430ca6bf26d22b53e4e1ecf5766d743b --language go --pattern 'context.WithTimeout($CTX, $DUR)'
-ghr search ast-grep -R dutifuldev/ghreplica --ref main --language go --pattern 'exec.CommandContext($CTX, $BIN, $$$ARGS)' --path internal/gitindex/astgrep.go
+ghr search ast-grep -R osolmaz/ghreplica --ref main --language go --pattern 'fmt.Errorf($MSG)' --json resolved_commit_sha,matches
+ghr search ast-grep -R osolmaz/ghreplica --commit 979463a0430ca6bf26d22b53e4e1ecf5766d743b --language go --pattern 'context.WithTimeout($CTX, $DUR)'
+ghr search ast-grep -R osolmaz/ghreplica --ref main --language go --pattern 'exec.CommandContext($CTX, $BIN, $$$ARGS)' --path internal/gitindex/astgrep.go
 ```
 
 Flags for `ghr search ast-grep`:

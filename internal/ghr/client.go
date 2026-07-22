@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	gh "github.com/dutifuldev/ghreplica/internal/github"
+	gh "github.com/osolmaz/ghreplica/internal/github"
 )
 
 type Client struct {
