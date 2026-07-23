@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/labstack/echo/v4"
 	"github.com/osolmaz/ghreplica/internal/database"
 	"github.com/osolmaz/ghreplica/internal/gitindex"
 	"github.com/osolmaz/ghreplica/internal/refresh"
-	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
 
