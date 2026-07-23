@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
 	"github.com/osolmaz/ghreplica/internal/database"
 	"github.com/osolmaz/ghreplica/internal/gitindex"
-	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
